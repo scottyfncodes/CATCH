@@ -65,6 +65,7 @@ npm run dev            # room server on :8787 + Vite on :5173 (open on your phon
 npm test               # unit tests
 npm run build          # client (dist/) + server (dist-server/)
 npm run test:e2e       # multi-client browser tests (needs a client build)
+npm run test:live      # two browsers play on the deployed site + live room server (BASE=…)
 ```
 
 ## Deploy
@@ -73,10 +74,14 @@ npm run test:e2e       # multi-client browser tests (needs a client build)
 |---|---|---|
 | Development | `vite` on localhost | `tsx` on localhost:8787 |
 | Preview | Vercel preview deployment per PR | production room server (rooms are isolated by code; protocol version is checked) |
-| Production | Vercel (`main`) | Render web service `catch-server` (`main`, see `render.yaml`) |
+| Production | Vercel `catch` → https://catch-haveanapp.vercel.app (`main`) | Render `catch-server` → wss://catch-server-hgeo.onrender.com/ws (`main`, free plan) |
 
 The room server must be a long-lived process (WebSockets); it cannot run as
 Vercel serverless functions. Client env: `VITE_SERVER_URL=wss://…/ws`.
 Server env: `ALLOWED_ORIGINS` (optional), `DATA_DIR` (optional, needs a disk).
+
+The free Render plan sleeps after ~15 idle minutes; the first visit then waits
+~30–60 s while it wakes (the home screen pings it early and the game shows
+"Warming up the field…"). Render Starter (~$7/mo) removes the wait.
 
 See [docs/AUDIO.md](docs/AUDIO.md) for the sound design and what's still open.
