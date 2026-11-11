@@ -1,31 +1,34 @@
 // One play session in a room: networking, prediction, controls, rendering
-// and audio. The server is authoritative; this predicts the local player's
-// own throws and catches so they feel instant, and smooths everyone else.
+// and audio, seen in third person. The server is authoritative; this predicts
+// the local player's own throws and catches so they feel instant, and smooths
+// everyone else.
 
 import * as THREE from 'three';
 import {
-  BALL_RADIUS, CHEST_HEIGHT, CLIENT_STATE_HZ, EYE_HEIGHT, GLOVE_REST_U, GLOVE_REST_V,
-  THROW_MAX_SPEED, THROW_MIN_SPEED,
+  BALL_RADIUS, CHEST_HEIGHT, CLIENT_STATE_HZ, MOVE_RADIUS, RUN_ACCEL, RUN_SPEED, THROW_MAX_SPEED, THROW_MIN_SPEED, WALK_SPEED,
 } from '../shared/constants';
 import {
-  type Trajectory, closestApproach, positionAt, simulateFlight, solveElevation, sweptMinDistance, velocityAt,
+  type Trajectory, positionAt, simulateFlight, solveElevation, sweptMinDistance, velocityAt,
 } from '../shared/physics';
-import { type Hand, type Pose, GLOVE_LIMIT, eyePosition, gloveViewOffset, gloveWorld, lookAngles, releasePoint, viewBasis } from '../shared/pose';
+import {
+  type Hand, type Pose, clampReach, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, releasePoint,
+} from '../shared/pose';
 import {
   Arm, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, classifyCatch,
 } from '../shared/protocol';
-import { type Vec3, clamp, dist, lerp, wrapAngle } from '../shared/vec';
+import { type Vec3, clamp, lerp, wrapAngle } from '../shared/vec';
 import { audio } from './audio';
 import { haptic } from './haptics';
-import { Controls, type ThrowRelease } from './input';
+import { type Aim, Controls } from './input';
 import { Net, type NetStatus } from './net';
-import { Avatar, LOOKS } from './scene/avatar';
-import { FirstPerson } from './scene/firstperson';
+import { AimArc } from './scene/aim';
+import { Avatar } from './scene/avatar';
+import { CameraRig } from './scene/camera';
 import { buildBall, contactShadow } from './scene/gear';
 import { type World, buildWorld } from './scene/world';
 import { prefs, raiseRecord, recordFor } from './storage';
 
-interface Snap { t: number; yaw: number; pitch: number; gu: number; gv: number; arm: number; charge: number }
+interface Snap { t: number; x: number; z: number; yaw: number; g: Vec3; arm: number; charge: number }
 
 interface Remote {
   info: PlayerInfo;
@@ -42,24 +45,32 @@ export interface GameEvents {
   roster(players: PlayerInfo[], me: string | null): void;
   score(s: ScoreState, ev?: BallEvent): void;
   /** Gameplay moments the tutorial listens for. */
-  moment(kind: 'look' | 'glove' | 'catch' | 'throw' | 'drop' | 'incoming' | 'holding'): void;
+  moment(kind: 'move' | 'catch' | 'throw' | 'drop' | 'incoming' | 'holding' | 'aim'): void;
   toast(text: string): void;
 }
 
 const tmpV = new THREE.Vector3();
 const INTERP_MS = 110;
+/** How hard a full-strength pull-back throws, and how far off-line a sideways pull sends it. */
+const AIM_SPREAD = 0.36;
+
+/** Small deterministic hash → [-1, 1] (same throw, same human error). */
+function hash1(n: number) {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return (x - Math.floor(x)) * 2 - 1;
+}
 
 export class Game {
   readonly renderer: THREE.WebGLRenderer;
-  readonly camera: THREE.PerspectiveCamera;
+  readonly rig = new CameraRig();
   private world: World;
   private scene: THREE.Scene;
   readonly net: Net;
   private controls: Controls;
-  private fp: FirstPerson;
   private ballMesh: THREE.Mesh;
   private ballBlur: THREE.Mesh;
   private ballShadow: THREE.Mesh;
+  private aimArc = new AimArc();
   private labels: HTMLElement;
   private raf = 0;
   private lastFrame = 0;
@@ -71,21 +82,27 @@ export class Game {
   traj: Trajectory | null = null;
   score: ScoreState = { streak: 0, sessionBest: 0, groupBest: 0, groupKey: '' };
 
-  // Local player.
+  // Local player: a body on the grass.
   hand: Hand;
+  private myAvatar: Avatar | null = null;
+  pos: Vec3 = [0, 0, 6];
+  private vel = { x: 0, z: 0 };
   yaw = 0;
-  pitch = -0.04;
-  private gloveT = { u: GLOVE_REST_U, v: GLOVE_REST_V };
-  glove = { u: GLOVE_REST_U, v: GLOVE_REST_V };
+  /** Glove offset from the feet (world axes), and where it is reaching for. */
+  glove: Vec3 = [0, 1.18, -0.4];
+  private gloveT: Vec3 = [0, 1.18, -0.4];
+  private stick = { x: 0, y: 0 };
+  private keys = new Set<string>();
+  private lastInputAt = 0;
   private prevGloveWorld: Vec3 | null = null;
   private prevPose: Pose | null = null;
-  private lookActive = false;
-  private gloveActive = false;
-  private lastLookAt = 0;
-  private winding = false;
-  private charge = 0;
+  private aim: Aim | null = null;
+  private aimBaseYaw = 0;
+  private aimTraj: Trajectory | null = null;
   private releasedAt = -1;
   private lastSent = 0;
+  private partnerId: string | null = null;
+  private home: Vec3 = [0, 0, 6];
 
   // Prediction / presentation state.
   private predThrowAt = 0;
@@ -104,11 +121,10 @@ export class Game {
   private incomingTid = -1;
   private sentRecordFor = '';
   private lastCatchPerf = 0;
-  private rosterIds = '';
   private pixelRatio: number;
   private frameTimes: number[] = [];
-  /** Test hook: move the glove onto the ball automatically (never set in normal play). */
-  autoGlove = false;
+  /** Test hook: run under incoming throws automatically (never set in normal play). */
+  autoMove = false;
   /** Test hook: skip drawing (software-GL CI is too slow for real-time touch input). */
   renderEnabled = true;
 
@@ -120,26 +136,14 @@ export class Game {
     this.renderer.shadowMap.enabled = !lowSpec;
     this.world = buildWorld(lowSpec);
     this.scene = this.world.scene;
-    this.camera = new THREE.PerspectiveCamera(72, 1, 0.05, 500);
-    this.camera.rotation.order = 'YXZ';
-    this.scene.add(this.camera);
-
-    const myLook = LOOKS[0];
-    this.fp = new FirstPerson(myLook.skin);
-    this.fp.setHand(this.hand);
-    this.camera.add(this.fp.group);
-    // Soft fill from over your shoulder so your own hands read when you face the sun.
-    const fill = new THREE.DirectionalLight('#ffe6c8', 0.9);
-    fill.position.set(0.3, 0.6, 1);
-    fill.target.position.set(0, -0.2, -1);
-    this.camera.add(fill, fill.target);
+    this.scene.add(this.rig.camera, this.aimArc.group);
 
     this.ballMesh = buildBall();
     this.ballBlur = new THREE.Mesh(
       new THREE.SphereGeometry(BALL_RADIUS, 12, 8),
       new THREE.MeshBasicMaterial({ color: '#f4efe4', transparent: true, opacity: 0.22, depthWrite: false }),
     );
-    this.ballShadow = contactShadow(0.22);
+    this.ballShadow = contactShadow(0.3);
     this.scene.add(this.ballMesh, this.ballBlur, this.ballShadow);
 
     this.labels = document.createElement('div');
@@ -147,27 +151,23 @@ export class Game {
     root.appendChild(this.labels);
 
     this.controls = new Controls(touchLayer, {
-      canGrip: () => this.canThrow(),
-      gripPoint: () => this.gripScreen(),
-      onLook: (dx, dy) => this.look(dx, dy),
-      onLookActive: (a) => { this.lookActive = a; this.lastLookAt = performance.now(); },
-      onGlove: (du, dv) => {
-        this.gloveT.u = clamp(this.gloveT.u + du, -GLOVE_LIMIT, GLOVE_LIMIT);
-        this.gloveT.v = clamp(this.gloveT.v + dv, -GLOVE_LIMIT, GLOVE_LIMIT);
-        if (Math.abs(du) + Math.abs(dv) > 0.02) this.ev.moment('glove');
+      canThrow: () => this.canThrow(),
+      onAimStart: () => {
+        this.aim = { power: 0, angle: 0, armed: false };
+        this.aimBaseYaw = this.partnerYaw();
+        this.ev.moment('aim');
       },
-      onGloveActive: (a) => { this.gloveActive = a; },
-      onGrip: () => { this.winding = true; this.charge = 0; },
-      onCharge: (c) => {
-        if (c > this.charge + 0.15 || (c > 0.5 && this.charge <= 0.5)) audio.creak(c);
-        this.charge = c;
+      onAim: (a) => {
+        if (this.aim && a.power > this.aim.power + 0.15) audio.creak(a.power);
+        this.aim = a;
       },
-      onRelease: (r) => this.release(r),
-      onCancel: () => { this.winding = false; this.charge = 0; },
+      onThrow: (a) => this.release(a),
+      onAimCancel: () => { this.aim = null; },
+      onMove: (x, y) => {
+        this.stick.x = x; this.stick.y = y;
+        if (x || y) { this.lastInputAt = performance.now(); this.ev.moment('move'); }
+      },
     });
-    this.controls.hand = this.hand;
-    this.gloveT = this.restGlove();
-    this.glove = { ...this.gloveT };
 
     this.net = new Net(room, () => ({ guest: prefs().guest, name: prefs().name, hand: prefs().hand }));
     this.net.onMessage = (m) => this.onMessage(m);
@@ -177,6 +177,8 @@ export class Game {
     window.addEventListener('resize', this.onResize);
     window.visualViewport?.addEventListener('resize', this.onResize);
     document.addEventListener('visibilitychange', this.onVisibility);
+    window.addEventListener('keydown', this.onKey);
+    window.addEventListener('keyup', this.onKey);
   }
 
   start() {
@@ -195,10 +197,14 @@ export class Game {
     window.removeEventListener('resize', this.onResize);
     window.visualViewport?.removeEventListener('resize', this.onResize);
     document.removeEventListener('visibilitychange', this.onVisibility);
+    window.removeEventListener('keydown', this.onKey);
+    window.removeEventListener('keyup', this.onKey);
     audio.ball({ active: false, pos: [0, 0, 0], vel: [0, 0, 0], airborne: false, rolling: 0 });
     for (const p of this.players.values()) { p.avatar?.dispose(); p.label?.remove(); }
     this.players.clear();
+    this.myAvatar?.dispose();
     this.labels.remove();
+    this.aimArc.dispose();
     this.scene.traverse((o) => {
       const m = o as THREE.Mesh;
       if (m.isMesh) {
@@ -212,17 +218,10 @@ export class Game {
 
   setHand(h: Hand) {
     this.hand = h;
-    this.fp.setHand(h);
-    this.controls.hand = h;
-    this.gloveT = this.restGlove();
     this.net.send({ t: 'prof', name: prefs().name, hand: h });
   }
 
   setName(name: string) { this.net.send({ t: 'prof', name, hand: this.hand }); }
-
-  private restGlove() {
-    return { u: this.hand === 'R' ? GLOVE_REST_U : -GLOVE_REST_U, v: GLOVE_REST_V };
-  }
 
   // ------------------------------------------------------------------ view
 
@@ -230,11 +229,7 @@ export class Game {
     const w = this.root.clientWidth || window.innerWidth;
     const h = this.root.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h, false);
-    const aspect = w / h;
-    this.camera.aspect = aspect;
-    this.camera.fov = aspect < 1 ? 72 : 56;
-    this.camera.updateProjectionMatrix();
-    this.fp.setFrustum(this.camera.fov, aspect);
+    this.rig.aspect = w / h;
   };
 
   private onVisibility = () => {
@@ -244,22 +239,73 @@ export class Game {
       this.lastFrame = performance.now();
     } else {
       this.controls.reset();
+      this.keys.clear();
       audio.suspend();
     }
   };
 
-  private look(dx: number, dy: number) {
-    const w = this.root.clientWidth || 390;
-    const k = (1.75 / w) * prefs().lookSensitivity;
-    this.yaw = wrapAngle(this.yaw - dx * k);
-    this.pitch = clamp(this.pitch - dy * k, -1.0, 1.05);
-    this.lastLookAt = performance.now();
-    if (Math.abs(dx) + Math.abs(dy) > 2) this.ev.moment('look');
-  }
+  /** Desktop: arrow keys / WASD move. */
+  private onKey = (e: KeyboardEvent) => {
+    const k = e.key.toLowerCase();
+    if (!['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 'a', 's', 'd'].includes(k)) return;
+    if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+    if (e.type === 'keydown') this.keys.add(k); else this.keys.delete(k);
+    if (this.keys.size) { this.lastInputAt = performance.now(); this.ev.moment('move'); }
+  };
 
   myInfo(): PlayerInfo | null { return this.me ? this.players.get(this.me)?.info ?? null : null; }
-  private mySeat(): Vec3 { return this.myInfo()?.pos ?? [0, 0, 7]; }
-  private myPose(): Pose { return { yaw: this.yaw, pitch: this.pitch, gu: this.glove.u, gv: this.glove.v }; }
+  private myPose(): Pose { return { x: this.pos[0], z: this.pos[2], yaw: this.yaw, g: [this.glove[0], this.glove[1], this.glove[2]] }; }
+
+  /** Feet position of any player (you included). */
+  private feetOf(id: string | null): Vec3 | null {
+    if (!id) return null;
+    if (id === this.me) return this.pos;
+    const p = this.players.get(id);
+    if (!p) return null;
+    return p.avatar ? [p.avatar.position.x, 0, p.avatar.position.z] : [p.pose.x, 0, p.pose.z];
+  }
+
+  private avatarOf(id: string | null): Avatar | null {
+    if (!id) return null;
+    if (id === this.me) return this.myAvatar;
+    return this.players.get(id)?.avatar ?? null;
+  }
+
+  /** Who you're playing with right now (the camera frames you and them). */
+  private partner(): string | null {
+    const others = [...this.players.values()].filter((p) => p.info.id !== this.me);
+    if (!others.length) return null;
+    const b = this.ball;
+    let want: string | null = null;
+    if (b.phase === 'flight' && b.thrower && b.thrower !== this.me) want = b.thrower;
+    else if (b.phase === 'held' && b.holder && b.holder !== this.me) want = b.holder;
+    else if (b.phase === 'flight' && b.thrower === this.me && this.traj) {
+      // Whoever your throw is heading for.
+      let best = Infinity;
+      for (const o of others) {
+        const f = this.feetOf(o.info.id)!;
+        const ip = interceptPlan(this.traj, 0, f[0], f[2]);
+        if (ip.norm < best) { best = ip.norm; want = o.info.id; }
+      }
+    }
+    if (want && this.players.has(want)) this.partnerId = want;
+    if (!this.partnerId || !this.players.has(this.partnerId) || this.partnerId === this.me) {
+      // Nearest person to you.
+      let bd = Infinity;
+      for (const o of others) {
+        const f = this.feetOf(o.info.id)!;
+        const d = Math.hypot(f[0] - this.pos[0], f[2] - this.pos[2]);
+        if (d < bd) { bd = d; this.partnerId = o.info.id; }
+      }
+    }
+    return this.partnerId;
+  }
+
+  private partnerYaw(): number {
+    const f = this.feetOf(this.partner());
+    if (!f) return this.yaw;
+    return lookAngles(this.pos, f).yaw;
+  }
 
   // ------------------------------------------------------------------ network
 
@@ -274,7 +320,7 @@ export class Game {
         this.applyScore(m.score);
         if (first) {
           const mine = this.myInfo();
-          if (mine) { this.yaw = mine.facing; this.pitch = -0.04; }
+          if (mine) this.placeAtHome(mine, true);
         }
         break;
       }
@@ -296,24 +342,48 @@ export class Game {
     }
   }
 
+  private placeAtHome(info: PlayerInfo, snap: boolean) {
+    this.home = [info.pos[0], 0, info.pos[2]];
+    const far = Math.hypot(this.pos[0] - this.home[0], this.pos[2] - this.home[2]) > MOVE_RADIUS;
+    if (snap || far) {
+      this.pos = [this.home[0], 0, this.home[2]];
+      this.vel = { x: 0, z: 0 };
+      this.yaw = info.facing;
+      this.glove = gloveReady(this.yaw, this.hand);
+      this.gloveT = [...this.glove] as Vec3;
+      this.prevGloveWorld = null;
+      this.myAvatar?.teleport(this.pos, this.yaw);
+      this.rig.reset();
+    }
+  }
+
   private applyPlayers(list: PlayerInfo[]) {
     const seen = new Set<string>();
     for (const info of list) {
       seen.add(info.id);
       let p = this.players.get(info.id);
       if (!p) {
-        p = { info, avatar: null, snaps: [], label: null, pose: { yaw: info.facing, pitch: 0, gu: GLOVE_REST_U, gv: GLOVE_REST_V }, arm: 0, charge: 0 };
+        p = { info, avatar: null, snaps: [], label: null, pose: { x: info.pos[0], z: info.pos[2], yaw: info.facing, g: gloveReady(info.facing, info.hand) }, arm: 0, charge: 0 };
         this.players.set(info.id, p);
       }
       const moved = p.info.pos[0] !== info.pos[0] || p.info.pos[2] !== info.pos[2];
       const handChanged = p.info.hand !== info.hand;
       p.info = info;
-      if (info.id === this.me) continue;
+      if (info.id === this.me) {
+        if (!this.myAvatar || handChanged) {
+          this.myAvatar?.dispose();
+          this.hand = info.hand;
+          this.myAvatar = new Avatar(this.pos, this.yaw, info.hand, info.look);
+          this.scene.add(this.myAvatar.root);
+        }
+        if (moved) this.placeAtHome(info, false);
+        continue;
+      }
       if (!p.avatar || handChanged) {
         p.avatar?.dispose();
-        p.avatar = new Avatar(info.pos, info.facing, info.hand, info.look);
-        this.scene.add(p.avatar.root, p.avatar.arms);
-      } else if (moved) p.avatar.place(info.pos, info.facing);
+        p.avatar = new Avatar([p.pose.x, 0, p.pose.z], p.pose.yaw, info.hand, info.look);
+        this.scene.add(p.avatar.root);
+      }
       p.avatar.setConnected(info.connected);
       if (!p.label) {
         p.label = document.createElement('div');
@@ -326,10 +396,6 @@ export class Game {
     for (const [id, p] of this.players) {
       if (!seen.has(id)) { p.avatar?.dispose(); p.label?.remove(); this.players.delete(id); }
     }
-    const ids = list.map((p) => p.id).join(',');
-    if (ids !== this.rosterIds) {
-      this.rosterIds = ids;
-    }
     this.ev.roster(list, this.me);
   }
 
@@ -337,7 +403,7 @@ export class Game {
     for (const e of entries) {
       const p = this.players.get(e[0]);
       if (!p || e[0] === this.me) continue;
-      p.snaps.push({ t, yaw: e[1], pitch: e[2], gu: e[3], gv: e[4], arm: e[5], charge: e[6] });
+      p.snaps.push({ t, x: e[1], z: e[2], yaw: e[3], g: [e[4], e[5], e[6]], arm: e[7], charge: e[8] });
       if (p.snaps.length > 30) p.snaps.shift();
     }
   }
@@ -384,6 +450,7 @@ export class Game {
     }
     this.ball = b;
     if (b.phase !== 'flight') this.predThrowAt = 0;
+    if (!(b.phase === 'held' && b.holder === mine) && this.controls.aiming) this.controls.reset();
     if (b.phase === 'flight' && b.thrower !== mine && b.live) {
       if (this.incomingTid !== b.tid) { this.incomingTid = b.tid; this.ev.moment('incoming'); }
     }
@@ -394,10 +461,7 @@ export class Game {
     }
     switch (ev.k) {
       case 'throw': {
-        if (ev.by !== mine) {
-          const p = this.players.get(ev.by);
-          if (p?.avatar) audio.armSwish(Math.min(1, ev.speed / 30), 0);
-        }
+        if (ev.by !== mine) audio.armSwish(Math.min(1, ev.speed / 30), 0);
         break;
       }
       case 'catch': {
@@ -407,15 +471,17 @@ export class Game {
           // Not predicted locally (rare): still give full feedback.
           if (!predicted) this.popLocal(ev.q, ev.speed);
           this.localCatch = null;
-          this.catchShow = { by: mine, perf: this.lastCatchPerf || perf };
-          this.holdReadyAt = (this.lastCatchPerf || perf) + 380;
-          setTimeout(() => { if (this.ball.holder === mine) { this.fp.onTransfer(); audio.transfer(this.hand === 'R' ? 1 : -1); } }, Math.max(0, (this.lastCatchPerf || perf) + 230 - performance.now()));
+          const at = this.lastCatchPerf || perf;
+          this.catchShow = { by: mine, perf: at };
+          this.holdReadyAt = at + 520;
+          setTimeout(() => { if (this.ball.holder === mine) { this.myAvatar?.transfer(); audio.transfer(this.hand === 'R' ? 1 : -1); } }, Math.max(0, at + 300 - performance.now()));
           if (!ev.self) this.ev.moment('catch');
         } else {
-          const p = this.players.get(ev.by);
-          const at = p?.avatar ? [p.avatar.gloveWorldPos.x, p.avatar.gloveWorldPos.y, p.avatar.gloveWorldPos.z] as Vec3 : ev.pos;
+          const av = this.avatarOf(ev.by);
+          const at = av ? [av.gloveWorldPos.x, av.gloveWorldPos.y, av.gloveWorldPos.z] as Vec3 : ev.pos;
           audio.pop({ speed: ev.speed, q: ev.q, pos: at });
-          if (p?.avatar && this.traj) p.avatar.catchImpact(velocityAt(this.traj, (ev.at - prev.t0) / 1000), ev.speed);
+          if (av && this.traj) av.catchImpact(velocityAt(this.traj, (ev.at - prev.t0) / 1000), ev.speed);
+          if (av) setTimeout(() => av.transfer(), 320);
           this.catchShow = { by: ev.by, perf };
         }
         if (ev.milestone) audio.milestone();
@@ -431,10 +497,7 @@ export class Game {
       }
       case 'drop': {
         this.pinned = null;
-        if (this.localCatch) {
-          // Our predicted catch was not accepted.
-          this.localCatch = null;
-        }
+        this.localCatch = null;
         if (ev.by === mine && !ev.void) this.ev.moment('drop');
         break;
       }
@@ -442,7 +505,6 @@ export class Game {
         this.recoverAnim = { from: ev.from, perf };
         if (ev.by === mine) {
           this.holdReadyAt = perf + 650;
-          this.fp.onPickup();
           setTimeout(() => audio.pickup(), 420);
           this.ev.moment('holding');
         }
@@ -462,51 +524,38 @@ export class Game {
     return !!this.me && this.ball.phase === 'held' && this.ball.holder === this.me && performance.now() >= this.holdReadyAt && !this.predThrowAt;
   }
 
-  gripScreen(): { x: number; y: number } | null {
-    this.camera.updateMatrixWorld();
-    const p = this.fp.handBallLocal.clone().applyMatrix4(this.camera.matrixWorld).project(this.camera);
-    const w = this.root.clientWidth, h = this.root.clientHeight;
-    return { x: (p.x * 0.5 + 0.5) * w, y: (-p.y * 0.5 + 0.5) * h };
-  }
-
-  /** Aim target under the view: a player near the crosshair, else the ground or a default distance. */
-  private aimTarget(from: Vec3): { D: number; h: number; pitchTo: number } {
-    const eye = eyePosition(this.mySeat());
-    const f = viewBasis(this.yaw, this.pitch).f;
-    let best: { D: number; h: number; ang: number; pitchTo: number } | null = null;
-    for (const p of this.players.values()) {
-      if (p.info.id === this.me) continue;
-      const chest: Vec3 = [p.info.pos[0], CHEST_HEIGHT + 0.05, p.info.pos[2]];
-      const d = [chest[0] - eye[0], chest[1] - eye[1], chest[2] - eye[2]];
-      const l = Math.hypot(d[0], d[1], d[2]);
-      const ang = Math.acos(clamp((d[0] * f[0] + d[1] * f[1] + d[2] * f[2]) / l, -1, 1));
-      if (ang < 0.22 && (!best || ang < best.ang)) {
-        const D = Math.hypot(chest[0] - from[0], chest[2] - from[2]);
-        best = { D, h: chest[1], ang, pitchTo: Math.atan2(chest[1] - eye[1], Math.hypot(chest[0] - eye[0], chest[2] - eye[2])) };
-      }
+  /** The throw a pull-back describes: real launch position and velocity. */
+  private planThrow(a: Aim, noisy: boolean): { p0: Vec3; v0: Vec3; speed: number } {
+    const dev = AIM_SPREAD * a.angle + 0.36 * Math.max(0, Math.abs(a.angle) - 0.6) * Math.sign(a.angle);
+    let throwYaw = this.aimBaseYaw - dev;
+    const speed = lerp(THROW_MIN_SPEED, THROW_MAX_SPEED, Math.pow(a.power, 0.85));
+    const p0 = releasePoint(this.pos, throwYaw, this.hand);
+    // Who is it for? The person closest to that line (else a default distance).
+    let D = 12, h = CHEST_HEIGHT;
+    let bestAng = 0.4;
+    for (const o of this.players.values()) {
+      if (o.info.id === this.me) continue;
+      const f = this.feetOf(o.info.id)!;
+      const ang = Math.abs(wrapAngle(lookAngles(this.pos, f).yaw - throwYaw));
+      if (ang < bestAng) { bestAng = ang; D = Math.hypot(f[0] - p0[0], f[2] - p0[2]) * Math.cos(ang); h = CHEST_HEIGHT; }
     }
-    if (best) return best;
-    if (this.pitch < -0.03) {
-      const D = clamp(eye[1] / Math.tan(-this.pitch), 2, 30);
-      return { D, h: 0.3, pitchTo: this.pitch };
+    let el = solveElevation(speed, D, p0[1], h) ?? 0.66;
+    if (noisy) {
+      // Nobody throws exactly where they mean to; harder throws scatter more.
+      const n = this.ball.tid + 1;
+      const err = 0.012 + 0.04 * a.power * a.power;
+      throwYaw += hash1(n * 3.1 + this.pos[0]) * err;
+      el += hash1(n * 7.7 + this.pos[2]) * err * 0.9;
     }
-    return { D: 14, h: eye[1] + Math.tan(this.pitch) * 14, pitchTo: this.pitch };
-  }
-
-  private release(r: ThrowRelease) {
-    this.winding = false;
-    this.charge = 0;
-    if (!this.canThrow() || !this.me) return;
-    const speed = lerp(THROW_MIN_SPEED, THROW_MAX_SPEED, Math.pow(r.charge, 0.9)) * (0.95 + 0.1 * r.flick);
-    // Flick angle bends the throw off your line of sight (no-look throws), with a dead zone.
-    const dead = 0.14;
-    const a = Math.abs(r.angle) > dead ? (Math.abs(r.angle) - dead) * Math.sign(r.angle) * 0.55 : 0;
-    const throwYaw = this.yaw - clamp(a, -0.42, 0.42);
-    const p0 = releasePoint(this.mySeat(), throwYaw, this.hand);
-    const tgt = this.aimTarget(p0);
-    const solved = solveElevation(speed, tgt.D, p0[1], tgt.h);
-    const el = clamp((solved ?? 0.72) + (this.pitch - tgt.pitchTo), -0.35, 1.2);
+    el = clamp(el, -0.3, 1.1);
     const v0: Vec3 = [-Math.sin(throwYaw) * Math.cos(el) * speed, Math.sin(el) * speed, -Math.cos(throwYaw) * Math.cos(el) * speed];
+    return { p0, v0, speed };
+  }
+
+  private release(a: Aim) {
+    this.aim = null;
+    if (!this.canThrow() || !this.me) return;
+    const { p0, v0 } = this.planThrow(a, true);
     const t0 = this.net.now();
     const tid = this.ball.tid + 1;
     this.net.send({ t: 'throw', rt: t0, p: p0, v: v0, tid });
@@ -516,8 +565,7 @@ export class Game {
     this.flightLag = 0;
     this.predThrowAt = performance.now();
     this.releasedAt = performance.now();
-    this.fp.onRelease();
-    audio.armSwish(r.charge, this.hand === 'R' ? 1 : -1);
+    audio.armSwish(a.power, this.hand === 'R' ? 1 : -1);
     this.ev.moment('throw');
   }
 
@@ -538,13 +586,15 @@ export class Game {
     }
     if (this.predThrowAt && this.ball.phase === 'flight' && now - this.predThrowAt > 200) this.predThrowAt = 0;
 
-    this.updateView(dt, now, sNow);
+    this.updateBody(dt, now, sNow);
     this.checkCatch(sNow);
     this.updateRemotes(dt, sNow);
-    this.updateFirstPerson(dt, now);
-    this.updateBall(dt, now, sNow);
+    this.updateMe(dt, now, sNow);
+    const ballPos = this.updateBall(dt, now, sNow);
+    this.updateCamera(dt, ballPos);
+    this.updateAim(dt);
     this.world.update(dt, now / 1000);
-    if (this.renderEnabled) this.renderer.render(this.scene, this.camera);
+    if (this.renderEnabled) this.renderer.render(this.scene, this.rig.camera);
     this.updateLabels();
     this.sendState(now);
   };
@@ -564,94 +614,114 @@ export class Game {
     }
   }
 
-  private updateView(dt: number, now: number, sNow: number) {
-    const me = this.myInfo();
-    if (!me) return;
-    const eye = eyePosition(me.pos);
-
-    // Glove follows the thumb with a short, physical lag.
-    if (this.autoGlove) this.autoGloveTarget(sNow);
-    if (!this.gloveActive && this.ball.holder === this.me && this.ball.phase === 'held') {
-      const r = this.restGlove();
-      this.gloveT.u = lerp(this.gloveT.u, r.u, Math.min(1, dt * 1.5));
-      this.gloveT.v = lerp(this.gloveT.v, r.v, Math.min(1, dt * 1.5));
-    }
-    const k = 1 - Math.exp(-dt / 0.03);
-    this.glove.u += (this.gloveT.u - this.glove.u) * k;
-    this.glove.v += (this.gloveT.v - this.glove.v) * k;
-
-    // Gentle camera help, never while your thumb is looking.
-    const idle = !this.lookActive && now - this.lastLookAt > 350 && !this.winding;
+  private incoming(): boolean {
     const b = this.ball;
-    const hfov = Math.atan(Math.tan((this.camera.fov * Math.PI) / 360) * this.camera.aspect);
-    const vfov = (this.camera.fov * Math.PI) / 360;
-    if (idle && this.traj && b.phase === 'flight' && b.live && b.thrower !== this.me) {
-      // Keep an incoming ball in frame.
-      const tS = (sNow - b.t0) / 1000;
-      const p = positionAt(this.traj, tS);
-      const d = dist(p, eye);
-      const ca = closestApproach(this.traj, eye);
-      if (ca.dist < 4.5 && d > 1.4 && tS < ca.t) {
-        const a = lookAngles(eye, p);
-        const dy = wrapAngle(a.yaw - this.yaw), dp = a.pitch - this.pitch;
-        const limY = hfov * 0.55, limP = vfov * 0.5;
-        if (Math.abs(dy) > limY) this.yaw = wrapAngle(this.yaw + (dy - Math.sign(dy) * limY) * Math.min(1, dt * 7));
-        if (Math.abs(dp) > limP) this.pitch = clamp(this.pitch + (dp - Math.sign(dp) * limP) * Math.min(1, dt * 7), -1, 1.05);
-      }
-    } else if (idle && now - this.lastLookAt > 1600 && b.phase === 'held' && b.holder && b.holder !== this.me) {
-      // Turn toward whoever has the ball if they're out of view.
-      const h = this.players.get(b.holder);
-      if (h) {
-        const a = lookAngles(eye, [h.info.pos[0], EYE_HEIGHT - 0.25, h.info.pos[2]]);
-        const dy = wrapAngle(a.yaw - this.yaw);
-        if (Math.abs(dy) > hfov * 0.75) this.yaw = wrapAngle(this.yaw + dy * Math.min(1, dt * 2.2));
-        this.pitch += (clamp(a.pitch, -0.3, 0.3) - this.pitch) * Math.min(1, dt * 0.8);
-      }
-    }
-
-    this.camera.position.set(eye[0], eye[1], eye[2]);
-    this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
-    this.camera.updateMatrixWorld();
-    const vb = viewBasis(this.yaw, this.pitch);
-    audio.setListener(eye, vb.f, vb.u);
+    return !!this.traj && b.phase === 'flight' && b.live && b.thrower !== this.me && !this.localCatch;
   }
 
-  /** Test-only helper: put the glove where the incoming ball will cross glove depth. */
-  private autoGloveTarget(sNow: number) {
+  /** Your body: move where your thumb says; the glove reaches for the ball. */
+  private updateBody(dt: number, now: number, sNow: number) {
+    if (!this.me || !this.myInfo()) return;
     const b = this.ball;
-    if (!this.traj || b.phase !== 'flight' || b.thrower === this.me) return;
-    const eye = eyePosition(this.mySeat());
-    const vb = viewBasis(this.yaw, this.pitch);
+    const holding = b.phase === 'held' && b.holder === this.me;
     const tNow = Math.max(0, (sNow - b.t0) / 1000);
-    let depth = 0.7;
-    for (let pass = 0; pass < 3; pass++) {
-      // Find when the ball reaches this depth in front of the eye.
-      let hit: Vec3 | null = null;
-      for (let t = tNow; t < this.traj.groundT; t += 1 / 240) {
-        const p = positionAt(this.traj, t);
-        const fz = (p[0] - eye[0]) * vb.f[0] + (p[1] - eye[1]) * vb.f[1] + (p[2] - eye[2]) * vb.f[2];
-        if (fz <= depth) { hit = p; break; }
-      }
-      if (!hit) return;
-      const off = [hit[0] - eye[0], hit[1] - eye[1], hit[2] - eye[2]];
-      const fz = Math.max(0.2, off[0] * vb.f[0] + off[1] * vb.f[1] + off[2] * vb.f[2]);
-      const rx = off[0] * vb.r[0] + off[1] * vb.r[1] + off[2] * vb.r[2];
-      const uy = off[0] * vb.u[0] + off[1] * vb.u[1] + off[2] * vb.u[2];
-      this.gloveT.u = clamp(rx / fz / 0.42, -GLOVE_LIMIT, GLOVE_LIMIT);
-      this.gloveT.v = clamp(uy / fz / 0.62, -GLOVE_LIMIT, GLOVE_LIMIT);
-      const o = gloveViewOffset(this.gloveT.u, this.gloveT.v);
-      depth = o[2];
+    const incoming = this.incoming();
+    const plan = incoming ? interceptPlan(this.traj!, tNow, this.pos[0], this.pos[2]) : null;
+
+    // ---- where do you want to go?
+    let sx = this.stick.x, sy = this.stick.y;
+    if (this.keys.size) {
+      const k = this.keys;
+      sx = (k.has('d') || k.has('arrowright') ? 1 : 0) - (k.has('a') || k.has('arrowleft') ? 1 : 0);
+      sy = (k.has('w') || k.has('arrowup') ? 1 : 0) - (k.has('s') || k.has('arrowdown') ? 1 : 0);
+      const l = Math.hypot(sx, sy); if (l > 1) { sx /= l; sy /= l; }
     }
+    let tvx = 0, tvz = 0;
+    let top = RUN_SPEED;
+    if (this.autoMove && incoming && this.traj) {
+      // Test hook: run to where the ball comes through chest height.
+      const ip = interceptPlan(this.traj, 0, this.home[0], this.home[2]);
+      const p = ip.point;
+      const dx = p[0] - this.pos[0], dz = p[2] - this.pos[2];
+      const d = Math.hypot(dx, dz);
+      if (d > 0.08) { tvx = (dx / d) * Math.min(RUN_SPEED, d * 6); tvz = (dz / d) * Math.min(RUN_SPEED, d * 6); }
+    } else if (sx || sy) {
+      // Thumb direction on screen → direction on the grass, as the camera sees it.
+      const cam = this.rig.camera;
+      const fwd = tmpV.set(0, 0, -1).applyQuaternion(cam.quaternion);
+      const fl = Math.hypot(fwd.x, fwd.z) || 1;
+      const fx = fwd.x / fl, fz = fwd.z / fl;
+      const rx = -fz, rz = fx;
+      tvx = (rx * sx + fx * sy) * RUN_SPEED;
+      tvz = (rz * sx + fz * sy) * RUN_SPEED;
+    } else if (!incoming && !this.controls.aiming && now - this.lastInputAt > 700) {
+      // Nothing to do: wander back to your spot.
+      const dx = this.home[0] - this.pos[0], dz = this.home[2] - this.pos[2];
+      const d = Math.hypot(dx, dz);
+      top = WALK_SPEED;
+      if (d > 0.12) { tvx = (dx / d) * Math.min(WALK_SPEED, d * 1.5); tvz = (dz / d) * Math.min(WALK_SPEED, d * 1.5); }
+    }
+    if (this.controls.aiming || (this.releasedAt > 0 && now - this.releasedAt < 450)) { tvx = 0; tvz = 0; }
+    const ax = tvx - this.vel.x, az = tvz - this.vel.z;
+    const al = Math.hypot(ax, az), amax = RUN_ACCEL * dt * (top === WALK_SPEED ? 0.4 : 1);
+    const kk = al > amax ? amax / al : 1;
+    this.vel.x += ax * kk; this.vel.z += az * kk;
+    const prevX = this.pos[0], prevZ = this.pos[2];
+    this.pos[0] += this.vel.x * dt; this.pos[2] += this.vel.z * dt;
+    const hx = this.pos[0] - this.home[0], hz = this.pos[2] - this.home[2];
+    const hd = Math.hypot(hx, hz);
+    if (hd > MOVE_RADIUS) {
+      this.pos[0] = this.home[0] + (hx / hd) * MOVE_RADIUS; this.pos[2] = this.home[2] + (hz / hd) * MOVE_RADIUS;
+      this.vel.x *= 0.5; this.vel.z *= 0.5;
+    }
+    const speed = Math.hypot(this.vel.x, this.vel.z);
+
+    // ---- facing: the ball when it's coming, your aim while throwing, else your friend
+    let faceYaw = this.yaw;
+    if (incoming && this.traj) {
+      const p = positionAt(this.traj, tNow);
+      faceYaw = lookAngles(this.pos, p).yaw;
+    } else if (this.controls.aiming && this.aim) {
+      faceYaw = this.aimBaseYaw - AIM_SPREAD * this.aim.angle;
+    } else if (speed > 0.6 && !holding) {
+      faceYaw = this.partnerYaw();
+    } else {
+      faceYaw = this.partnerYaw();
+    }
+    this.yaw = wrapAngle(this.yaw + wrapAngle(faceYaw - this.yaw) * (1 - Math.exp(-dt / 0.14)));
+
+    // ---- glove: ready position, or reaching for where the ball will be
+    let want = gloveReady(this.yaw, this.hand);
+    if (incoming && plan && plan.t - tNow < 0.85) {
+      const rel: Vec3 = [plan.point[0] - this.pos[0], plan.point[1], plan.point[2] - this.pos[2]];
+      // Human error grows with the stretch and with catching on the run.
+      const n = reachNorm(rel);
+      const err = Math.max(0, n - 0.55) * 0.26 + speed * 0.022;
+      const tid = this.ball.tid;
+      const e: Vec3 = [hash1(tid * 1.3) * err, hash1(tid * 2.9) * err * 0.8, hash1(tid * 4.7) * err];
+      want = clampReach([rel[0] + e[0], rel[1] + e[1], rel[2] + e[2]]);
+    } else if (this.localCatch || (holding && this.catchShow?.by === this.me && now < this.holdReadyAt)) {
+      // Ball in the glove: bring it in to the chest.
+      want = gloveReady(this.yaw, this.hand);
+      want[1] += 0.05;
+    }
+    this.gloveT = want;
+    // Smooth the glove in the world, not relative to the body: a hand reaching
+    // for a point doesn't trail behind when you run.
+    const gk = 1 - Math.exp(-dt / (incoming ? 0.075 : 0.18));
+    const moved: Vec3 = [this.pos[0] - prevX, 0, this.pos[2] - prevZ];
+    const g: Vec3 = [this.glove[0] - moved[0], this.glove[1], this.glove[2] - moved[2]];
+    for (let i = 0; i < 3; i++) g[i] += (this.gloveT[i] - g[i]) * gk;
+    this.glove = clampReach(g);
   }
 
-  /** Local, predicted catch detection: did the ball actually pass through our glove? */
+  /** Local, predicted catch detection: did the ball actually pass through your glove? */
   private checkCatch(sNow: number) {
-    const me = this.myInfo();
-    if (!me || !this.me) return;
+    if (!this.me || !this.myInfo()) return;
     const pose = this.myPose();
     const prevPose = this.prevPose ?? pose;
     this.prevPose = pose;
-    const g = gloveWorld(me.pos, pose);
+    const g = gloveWorld(pose);
     const prevG = this.prevGloveWorld ?? g;
     this.prevGloveWorld = g;
     const b = this.ball;
@@ -662,7 +732,7 @@ export class Game {
     this.lastCheckT = tNow;
     if (tNow <= tPrev) return;
     const self = b.thrower === this.me;
-    if (self && tNow < 0.3) return;
+    if (self) return;
     const res = sweptMinDistance(this.traj, tPrev, tNow, prevG, g);
     const speed = Math.hypot(...velocityAt(this.traj, res.t));
     const q = classifyCatch(res.dist, speed);
@@ -671,22 +741,21 @@ export class Game {
     // Report the pose at the moment of contact (between last frame and this one).
     const a = tNow > tPrev ? clamp((res.t - tPrev) / (tNow - tPrev), 0, 1) : 1;
     const at: Pose = {
+      x: lerp(prevPose.x, pose.x, a),
+      z: lerp(prevPose.z, pose.z, a),
       yaw: prevPose.yaw + wrapAngle(pose.yaw - prevPose.yaw) * a,
-      pitch: lerp(prevPose.pitch, pose.pitch, a),
-      gu: lerp(prevPose.gu, pose.gu, a),
-      gv: lerp(prevPose.gv, pose.gv, a),
+      g: [lerp(prevPose.g[0], pose.g[0], a), lerp(prevPose.g[1], pose.g[1], a), lerp(prevPose.g[2], pose.g[2], a)],
     };
-    this.net.send({ t: 'catch', tid: b.tid, at: b.t0 + res.t * 1000, pose: [at.yaw, at.pitch, at.gu, at.gv] });
+    this.net.send({ t: 'catch', tid: b.tid, at: b.t0 + res.t * 1000, pose: [at.x, at.z, at.yaw, at.g[0], at.g[1], at.g[2]] });
     const vel = velocityAt(this.traj, res.t);
-    const dirCam = new THREE.Vector3(vel[0], vel[1], vel[2]).transformDirection(this.camera.matrixWorldInverse);
     if (q === 'deflect') {
       this.popLocal('deflect', speed);
-      this.fp.onCatch(dirCam, speed * 0.5);
+      this.myAvatar?.catchImpact(vel, speed * 0.5);
       return;
     }
     this.localCatch = { tid: b.tid, q, at: res.t };
     this.lastCatchPerf = performance.now();
-    this.fp.onCatch(dirCam, speed);
+    this.myAvatar?.catchImpact(vel, speed);
     this.popLocal(q, speed);
   }
 
@@ -701,15 +770,26 @@ export class Game {
     const span = bb.t - a.t;
     const k = span > 0 ? clamp((rt - a.t) / span, 0, 1.2) : 1;
     p.pose = {
+      x: lerp(a.x, bb.x, k),
+      z: lerp(a.z, bb.z, k),
       yaw: a.yaw + wrapAngle(bb.yaw - a.yaw) * k,
-      pitch: lerp(a.pitch, bb.pitch, k),
-      gu: lerp(a.gu, bb.gu, k),
-      gv: lerp(a.gv, bb.gv, k),
+      g: [lerp(a.g[0], bb.g[0], k), lerp(a.g[1], bb.g[1], k), lerp(a.g[2], bb.g[2], k)],
     };
     p.arm = k < 0.5 ? a.arm : bb.arm;
     p.charge = lerp(a.charge, bb.charge, k);
     while (s.length > 2 && s[1].t < rt - 200) s.shift();
   }
+
+  /** What a player's head follows: the ball when it's moving, else the person with it. */
+  private lookTarget(id: string, ballPos: Vec3 | null): Vec3 | null {
+    const b = this.ball;
+    if (b.phase !== 'held' && ballPos) return ballPos;
+    const other = b.phase === 'held' && b.holder && b.holder !== id ? b.holder : (id === this.me ? this.partner() : this.me);
+    const av = this.avatarOf(other);
+    return av ? [av.chestPos.x, av.chestPos.y + 0.25, av.chestPos.z] : null;
+  }
+
+  private lastBallPos: Vec3 | null = null;
 
   private updateRemotes(dt: number, sNow: number) {
     for (const p of this.players.values()) {
@@ -718,43 +798,46 @@ export class Game {
       // The holder visibly holds the ball even between snapshots.
       let arm = p.arm;
       if (this.ball.phase === 'held' && this.ball.holder === p.info.id && arm === Arm.Idle) arm = Arm.Holding;
-      p.avatar.update(dt, p.pose, arm, p.charge);
+      const gloved = this.catchShow?.by === p.info.id && performance.now() - this.catchShow.perf < 320;
+      const ready = this.ball.phase === 'flight' && this.ball.live && this.ball.thrower !== p.info.id;
+      p.avatar.update(dt, { pose: p.pose, arm, charge: p.charge, look: this.lookTarget(p.info.id, this.lastBallPos), gloved, ready });
     }
   }
 
-  private updateFirstPerson(dt: number, now: number) {
+  private myArm(now: number): number {
     const holding = this.ball.phase === 'held' && this.ball.holder === this.me;
-    const inGlove = !!this.localCatch || (holding && this.catchShow?.by === this.me && now < this.holdReadyAt - 120);
-    const showHolding = holding && !inGlove && !(this.recoverAnim && now - this.recoverAnim.perf < 550 && this.ball.holder === this.me);
-    this.fp.update(dt, this.glove.u, this.glove.v, showHolding, this.winding ? this.charge : null, inGlove);
+    if (this.releasedAt > 0 && now - this.releasedAt < 420) return Arm.Release;
+    if (holding && this.controls.aiming) return Arm.Windup;
+    if (holding) return Arm.Holding;
+    return Arm.Idle;
   }
 
-  private updateBall(dt: number, now: number, sNow: number) {
+  private updateMe(dt: number, now: number, _sNow: number) {
+    if (!this.myAvatar || !this.me) return;
+    const charge = this.controls.aiming && this.aim ? (this.aim.armed ? 0.2 + 0.8 * this.aim.power : 0.1) : 0;
+    const gloved = !!this.localCatch || (this.catchShow?.by === this.me && now < this.holdReadyAt - 200);
+    this.myAvatar.update(dt, { pose: this.myPose(), arm: this.myArm(now), charge, look: this.lookTarget(this.me, this.lastBallPos), gloved, ready: this.incoming() });
+  }
+
+  private updateBall(dt: number, now: number, sNow: number): Vec3 | null {
     const b = this.ball;
     const pos = new THREE.Vector3();
     let visible = true;
     let zip = false;
     const vel: Vec3 = [0, 0, 0];
     let airborne = false, rolling = 0;
-    const holderAvatar = (id: string | null) => (id ? this.players.get(id)?.avatar ?? null : null);
 
-    if (this.localCatch && b.phase === 'flight') {
-      this.fp.pocketLocal(pos);
-      pos.applyMatrix4(this.camera.matrixWorld);
+    if (this.localCatch && b.phase === 'flight' && this.myAvatar) {
+      pos.copy(this.myAvatar.gloveWorldPos);
     } else if (b.phase === 'held') {
       const recovering = this.recoverAnim && now - this.recoverAnim.perf < 550 ? this.recoverAnim : null;
+      const av = this.avatarOf(b.holder);
       let handPos: THREE.Vector3 | null = null;
-      if (b.holder === this.me) {
-        const showGlove = this.catchShow?.by === this.me && now < this.holdReadyAt - 140;
-        if (showGlove) { this.fp.pocketLocal(pos); pos.applyMatrix4(this.camera.matrixWorld); }
-        else { handPos = this.fp.handBallLocal.clone().applyMatrix4(this.camera.matrixWorld); }
-      } else {
-        const av = holderAvatar(b.holder);
-        if (av) {
-          if (this.catchShow?.by === b.holder && now - this.catchShow.perf < 420) pos.copy(av.gloveWorldPos);
-          else handPos = av.handBall.clone();
-        } else visible = false;
-      }
+      if (av) {
+        const showGlove = this.catchShow?.by === b.holder && now - this.catchShow.perf < 360;
+        if (showGlove) pos.copy(av.gloveWorldPos);
+        else handPos = av.handBall.clone();
+      } else visible = false;
       if (handPos) {
         if (recovering) {
           // The ball is fetched back: a short scoop/toss into the hand.
@@ -769,7 +852,7 @@ export class Game {
       const tTrue = (sNow - b.t0) / 1000;
       // Remote throws: start from the thrower's hand and catch up to the true timeline.
       const catchUp = this.flightLag / 1000 * Math.max(0, 1 - (now - this.flightRecvAt) / 380);
-      let t = Math.max(0, tTrue - (b.thrower === this.me ? 0 : catchUp));
+      const t = Math.max(0, tTrue - (b.thrower === this.me ? 0 : catchUp));
       // Waiting on a remote catch verdict: hold the ball at their glove briefly.
       if (b.phase === 'flight' && b.live) {
         if (!this.pinned) {
@@ -777,13 +860,13 @@ export class Game {
           for (const r of this.players.values()) {
             if (!r.avatar || r.info.id === this.me || r.info.id === b.thrower) continue;
             const gp = r.avatar.gloveWorldPos;
-            if (Math.hypot(p[0] - gp.x, p[1] - gp.y, p[2] - gp.z) < 0.28) { this.pinned = { id: r.info.id, until: now + 380 }; break; }
+            if (Math.hypot(p[0] - gp.x, p[1] - gp.y, p[2] - gp.z) < 0.24) { this.pinned = { id: r.info.id, until: now + 380 }; break; }
           }
         }
         if (this.pinned && now > this.pinned.until) this.pinned = null;
       }
       if (this.pinned) {
-        const av = holderAvatar(this.pinned.id);
+        const av = this.avatarOf(this.pinned.id);
         if (av) pos.copy(av.gloveWorldPos); else this.pinned = null;
       } else {
         const p = positionAt(this.traj, t);
@@ -798,8 +881,6 @@ export class Game {
           audio.thud(im.speed, im.pos);
         }
       }
-      // Hide a ball that has rolled far out of play... it is still recovered.
-      void dt;
     } else visible = false;
 
     this.ballMesh.visible = visible;
@@ -807,12 +888,12 @@ export class Game {
     this.ballMesh.position.copy(pos);
     this.ballMesh.rotation.x += zip ? Math.hypot(...vel) * dt * 2.5 : 0;
     // Perceptual size floor so a distant ball stays readable (still a real ball up close).
-    const camD = this.camera.position.distanceTo(pos);
-    const s = Math.max(1, camD * 0.11);
+    const camD = this.rig.camera.position.distanceTo(pos);
+    const s = Math.max(1, camD * 0.13);
     this.ballMesh.scale.setScalar(s);
     // Subtle motion blur on fast balls.
     const sp = Math.hypot(...vel);
-    this.ballBlur.visible = visible && zip && sp > 9 && camD > 0.8;
+    this.ballBlur.visible = visible && zip && sp > 9;
     if (this.ballBlur.visible) {
       const dir = tmpV.set(vel[0], vel[1], vel[2]).normalize();
       const len = Math.min(0.9, sp * 0.016);
@@ -820,19 +901,43 @@ export class Game {
       this.ballBlur.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
       this.ballBlur.scale.set(s * 0.85, (len / (BALL_RADIUS * 2)) + s, s * 0.85);
     }
+    // Ground shadow: the outfielder's depth cue. Sharper and darker as the ball comes down.
     this.ballShadow.position.set(pos.x, 0.012, pos.z);
     const hgt = Math.max(0, pos.y);
-    const sh = Math.max(0.15, 1 - hgt / 6);
-    this.ballShadow.scale.setScalar(0.5 + hgt * 0.25);
-    (this.ballShadow.material as THREE.MeshBasicMaterial).opacity = sh * (b.phase === 'held' ? 0.35 : 0.9);
+    this.ballShadow.scale.setScalar(0.6 + hgt * 0.16);
+    (this.ballShadow.material as THREE.MeshBasicMaterial).opacity = (b.phase === 'held' ? 0.25 : 0.95) * Math.max(0.3, 1 - hgt / 7);
     audio.ball({ active: visible && zip, pos: [pos.x, pos.y, pos.z], vel, airborne, rolling });
+    const out: Vec3 | null = visible ? [pos.x, pos.y, pos.z] : null;
+    this.lastBallPos = out;
+    return b.phase !== 'held' && visible ? out : null;
+  }
+
+  private updateCamera(dt: number, ball: Vec3 | null) {
+    const pf = this.feetOf(this.partner());
+    const me: Vec3 = this.myAvatar ? [this.myAvatar.position.x, 0, this.myAvatar.position.z] : this.pos;
+    const partner: Vec3 = pf ?? [me[0] - Math.sin(this.yaw) * 12, 0, me[2] - Math.cos(this.yaw) * 12];
+    // The camera stands on your glove side, so every catch is in plain view.
+    this.rig.update(dt, { me, partner, ball, side: this.hand === 'R' ? -1 : 1 });
+    const l = this.rig.listener(me);
+    audio.setListener(l.pos, l.fwd, l.up);
+  }
+
+  private updateAim(dt: number) {
+    const a = this.aim;
+    if (a && a.armed && this.controls.aiming && this.canThrow()) {
+      const { p0, v0 } = this.planThrow(a, false);
+      this.aimTraj = simulateFlight(p0, v0);
+      this.aimArc.show(this.aimTraj, a.power, this.rig.camera, dt);
+    } else {
+      this.aimArc.show(null, 0, this.rig.camera, dt);
+    }
   }
 
   private updateLabels() {
     const w = this.root.clientWidth, h = this.root.clientHeight;
     for (const p of this.players.values()) {
       if (!p.label || !p.avatar) continue;
-      tmpV.copy(p.avatar.headTop).project(this.camera);
+      tmpV.copy(p.avatar.headTop).project(this.rig.camera);
       const on = tmpV.z < 1 && Math.abs(tmpV.x) < 1.1 && Math.abs(tmpV.y) < 1.1;
       p.label.style.opacity = on ? '' : '0';
       if (on) p.label.style.transform = `translate(${((tmpV.x * 0.5 + 0.5) * w).toFixed(1)}px, ${((-tmpV.y * 0.5 + 0.5) * h).toFixed(1)}px) translate(-50%, -100%)`;
@@ -842,13 +947,9 @@ export class Game {
   private sendState(now: number) {
     if (now - this.lastSent < 1000 / CLIENT_STATE_HZ || !this.me) return;
     this.lastSent = now;
-    const holding = this.ball.phase === 'held' && this.ball.holder === this.me;
-    let arm: number = Arm.Idle;
-    if (this.releasedAt > 0 && now - this.releasedAt < 380) arm = Arm.Release;
-    else if (holding && this.winding) arm = Arm.Windup;
-    else if (holding) arm = Arm.Holding;
     const r = (x: number) => Math.round(x * 1000) / 1000;
-    this.net.send({ t: 'st', p: [r(this.yaw), r(this.pitch), r(this.glove.u), r(this.glove.v), arm, Math.round(this.charge * 100) / 100] });
+    const charge = this.controls.aiming && this.aim ? (this.aim.armed ? 0.2 + 0.8 * this.aim.power : 0.1) : 0;
+    this.net.send({ t: 'st', p: [r(this.pos[0]), r(this.pos[2]), r(this.yaw), r(this.glove[0]), r(this.glove[1]), r(this.glove[2]), this.myArm(now), Math.round(charge * 100) / 100] });
   }
 
   /** Snapshot for tests and debugging. */
@@ -856,17 +957,29 @@ export class Game {
     return {
       me: this.me, status: this.net.status, ball: this.ball, score: this.score,
       players: [...this.players.values()].map((p) => ({ id: p.info.id, name: p.info.name, connected: p.info.connected, catches: p.info.catches, drops: p.info.drops, bot: p.info.bot })),
-      yaw: this.yaw, pitch: this.pitch, glove: this.glove, controls: this.controls.stats, canThrow: this.canThrow(),
+      pos: this.pos, home: this.home, yaw: this.yaw, glove: this.glove, partner: this.partnerId, partnerPos: this.feetOf(this.partnerId), controls: this.controls.stats, canThrow: this.canThrow(),
       audio: audio.log.slice(-40), zipPeak: Math.max(audio.zipPeak, audio.lastZipPeak), audioState: audio.ctx?.state ?? 'none', rtt: this.net.rtt, pixelRatio: this.pixelRatio,
+      fov: this.rig.camera.fov,
     };
   }
 
-  /** Point the view at a player (tests / tutorial). */
+  /** Screen position of a world point (tests). */
+  screenOf(p: Vec3): { x: number; y: number; on: boolean } {
+    tmpV.set(p[0], p[1], p[2]).project(this.rig.camera);
+    const w = this.root.clientWidth, h = this.root.clientHeight;
+    return { x: (tmpV.x * 0.5 + 0.5) * w, y: (-tmpV.y * 0.5 + 0.5) * h, on: tmpV.z < 1 && Math.abs(tmpV.x) <= 1 && Math.abs(tmpV.y) <= 1 };
+  }
+
+  /** Make a player the one you're playing with (tests / multi-player rooms). */
   lookAtPlayer(id: string) {
-    const p = this.players.get(id);
-    const me = this.myInfo();
-    if (!p || !me) return;
-    const a = lookAngles(eyePosition(me.pos), [p.info.pos[0], CHEST_HEIGHT + 0.05, p.info.pos[2]]);
-    this.yaw = a.yaw; this.pitch = a.pitch;
+    if (this.players.has(id) && id !== this.me) this.partnerId = id;
+  }
+
+  /** Where the ball would come to rest for a given pull-back (tests). */
+  previewThrow(power: number, angle: number) {
+    const a: Aim = { power, angle, armed: true };
+    this.aimBaseYaw = this.partnerYaw();
+    const { v0, speed } = this.planThrow(a, false);
+    return { v0, speed };
   }
 }

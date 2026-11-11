@@ -12,7 +12,6 @@ export interface Prefs {
   tutorialDone: boolean;
   volume: number;
   haptics: boolean;
-  lookSensitivity: number;
   /** Best streak per group key (mirrors the server; re-seeds it after restarts). */
   records: Record<string, number>;
 }
@@ -41,7 +40,6 @@ export function prefs(): Prefs {
     tutorialDone: !!s.tutorialDone,
     volume: typeof s.volume === 'number' ? s.volume : 0.9,
     haptics: s.haptics !== false,
-    lookSensitivity: typeof s.lookSensitivity === 'number' ? s.lookSensitivity : 1,
     records: s.records && typeof s.records === 'object' ? s.records : {},
   };
   save();

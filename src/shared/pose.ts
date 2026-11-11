@@ -1,25 +1,32 @@
 // Player geometry shared by client rendering and server validation.
+//
+// Third person: a player is a body standing at (x, z), facing `yaw`, with the
+// glove somewhere inside the reach envelope around them. What the server
+// validates is exactly what everyone sees: the ball has to pass through that
+// glove.
 
 import {
   EYE_HEIGHT,
-  GLOVE_REACH_FAR,
-  GLOVE_REACH_NEAR,
-  GLOVE_TAN_X,
-  GLOVE_TAN_Y,
+  GLOVE_READY,
+  REACH_CENTER_Y,
+  REACH_H,
+  REACH_V,
+  SIM_DT,
 } from './constants.js';
-import { clamp, type Vec3 } from './vec.js';
+import { type Trajectory, positionAt } from './physics.js';
+import { type Vec3 } from './vec.js';
 
 export type Hand = 'R' | 'L';
 
 /** Pose a player streams to the room. */
 export interface Pose {
-  /** View yaw (radians, 0 = looking toward -Z). */
+  /** Feet position on the grass. */
+  x: number;
+  z: number;
+  /** Body facing (radians, 0 = facing -Z). */
   yaw: number;
-  /** View pitch (radians, + up). */
-  pitch: number;
-  /** Glove pose in [-1.15, 1.15]. */
-  gu: number;
-  gv: number;
+  /** Glove pocket relative to the feet, world axes (metres). */
+  g: Vec3;
 }
 
 export interface Basis { f: Vec3; r: Vec3; u: Vec3 }
@@ -43,29 +50,59 @@ export function eyePosition(seat: Vec3): Vec3 {
   return [seat[0], EYE_HEIGHT, seat[2]];
 }
 
-export const GLOVE_LIMIT = 1.15;
+/** Body-local offset (right, up, forward) → world-axes offset. */
+export function bodyToWorld(yaw: number, l: Vec3): Vec3 {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  return [cy * l[0] - sy * l[2], l[1], -sy * l[0] - cy * l[2]];
+}
 
-/** Glove offset in view space (x right, y up, z forward) for a glove pose. */
-export function gloveViewOffset(gu: number, gv: number): Vec3 {
-  gu = clamp(gu, -GLOVE_LIMIT, GLOVE_LIMIT);
-  gv = clamp(gv, -GLOVE_LIMIT, GLOVE_LIMIT);
-  const x = gu * GLOVE_TAN_X, y = gv * GLOVE_TAN_Y;
-  const l = Math.sqrt(x * x + y * y + 1);
-  const reach = Math.min(1, (gu * gu + gv * gv) / 1.6);
-  const r = GLOVE_REACH_NEAR + (GLOVE_REACH_FAR - GLOVE_REACH_NEAR) * reach;
-  return [(x / l) * r, (y / l) * r, (1 / l) * r];
+/** World-axes offset → body-local (right, up, forward). */
+export function worldToBody(yaw: number, w: Vec3): Vec3 {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  return [cy * w[0] - sy * w[2], w[1], -sy * w[0] - cy * w[2]];
+}
+
+/** Glove ready position for a body facing `yaw`, slightly to the glove side. */
+export function gloveReady(yaw: number, hand: Hand): Vec3 {
+  const side = hand === 'R' ? -1 : 1;
+  return bodyToWorld(yaw, [GLOVE_READY[0] + side * 0.2, GLOVE_READY[1], GLOVE_READY[2]]);
+}
+
+/** How far into the reach envelope an offset (from the feet) is: ≤1 is reachable. */
+export function reachNorm(g: Vec3): number {
+  const h = (g[0] * g[0] + g[2] * g[2]) / (REACH_H * REACH_H);
+  const v = (g[1] - REACH_CENTER_Y) / REACH_V;
+  return Math.sqrt(h + v * v);
+}
+
+/** Pull an offset back inside the envelope (to `limit` of its size). */
+export function clampReach(g: Vec3, limit = 1): Vec3 {
+  const n = reachNorm(g);
+  if (n <= limit) return [g[0], g[1], g[2]];
+  const k = limit / n;
+  return [g[0] * k, REACH_CENTER_Y + (g[1] - REACH_CENTER_Y) * k, g[2] * k];
 }
 
 /** World-space glove pocket centre. */
-export function gloveWorld(seat: Vec3, pose: Pose): Vec3 {
-  const e = eyePosition(seat);
-  const { f, r, u } = viewBasis(pose.yaw, pose.pitch);
-  const o = gloveViewOffset(pose.gu, pose.gv);
-  return [
-    e[0] + r[0] * o[0] + u[0] * o[1] + f[0] * o[2],
-    e[1] + r[1] * o[0] + u[1] * o[1] + f[1] * o[2],
-    e[2] + r[2] * o[0] + u[2] * o[1] + f[2] * o[2],
-  ];
+export function gloveWorld(pose: Pose): Vec3 {
+  return [pose.x + pose.g[0], pose.g[1], pose.z + pose.g[2]];
+}
+
+/**
+ * Where a body at (x, z) has its best chance at an incoming ball: the moment
+ * (after `tFrom`) the airborne ball is deepest inside the reach envelope.
+ */
+export function interceptPlan(tr: Trajectory, tFrom: number, x: number, z: number): { t: number; point: Vec3; norm: number } {
+  const end = Math.min(tr.count - 1, Math.floor(tr.groundT / SIM_DT));
+  const s = tr.samples;
+  let best = Infinity, bi = Math.max(0, Math.floor(tFrom / SIM_DT));
+  for (let i = bi; i <= end; i += 2) {
+    const g: Vec3 = [s[i * 3] - x, s[i * 3 + 1], s[i * 3 + 2] - z];
+    const n = reachNorm(g);
+    if (n < best) { best = n; bi = i; }
+  }
+  const t = bi * SIM_DT;
+  return { t, point: positionAt(tr, t), norm: best };
 }
 
 /** Where the ball leaves the throwing hand (world space). */
@@ -82,7 +119,7 @@ export function releasePoint(seat: Vec3, yaw: number, hand: Hand): Vec3 {
 
 /** Ring radius used for a given number of players. */
 export function ringRadius(n: number): number {
-  return n <= 2 ? 7.2 : n === 3 ? 7.6 : n === 4 ? 8.1 : 8.6;
+  return n <= 2 ? 5.6 : n === 3 ? 7.6 : n === 4 ? 8.1 : 8.6;
 }
 
 /** Positions for n players around a loose circle, each facing the centre. */

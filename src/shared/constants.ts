@@ -33,19 +33,23 @@ export const EYE_HEIGHT = 1.62;
 export const CHEST_HEIGHT = 1.3;
 
 /**
- * Glove placement. The glove pose (gu, gv) in [-1, 1] maps to a direction in
- * view space: x = gu * GLOVE_TAN_X, y = gv * GLOVE_TAN_Y (y down is negative),
- * at a distance from the eye that grows as the glove reaches outward.
- * The mapping is deterministic (independent of screen aspect) so the server
- * can reconstruct exactly where a player's glove was.
+ * Third-person body model. A player stands somewhere near their home spot and
+ * can move to get under a throw. The glove can be anywhere inside a reach
+ * envelope around the body: an ellipsoid centred at REACH_CENTER_Y above the
+ * feet, REACH_H wide (arm + lean + a half step) and REACH_V tall (a crouch
+ * down to the grass, a stretch up over the head). Client and server share it.
  */
-export const GLOVE_TAN_X = 0.42;
-export const GLOVE_TAN_Y = 0.62;
-export const GLOVE_REACH_NEAR = 0.6;
-export const GLOVE_REACH_FAR = 0.82;
-/** Resting glove pose (slightly low, toward the glove-hand side). */
-export const GLOVE_REST_U = -0.45;
-export const GLOVE_REST_V = -0.42;
+export const MOVE_RADIUS = 4.5;
+/** Top speed when hustling after a throw (m/s) and how fast you get there. */
+export const RUN_SPEED = 5.2;
+export const RUN_ACCEL = 16;
+/** Walking pace back to your spot afterwards. */
+export const WALK_SPEED = 1.35;
+export const REACH_CENTER_Y = 1.22;
+export const REACH_H = 1.02;
+export const REACH_V = 1.12;
+/** Ready position: glove out in front, a bit below the chest. */
+export const GLOVE_READY: [number, number, number] = [0, 1.18, 0.42];
 
 /** Catch zones: distance from glove pocket centre to the ball centre (metres). */
 export const CATCH_POCKET = 0.095;

@@ -1,7 +1,7 @@
 {
   "name": "CATCH.",
   "short_name": "CATCH.",
-  "description": "Play catch with your friends. Two thumbs, one ball, one streak.",
+  "description": "Play catch with your friends. Two people, one ball, one streak.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

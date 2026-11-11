@@ -8,9 +8,8 @@ import {
   CATCH_GRACE_MS,
   CATCH_VALIDATION_SLACK,
   EYE_HEIGHT,
-  GLOVE_REST_U,
-  GLOVE_REST_V,
   MAX_PLAYERS,
+  MOVE_RADIUS,
   RECONNECT_GRACE_MS,
   RECOVER_DELAY_MS,
   STREAK_MILESTONES,
@@ -24,7 +23,7 @@ import {
   sweptMinDistance,
   velocityAt,
 } from '../shared/physics.js';
-import { type Hand, type Pose, eyePosition, gloveWorld, seatLayout } from '../shared/pose.js';
+import { type Hand, type Pose, clampReach, eyePosition, gloveReady, gloveWorld, reachNorm, seatLayout } from '../shared/pose.js';
 import {
   Arm,
   type BallEvent,
@@ -147,7 +146,7 @@ export class Room {
   snapEntries(): SnapEntry[] {
     const r = (x: number, k = 1000) => Math.round(x * k) / k;
     return [...this.members.values()].map((m) => [
-      m.id, r(m.pose.yaw), r(m.pose.pitch), r(m.pose.gu), r(m.pose.gv), m.arm, r(m.charge, 100),
+      m.id, r(m.pose.x), r(m.pose.z), r(m.pose.yaw), r(m.pose.g[0]), r(m.pose.g[1]), r(m.pose.g[2]), m.arm, r(m.charge, 100),
     ]);
   }
 
@@ -190,7 +189,7 @@ export class Room {
     const m: Member = {
       id: o.bot ? 'coach' : newId(), guest: o.guest, name: o.name, hand: o.hand, bot: o.bot,
       joinOrder: this.joinCounter++, look, conn: o.conn, connected: true, disconnectedAt: 0,
-      pose: { yaw: 0, pitch: 0, gu: GLOVE_REST_U, gv: GLOVE_REST_V }, poseAt: this.now(),
+      pose: { x: 0, z: 0, yaw: 0, g: gloveReady(0, o.hand) }, poseAt: this.now(),
       arm: Arm.Idle, charge: 0, catches: 0, drops: 0, seat: 0, pos: [0, 0, 0], facing: 0,
     };
     this.members.set(m.id, m);
@@ -251,10 +250,12 @@ export class Room {
     const list = [...this.members.values()].sort((a, b) => a.joinOrder - b.joinOrder);
     const seats = seatLayout(list.length);
     list.forEach((m, i) => {
+      const moved = m.pos[0] !== seats[i].pos[0] || m.pos[2] !== seats[i].pos[2];
       m.seat = i;
       m.pos = seats[i].pos;
       m.facing = seats[i].yaw;
-      if (m.bot) m.pose.yaw = m.facing;
+      // A new layout puts everyone on their new spot (clients walk/snap there too).
+      if (moved || m.bot) m.pose = { x: m.pos[0], z: m.pos[2], yaw: m.facing, g: gloveReady(m.facing, m.hand) };
     });
   }
 
@@ -306,14 +307,16 @@ export class Room {
       case 'st': {
         const p = msg.p;
         if (!Array.isArray(p)) return;
-        m.pose = {
-          yaw: wrapAngle(finite(p[0], -10, 10)),
-          pitch: finite(p[1], -1.45, 1.45),
-          gu: finite(p[2], -1.2, 1.2, GLOVE_REST_U),
-          gv: finite(p[3], -1.2, 1.2, GLOVE_REST_V),
-        };
-        m.arm = finite(p[4], 0, 3) | 0;
-        m.charge = finite(p[5], 0, 1);
+        const pose = this.parsePose(m, p);
+        if (!pose) return;
+        // Keep everyone near their own spot.
+        const dx = pose.x - m.pos[0], dz = pose.z - m.pos[2];
+        const d = Math.hypot(dx, dz);
+        if (d > MOVE_RADIUS) { pose.x = m.pos[0] + (dx / d) * MOVE_RADIUS; pose.z = m.pos[2] + (dz / d) * MOVE_RADIUS; }
+        pose.g = clampReach(pose.g, 1.02);
+        m.pose = pose;
+        m.arm = finite(p[6], 0, 3) | 0;
+        m.charge = finite(p[7], 0, 1);
         m.poseAt = this.now();
         return;
       }
@@ -336,6 +339,16 @@ export class Room {
     }
   }
 
+  private parsePose(m: Member, p: unknown[]): Pose | null {
+    if (p.length < 6) return null;
+    return {
+      x: finite(p[0], -60, 60, m.pos[0]),
+      z: finite(p[1], -60, 60, m.pos[2]),
+      yaw: wrapAngle(finite(p[2], -10, 10, m.facing)),
+      g: [finite(p[3], -2, 2), finite(p[4], 0, 2.6, 1.2), finite(p[5], -2, 2)],
+    };
+  }
+
   private onThrow(m: Member, msg: Extract<ClientMsg, { t: 'throw' }>) {
     const b = this.ball;
     if (b.phase !== 'held' || b.holder !== m.id) return;
@@ -344,7 +357,8 @@ export class Room {
     const p: Vec3 = [finite(msg.p?.[0], -100, 100), finite(msg.p?.[1], 0, 4), finite(msg.p?.[2], -100, 100)];
     const speed = len(v);
     if (speed > THROW_SPEED_LIMIT || speed < 1) return;
-    if (dist(p, eyePosition(m.pos)) > 0.95) return;
+    // The ball leaves from the thrower's hand (pose streams lag a little: allow for it).
+    if (dist(p, eyePosition([m.pose.x, 0, m.pose.z])) > 1.4 && dist(p, eyePosition(m.pos)) > MOVE_RADIUS + 1) return;
     const t = this.now();
     const rt = finite(msg.rt, t - 300, t, t);
     this.launch(m.id, p, v, rt, true);
@@ -371,13 +385,14 @@ export class Room {
     if (tSec < (self ? 0.25 : 0.05)) return;
     if (tSec > tr.groundT + 0.01) return;
     if (at > this.now() + 150) return;
-    const pose: Pose = {
-      yaw: finite(msg.pose?.[0], -10, 10), pitch: finite(msg.pose?.[1], -1.45, 1.45),
-      gu: finite(msg.pose?.[2], -1.2, 1.2), gv: finite(msg.pose?.[3], -1.2, 1.2),
-    };
-    // Loose plausibility check against the streamed pose (friends game, not esports).
-    if (this.now() - m.poseAt < 600 && Math.abs(wrapAngle(pose.yaw - m.pose.yaw)) > 1.1) return;
-    const g = gloveWorld(m.pos, pose);
+    const pose = Array.isArray(msg.pose) ? this.parsePose(m, msg.pose) : null;
+    if (!pose) return;
+    // The body has to be near their spot, the glove within reach of the body,
+    // and (loosely: a friends game, not esports) near the streamed pose.
+    if (Math.hypot(pose.x - m.pos[0], pose.z - m.pos[2]) > MOVE_RADIUS + 0.4) return;
+    if (reachNorm(pose.g) > 1.06) return;
+    if (this.now() - m.poseAt < 600 && Math.hypot(pose.x - m.pose.x, pose.z - m.pose.z) > 1.8) return;
+    const g = gloveWorld(pose);
     const near = sweptMinDistance(tr, Math.max(0, tSec - 0.03), Math.min(tr.groundT, tSec + 0.03), g, g);
     if (near.dist > CATCH_BOBBLE + CATCH_VALIDATION_SLACK) return;
     const vel = velocityAt(tr, near.t);
@@ -394,7 +409,7 @@ export class Room {
       // Off the heel of the glove and out: the throw is dead.
       const s = 0.22;
       const side = (this.ball.tid % 2 ? 1 : -1) * 1.4;
-      const v: Vec3 = [-vel[0] * s + side * Math.cos(m.facing), 2.6, -vel[2] * s - side * Math.sin(m.facing)];
+      const v: Vec3 = [-vel[0] * s + side * Math.cos(m.pose.yaw), 2.6, -vel[2] * s - side * Math.sin(m.pose.yaw)];
       this.launch(m.id, pos, v, at, false);
       const disrupted = this.flightDisrupted;
       if (!disrupted) { this.streak = 0; m.drops++; }
@@ -480,7 +495,8 @@ export class Room {
     const tr = this.traj!;
     const { m: recv, d } = this.intendedReceiver();
     // Within reach-ish of someone: their drop. Way off: the thrower's errant throw.
-    const blame = recv && d <= 2.6 ? recv : this.members.get(this.ball.thrower ?? '') ?? null;
+    // (Players can run a few metres to get under a throw.)
+    const blame = recv && d <= 3.8 ? recv : this.members.get(this.ball.thrower ?? '') ?? null;
     const isVoid = this.flightDisrupted || (blame !== null && !blame.connected);
     if (!isVoid) {
       this.streak = 0;
