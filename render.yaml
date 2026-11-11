@@ -1,0 +1,18 @@
+# Render Blueprint for the CATCH. room server (a persistent Node process with
+# WebSockets — not serverless). The web client is deployed separately on Vercel.
+services:
+  - type: web
+    name: catch-server
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: npm ci && npm run build:server
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: ALLOWED_ORIGINS
+        sync: false
