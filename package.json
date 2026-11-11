@@ -3,8 +3,10 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "CATCH. — a multiplayer first-person game of catch for phones.",
-  "engines": { "node": ">=20" },
+  "description": "CATCH. \u2014 a multiplayer first-person game of catch for phones.",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "concurrently -k -n server,client \"npm:dev:server\" \"npm:dev:client\"",
     "dev:client": "vite --host",
@@ -15,7 +17,8 @@
     "start": "node dist-server/index.js",
     "test": "vitest run",
     "test:e2e": "node tests/e2e/run.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:live": "node tests/e2e/live.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
