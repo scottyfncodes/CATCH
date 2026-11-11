@@ -42,15 +42,17 @@ try {
   await H.page.evaluate((id) => window.__catch.game.lookAtPlayer(id), rId);
   const g = await H.page.evaluate(() => window.__catch.game.gripScreen());
   await H.touch('touchStart', [[g.x, g.y]]);
+  // Grip, pull down, let go.
   for (let i = 1; i <= 6; i++) { await H.touch('touchMove', [[g.x, g.y + i * 12]]); await sleep(14); }
-  await sleep(120);
-  for (let i = 1; i <= 5; i++) { await H.touch('touchMove', [[g.x, g.y + 72 - i * 32]]); await sleep(10); }
+  await sleep(150);
   await H.touch('touchEnd', []);
   const caught = await waitFor(async () => { const s = await R.state(); return s.ball.phase === 'held' && s.ball.holder === rId ? s : null; }, 8000);
   await sleep(400);
   const [sa, sb] = [await A.state(), await B.state()];
   check('real touch throw → real glove catch through the live server', !!caught);
   check('streak synced on both phones', sa.score.streak === 1 && sb.score.streak === 1, `A=${sa.score.streak} B=${sb.score.streak}`);
+  const pop = (await R.state()).audio.find((x) => x.k === 'pop');
+  check('catch is graded and the POP plays that grade', typeof pop?.g === 'number', `q=${pop?.q} g=${pop?.g}`);
   check('no page errors', A.errors.length + B.errors.length === 0, [...A.errors, ...B.errors].join(' | '));
   if (process.env.SHOT_DIR) { await R.page.evaluate(() => { window.__catch.game.renderEnabled = true; }); await sleep(800); await R.page.screenshot({ path: `${process.env.SHOT_DIR}/live-caught.png` }); }
 } catch (e) { console.error(e); failed++; }
