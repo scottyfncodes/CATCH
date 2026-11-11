@@ -12,7 +12,7 @@ import {
 } from '../shared/physics';
 import { type Hand, type Pose, GLOVE_LIMIT, eyePosition, gloveViewOffset, gloveWorld, lookAngles, releasePoint, viewBasis } from '../shared/pose';
 import {
-  Arm, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, classifyCatch,
+  Arm, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, classifyCatch,
 } from '../shared/protocol';
 import { type Vec3, clamp, dist, lerp, wrapAngle } from '../shared/vec';
 import { audio } from './audio';
@@ -84,6 +84,10 @@ export class Game {
   private lastLookAt = 0;
   private winding = false;
   private charge = 0;
+  /** Arm aim from the sideways slide while winding, -1..1. */
+  private armAim = 0;
+  private arc!: THREE.InstancedMesh;
+  private arcKey = '';
   private releasedAt = -1;
   private lastSent = 0;
 
@@ -141,6 +145,14 @@ export class Game {
     );
     this.ballShadow = contactShadow(0.22);
     this.scene.add(this.ballMesh, this.ballBlur, this.ballShadow);
+    this.arc = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1, 8, 6),
+      new THREE.MeshBasicMaterial({ color: '#fff8ea', transparent: true, opacity: 0.55, depthWrite: false }),
+      14,
+    );
+    this.arc.frustumCulled = false;
+    this.arc.visible = false;
+    this.scene.add(this.arc);
 
     this.labels = document.createElement('div');
     this.labels.className = 'labels';
@@ -157,13 +169,15 @@ export class Game {
         if (Math.abs(du) + Math.abs(dv) > 0.02) this.ev.moment('glove');
       },
       onGloveActive: (a) => { this.gloveActive = a; },
-      onGrip: () => { this.winding = true; this.charge = 0; },
-      onCharge: (c) => {
-        if (c > this.charge + 0.15 || (c > 0.5 && this.charge <= 0.5)) audio.creak(c);
+      onGrip: () => { this.winding = true; this.charge = 0; this.armAim = 0; },
+      onWind: (c, aim) => {
+        if (c > this.charge + 0.18 || (c > 0.6 && this.charge <= 0.6)) audio.creak(c);
+        if (c >= 0.999 && this.charge < 0.999) haptic('light');
         this.charge = c;
+        this.armAim = aim;
       },
       onRelease: (r) => this.release(r),
-      onCancel: () => { this.winding = false; this.charge = 0; },
+      onCancel: () => { this.winding = false; this.charge = 0; this.armAim = 0; },
     });
     this.controls.hand = this.hand;
     this.gloveT = this.restGlove();
@@ -405,7 +419,7 @@ export class Game {
         if (ev.by === mine) {
           const predicted = this.localCatch && this.localCatch.tid === b.tid;
           // Not predicted locally (rare): still give full feedback.
-          if (!predicted) this.popLocal(ev.q, ev.speed);
+          if (!predicted) this.popLocal(ev.q, ev.speed, ev.g ?? 0.6);
           this.localCatch = null;
           this.catchShow = { by: mine, perf: this.lastCatchPerf || perf };
           this.holdReadyAt = (this.lastCatchPerf || perf) + 380;
@@ -414,7 +428,7 @@ export class Game {
         } else {
           const p = this.players.get(ev.by);
           const at = p?.avatar ? [p.avatar.gloveWorldPos.x, p.avatar.gloveWorldPos.y, p.avatar.gloveWorldPos.z] as Vec3 : ev.pos;
-          audio.pop({ speed: ev.speed, q: ev.q, pos: at });
+          audio.pop({ speed: ev.speed, q: ev.q, g: ev.g ?? 0.6, pos: at });
           if (p?.avatar && this.traj) p.avatar.catchImpact(velocityAt(this.traj, (ev.at - prev.t0) / 1000), ev.speed);
           this.catchShow = { by: ev.by, perf };
         }
@@ -425,7 +439,7 @@ export class Game {
       case 'deflect': {
         this.pinned = null;
         this.localCatch = null;
-        if (ev.by !== mine) audio.pop({ speed: ev.speed, q: 'deflect', pos: ev.pos });
+        if (ev.by !== mine) audio.pop({ speed: ev.speed, q: 'deflect', g: 0, pos: ev.pos });
         if (ev.by === mine) this.ev.moment('drop');
         break;
       }
@@ -451,9 +465,9 @@ export class Game {
     }
   }
 
-  private popLocal(q: CatchQuality | 'deflect', speed: number) {
-    audio.pop({ speed, q, pos: null, side: this.hand === 'R' ? -1 : 1 });
-    haptic(q === 'pocket' && speed > 18 ? 'firm' : 'light');
+  private popLocal(q: CatchQuality | 'deflect', speed: number, g: number) {
+    audio.pop({ speed, q, g, pos: null, side: this.hand === 'R' ? -1 : 1 });
+    haptic(g >= 0.75 ? 'firm' : 'light');
   }
 
   // ------------------------------------------------------------------ throwing
@@ -469,10 +483,16 @@ export class Game {
     return { x: (p.x * 0.5 + 0.5) * w, y: (-p.y * 0.5 + 0.5) * h };
   }
 
-  /** Aim target under the view: a player near the crosshair, else the ground or a default distance. */
-  private aimTarget(from: Vec3): { D: number; h: number; pitchTo: number } {
+  /** Max arm aim off your line of sight (radians) — enough for a no-look throw. */
+  static readonly ARM_AIM = 0.55;
+
+  /**
+   * What the throw is aimed at: the player nearest the arm's direction, else
+   * the ground you're looking at, else a default distance.
+   */
+  private aimTarget(from: Vec3, throwYaw: number): { D: number; h: number; pitchTo: number } {
     const eye = eyePosition(this.mySeat());
-    const f = viewBasis(this.yaw, this.pitch).f;
+    const f = viewBasis(throwYaw, this.pitch).f;
     let best: { D: number; h: number; ang: number; pitchTo: number } | null = null;
     for (const p of this.players.values()) {
       if (p.info.id === this.me) continue;
@@ -493,20 +513,25 @@ export class Game {
     return { D: 14, h: eye[1] + Math.tan(this.pitch) * 14, pitchTo: this.pitch };
   }
 
-  private release(r: ThrowRelease) {
-    this.winding = false;
-    this.charge = 0;
-    if (!this.canThrow() || !this.me) return;
-    const speed = lerp(THROW_MIN_SPEED, THROW_MAX_SPEED, Math.pow(r.charge, 0.9)) * (0.95 + 0.1 * r.flick);
-    // Flick angle bends the throw off your line of sight (no-look throws), with a dead zone.
-    const dead = 0.14;
-    const a = Math.abs(r.angle) > dead ? (Math.abs(r.angle) - dead) * Math.sign(r.angle) * 0.55 : 0;
-    const throwYaw = this.yaw - clamp(a, -0.42, 0.42);
+  /** The throw a given windup would make (shared by the arc preview and the release). */
+  private computeThrow(charge: number, aim: number, snap: number): { p0: Vec3; v0: Vec3; speed: number } {
+    const speed = lerp(THROW_MIN_SPEED, THROW_MAX_SPEED, Math.pow(charge, 1.05)) * (1 + 0.07 * snap);
+    // Sliding right aims the arm right (yaw decreases to the right).
+    const throwYaw = this.yaw - aim * Game.ARM_AIM;
     const p0 = releasePoint(this.mySeat(), throwYaw, this.hand);
-    const tgt = this.aimTarget(p0);
+    const tgt = this.aimTarget(p0, throwYaw);
     const solved = solveElevation(speed, tgt.D, p0[1], tgt.h);
     const el = clamp((solved ?? 0.72) + (this.pitch - tgt.pitchTo), -0.35, 1.2);
     const v0: Vec3 = [-Math.sin(throwYaw) * Math.cos(el) * speed, Math.sin(el) * speed, -Math.cos(throwYaw) * Math.cos(el) * speed];
+    return { p0, v0, speed };
+  }
+
+  private release(r: ThrowRelease) {
+    this.winding = false;
+    this.charge = 0;
+    this.armAim = 0;
+    if (!this.canThrow() || !this.me) return;
+    const { p0, v0 } = this.computeThrow(r.charge, r.aim, r.snap);
     const t0 = this.net.now();
     const tid = this.ball.tid + 1;
     this.net.send({ t: 'throw', rt: t0, p: p0, v: v0, tid });
@@ -519,6 +544,29 @@ export class Game {
     this.fp.onRelease();
     audio.armSwish(r.charge, this.hand === 'R' ? 1 : -1);
     this.ev.moment('throw');
+  }
+
+  /** A faint dotted arc showing the start of the throw you're winding up. */
+  private updateArc() {
+    const show = this.winding && this.charge >= 0.07 && this.canThrow();
+    this.arc.visible = show;
+    if (!show) { this.arcKey = ''; return; }
+    const key = `${this.charge.toFixed(3)}:${this.armAim.toFixed(3)}:${this.yaw.toFixed(3)}:${this.pitch.toFixed(3)}`;
+    if (key === this.arcKey) return;
+    this.arcKey = key;
+    const { p0, v0 } = this.computeThrow(this.charge, this.armAim, 0);
+    const tr = simulateFlight(p0, v0);
+    const span = Math.min(tr.groundT, 2.4) * 0.55;
+    const m = new THREE.Matrix4();
+    const n = this.arc.count;
+    for (let i = 0; i < n; i++) {
+      const t = 0.06 + (span * (i + 1)) / n;
+      const p = positionAt(tr, t);
+      const s = 0.028 * (1 - (i / n) * 0.65) * (1 + dist(p, p0) * 0.06);
+      m.makeScale(s, s, s).setPosition(p[0], p[1], p[2]);
+      this.arc.setMatrixAt(i, m);
+    }
+    this.arc.instanceMatrix.needsUpdate = true;
   }
 
   // ------------------------------------------------------------------ frame
@@ -543,6 +591,7 @@ export class Game {
     this.updateRemotes(dt, sNow);
     this.updateFirstPerson(dt, now);
     this.updateBall(dt, now, sNow);
+    this.updateArc();
     this.world.update(dt, now / 1000);
     if (this.renderEnabled) this.renderer.render(this.scene, this.camera);
     this.updateLabels();
@@ -680,14 +729,14 @@ export class Game {
     const vel = velocityAt(this.traj, res.t);
     const dirCam = new THREE.Vector3(vel[0], vel[1], vel[2]).transformDirection(this.camera.matrixWorldInverse);
     if (q === 'deflect') {
-      this.popLocal('deflect', speed);
+      this.popLocal('deflect', speed, 0);
       this.fp.onCatch(dirCam, speed * 0.5);
       return;
     }
     this.localCatch = { tid: b.tid, q, at: res.t };
     this.lastCatchPerf = performance.now();
     this.fp.onCatch(dirCam, speed);
-    this.popLocal(q, speed);
+    this.popLocal(q, speed, catchGrade(res.dist));
   }
 
   private interp(p: Remote, sNow: number) {

@@ -65,7 +65,7 @@ export class Tutorial {
     this.ghost.style.display = '';
     this.ghost.className = 'ghost ' + ghost;
     let x = 0, y = 0;
-    if (ghost === 'look') { x = gloveLeft ? w * 0.72 : w * 0.28; y = h * 0.42; }
+    if (ghost === 'look') { x = gloveLeft ? w * 0.72 : w * 0.28; y = h * 0.3; }
     if (ghost === 'glove') { x = gloveLeft ? w * 0.22 : w * 0.78; y = h * 0.66; }
     if (ghost === 'throw') { const g = this.gripPoint(); x = g?.x ?? w * 0.75; y = (g?.y ?? h * 0.8) - 40; }
     this.ghost.style.left = `${x}px`;
@@ -84,12 +84,12 @@ export class Tutorial {
     const other = this.hand() === 'R' ? 'left' : 'right';
     if (performance.now() < this.flashUntil) { this.show('flash' + this.flashText, this.flashText, null); return; }
     if (!this.done.has('look')) {
-      this.show('look', `Drag on the ${side} to look around`, 'look');
+      this.show('look', `Drag up here on the ${side} to look around`, 'look');
       return;
     }
     if (this.holding && !this.done.has('throw')) {
       if (!this.canThrow()) { this.hide(); return; }
-      this.show('throw', `Press the ball, pull down, then flick up to throw<small>Pull further for a harder throw. Aim by looking.</small>`, 'throw');
+      this.show('throw', `Hold the ball, pull down, let go to throw<small>Pull further to throw harder. Slide sideways to aim.</small>`, 'throw');
       return;
     }
     if (!this.holding && !this.done.has('catch')) {
@@ -98,7 +98,7 @@ export class Tutorial {
     }
     if (this.done.has('throw') && this.done.has('catch')) {
       if (!this.finale) this.finale = performance.now();
-      this.show('streak', `That’s it. Every catch adds to the streak<small>Drop it and it’s back to zero.</small>`, null);
+      this.show('streak', `That’s it. Every catch adds to the streak<small>Listen to the POP: the cleaner the catch, the better it sounds.</small>`, null);
       if (performance.now() - this.finale > 4200) this.finish();
       return;
     }

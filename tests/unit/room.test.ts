@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CATCH_GRACE_MS, EYE_HEIGHT, MAX_PLAYERS, RECOVER_DELAY_MS } from '../../src/shared/constants';
 import { positionAt, simulateFlight, solveElevation, solveThrowTo, velocityAt } from '../../src/shared/physics';
 import { type Pose, eyePosition, gloveWorld, lookAngles, releasePoint, seatLayout } from '../../src/shared/pose';
-import { type ServerMsg, classifyCatch, groupKeyFor } from '../../src/shared/protocol';
+import { type ServerMsg, catchGrade, classifyCatch, groupKeyFor } from '../../src/shared/protocol';
 import { type Vec3, dist, len } from '../../src/shared/vec';
 import { type Conn, MemoryRecords, Room } from '../../src/server/room';
 
@@ -77,11 +77,17 @@ describe('physics', () => {
     expect(solveElevation(6, 40, 1.7, 1.3)).toBeNull();
   });
   it('classifies catches by distance', () => {
-    expect(classifyCatch(0.05, 20)).toBe('pocket');
+    expect(classifyCatch(0.02, 20)).toBe('perfect');
+    expect(classifyCatch(0.07, 20)).toBe('pocket');
     expect(classifyCatch(0.13, 20)).toBe('web');
     expect(classifyCatch(0.19, 10)).toBe('bobble');
     expect(classifyCatch(0.19, 28)).toBe('deflect');
     expect(classifyCatch(0.4, 10)).toBeNull();
+  });
+  it('grades catches from dead centre (1) to the edge of the glove (0)', () => {
+    expect(catchGrade(0)).toBe(1);
+    expect(catchGrade(0.1)).toBeGreaterThan(catchGrade(0.15));
+    expect(catchGrade(0.3)).toBe(0);
   });
   it('lays out players around a ring facing the centre', () => {
     for (let n = 1; n <= 5; n++) {
@@ -133,7 +139,8 @@ describe('room', () => {
     expect(room.members.get(ids[1])!.catches).toBe(1);
     const catches = conns[0].events().filter((e) => e.k === 'catch');
     expect(catches.length).toBe(1);
-    expect(catches[0].k === 'catch' && catches[0].q).toBe('pocket');
+    expect(catches[0].k === 'catch' && catches[0].q).toBe('perfect');
+    expect(catches[0].k === 'catch' && catches[0].g).toBeGreaterThan(0.9);
     // Both clients agree on the streak.
     expect(conns[0].last('ball')!.score.streak).toBe(1);
     expect(conns[1].last('ball')!.score.streak).toBe(1);
@@ -158,6 +165,7 @@ describe('room', () => {
     const { room, ids, clock } = setup(2);
     const t0 = clock.now();
     const { pose, T } = throwAt(room, ids[0], ids[1], t0, 15, [0.6, 0, 0]);
+    void catchGrade;
     clock.advance(T * 1000 + 20);
     room.handle(ids[1], { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: [pose.yaw, pose.pitch, pose.gu, pose.gv] });
     expect(room.ball.phase).toBe('flight');

@@ -70,15 +70,17 @@ async function player(room, name, hand = 'R', guest, expect = 'open') {
   return p;
 }
 
-/** Real gesture: thumb on the ball, pull down `pull` px, flick up at `angle` (rad from vertical). */
-async function throwGesture(p, { pull = 60, angle = 0, start } = {}) {
+/**
+ * Real gesture: grip the ball, pull down `pull` px while sliding `slide` px
+ * sideways, hold, then let go. `flick` adds an upward snap before letting go.
+ */
+async function throwGesture(p, { pull = 60, slide = 0, flick = false, start } = {}) {
   const g = start ?? await p.page.evaluate(() => window.__catch.game.gripScreen());
   await p.touch('touchStart', [[g.x, g.y]]);
   const steps = 6;
-  for (let i = 1; i <= steps; i++) { await p.touch('touchMove', [[g.x, g.y + (pull * i) / steps]]); await sleep(14); }
+  for (let i = 1; i <= steps; i++) { await p.touch('touchMove', [[g.x + (slide * i) / steps, g.y + (pull * i) / steps]]); await sleep(14); }
   await sleep(120);
-  const fx = Math.sin(angle), fy = Math.cos(angle);
-  for (let i = 1; i <= 5; i++) { await p.touch('touchMove', [[g.x + fx * 32 * i, g.y + pull - fy * 32 * i]]); await sleep(10); }
+  if (flick) for (let i = 1; i <= 4; i++) { await p.touch('touchMove', [[g.x + slide, g.y + pull - 30 * i]]); await sleep(10); }
   await p.touch('touchEnd', []);
 }
 
@@ -113,6 +115,8 @@ try {
   check('catch detection: ball actually passed through the glove (server-validated)', !!caught);
   const pops = (await other.state()).audio.filter((x) => x.k === 'pop').length;
   check('no duplicate impact sounds for one catch', pops === 1, `pops=${pops}`);
+  const popEv = (await other.state()).audio.find((x) => x.k === 'pop');
+  check('the POP carries the catch grade from the server', typeof popEv?.g === 'number' && popEv.g > 0, `g=${popEv?.g} q=${popEv?.q}`);
   const zipSoft = (await other.state()).zipPeak;
 
   // Throw back, harder: ZIP must be louder for the faster ball.
@@ -211,16 +215,17 @@ try {
   await T.touch('touchEnd', []);
   check('glove moves while the other thumb is also touching', g1.u - g0.u > 0.2 && g1.v - g0.v > 0.2, `Δu=${(g1.u - g0.u).toFixed(2)} Δv=${(g1.v - g0.v).toFixed(2)}`);
 
-  // Pulling back and flicking without releasing upward = cancel, no throw.
+  // Pull back, then slide back up to where you started and let go = cancel, no throw.
   const before2 = (await T.state()).controls.throws;
   const gp = await T.page.evaluate(() => window.__catch.game.gripScreen());
   await T.touch('touchStart', [[gp.x, gp.y]]);
   for (let i = 1; i <= 6; i++) { await T.touch('touchMove', [[gp.x, gp.y + i * 10]]); await sleep(20); }
+  for (let i = 5; i >= 0; i--) { await T.touch('touchMove', [[gp.x, gp.y + i * 10]]); await sleep(40); }
   await sleep(200);
   await T.touch('touchEnd', []);
   await sleep(150);
   const ts = await T.state();
-  check('pull back then let go without a flick cancels (no throw)', ts.controls.throws === before2 && ts.ball.phase === 'held');
+  check('pull back, slide back to the start and let go cancels (no throw)', ts.controls.throws === before2 && ts.ball.phase === 'held');
 
   // Release direction responds to flick angle; power responds to pull.
   const rel = async (opts) => {
@@ -229,8 +234,8 @@ try {
     await throwGesture(T, opts);
     return T.page.evaluate(() => window.__lastThrow);
   };
-  const straight = await rel({ pull: 50, angle: 0 });
-  check('a real flick releases the ball', !!straight?.v);
+  const straight = await rel({ pull: 50 });
+  check('pull and let go releases the ball', !!straight?.v);
   // Get the ball back to T for comparison throws: whoever catches/recovers it, wait until T holds again is not guaranteed — compare against the predicted vector instead.
   const yawOf = (v) => Math.atan2(-v[0], -v[2]);
   // Compute the flick-angle effect directly through the same release path on a fresh holder later.
@@ -250,12 +255,14 @@ try {
     const m = await waitFor(() => h.page.evaluate(() => window.__lastThrow), 2000);
     return m ? { yawOff: yawOf(m.v) - yawView, speed: Math.hypot(...m.v) } : null;
   };
-  const s0 = await sample({ pull: 60, angle: 0 });
-  const sR = await sample({ pull: 60, angle: 0.6 });
-  const sL = await sample({ pull: 60, angle: -0.6 });
-  check('release direction follows the flick (right flick → right of view, left → left)', s0 && sR && sL && sR.yawOff < s0.yawOff - 0.1 && sL.yawOff > s0.yawOff + 0.1, `straight=${s0?.yawOff.toFixed(2)} right=${sR?.yawOff.toFixed(2)} left=${sL?.yawOff.toFixed(2)}`);
-  const sSoft = await sample({ pull: 25, angle: 0 });
-  const sHard = await sample({ pull: 160, angle: 0 });
+  const s0 = await sample({ pull: 60 });
+  const sR = await sample({ pull: 60, slide: 70 });
+  const sL = await sample({ pull: 60, slide: -70 });
+  check('arm aim follows the sideways slide (right → right of view, left → left; no-look throws)', s0 && sR && sL && sR.yawOff < s0.yawOff - 0.1 && sL.yawOff > s0.yawOff + 0.1, `straight=${s0?.yawOff.toFixed(2)} right=${sR?.yawOff.toFixed(2)} left=${sL?.yawOff.toFixed(2)}`);
+  const sSoft = await sample({ pull: 30 });
+  const sHard = await sample({ pull: 200 });
+  const sFlick = await sample({ pull: 120, flick: true });
+  check('pull-then-flick also throws (with the windup from before the flick)', sFlick && sFlick.speed > 15, `speed=${sFlick?.speed.toFixed(1)}`);
   check('pull length sets throw speed (soft toss vs hard throw)', sSoft && sHard && sHard.speed > sSoft.speed + 8, `soft=${sSoft?.speed.toFixed(1)} hard=${sHard?.speed.toFixed(1)} m/s`);
 
   console.log('\nLEFT-HANDED + AUDIO');

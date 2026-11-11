@@ -13,14 +13,20 @@ No accounts, no installs: open the link, pick a name and a throwing hand, play.
 | Glove | left thumb | right thumb |
 | Look + throw | right thumb | left thumb |
 
-- **Look around**: drag on the throwing side, anywhere except on the ball.
+- **Look around**: drag on the throwing side (the upper part while you hold the ball).
 - **Move the glove**: drag on the glove side. It follows your thumb and stays put.
   A catch only happens if the ball actually passes through the glove.
-- **Throw**: put your thumb *on the ball*, pull down (further = harder), then
-  flick up. Flick off-vertical to bend the throw left/right of where you look
-  (no-look throws). Lift without flicking to cancel.
-- **Aim** by looking. The throw's arc adapts to the distance of whatever you're
-  looking at; look higher or lower to throw higher or lower.
+- **Throw**: put your thumb on the ball or anywhere in the lower part of the
+  throwing side, **pull down** to wind up (further = harder), **slide sideways**
+  to aim your arm (a faint arc shows the throw; this is how you make a no-look
+  throw), and **let go**. Slide back up to where you started before letting go
+  to cancel. Snapping your thumb up as you let go adds a little extra zip.
+- **Aim** by looking, then fine-tune with the slide. The arc adapts to the
+  distance of whoever you're aiming at; look higher or lower to throw higher or lower.
+- **The POP is your grade.** The server scores each catch by how close the ball
+  came to the centre of your pocket, and everyone hears that grade: a perfect
+  catch cracks and rings off the houses, an off-centre one thwaps, a bobble
+  squeezes twice. Perfect catches are counted in the pause sheet.
 - Every caught throw adds one to the room's streak; a drop resets it.
   Alone? **Coach** keeps you company until a friend joins.
 

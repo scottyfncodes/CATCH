@@ -11,7 +11,7 @@ import type { Member } from './room.js';
 
 export type BotAction =
   | { kind: 'throw'; p: Vec3; v: Vec3 }
-  | { kind: 'catch'; tid: number; tSec: number; q: CatchQuality };
+  | { kind: 'catch'; tid: number; tSec: number; q: CatchQuality; g: number };
 
 const WINDUP_MS = 620;
 
@@ -20,7 +20,7 @@ export class BotBrain {
   private releasedAt = 0;
   private throws = 0;
   private plannedTid = -1;
-  private plan: { tSec: number; q: CatchQuality | null; point: Vec3 } | null = null;
+  private plan: { tSec: number; q: CatchQuality | null; g: number; point: Vec3 } | null = null;
   private rng = mulberry32(0x5eed);
 
   onGotBall(t: number) {
@@ -69,10 +69,12 @@ export class BotBrain {
         const point = positionAt(traj, ca.t);
         let q: CatchQuality | null = null;
         const reach = ca.dist;
-        if (reach <= 0.55) q = reach < 0.3 ? 'pocket' : 'web';
+        // Coach is good but human: easy balls are usually pocketed, reaches are scrappier.
+        if (reach <= 0.55) q = reach < 0.3 ? (this.rng() < 0.45 ? 'perfect' : 'pocket') : 'web';
         else if (reach <= 0.95) q = this.rng() < 0.8 ? 'web' : null;
         else if (reach <= 1.25) q = this.rng() < 0.35 ? 'bobble' : null;
-        this.plan = { tSec: ca.t, q, point };
+        const g = q === 'perfect' ? 0.82 + this.rng() * 0.15 : q === 'pocket' ? 0.55 + this.rng() * 0.2 : q === 'web' ? 0.3 + this.rng() * 0.2 : 0.1;
+        this.plan = { tSec: ca.t, q, g: Math.round(g * 100) / 100, point };
       }
       const plan = this.plan!;
       const tSec = (t - ball.t0) / 1000;
@@ -91,7 +93,7 @@ export class BotBrain {
       if (plan.q && tSec >= plan.tSec) {
         const q = plan.q;
         this.plan = { ...plan, q: null };
-        return { kind: 'catch', tid: ball.tid, tSec: plan.tSec, q };
+        return { kind: 'catch', tid: ball.tid, tSec: plan.tSec, q, g: plan.g };
       }
       return null;
     }

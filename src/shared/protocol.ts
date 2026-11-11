@@ -4,20 +4,31 @@
 import {
   BOBBLE_DEFLECT_SPEED,
   CATCH_BOBBLE,
+  CATCH_PERFECT,
   CATCH_POCKET,
   CATCH_WEB,
 } from './constants.js';
 import type { Hand } from './pose.js';
 import type { Vec3 } from './vec.js';
 
-export type CatchQuality = 'pocket' | 'web' | 'bobble';
+export type CatchQuality = 'perfect' | 'pocket' | 'web' | 'bobble';
 
 /** Classify a glove/ball encounter. `null` = clean miss, 'deflect' = off the glove and out. */
 export function classifyCatch(distance: number, relSpeed: number): CatchQuality | 'deflect' | null {
+  if (distance <= CATCH_PERFECT) return 'perfect';
   if (distance <= CATCH_POCKET) return 'pocket';
   if (distance <= CATCH_WEB) return 'web';
   if (distance <= CATCH_BOBBLE) return relSpeed >= BOBBLE_DEFLECT_SPEED ? 'deflect' : 'bobble';
   return null;
+}
+
+/**
+ * How well a ball was caught, 0..1 (1 = dead centre of the pocket). This is
+ * the grade the POP plays: everyone hears the same number.
+ */
+export function catchGrade(distance: number): number {
+  const g = 1 - distance / CATCH_BOBBLE;
+  return Math.round(Math.max(0, Math.min(1, g)) * 100) / 100;
 }
 
 /** Arm state streamed with the pose so other players see intent. */
@@ -37,6 +48,8 @@ export interface PlayerInfo {
   bot: boolean;
   catches: number;
   drops: number;
+  /** Catches graded perfect. */
+  perfects: number;
   /** Shirt/cap colour index. */
   look: number;
 }
@@ -69,7 +82,7 @@ export interface ScoreState {
 
 export type BallEvent =
   | { k: 'throw'; by: string; speed: number }
-  | { k: 'catch'; by: string; q: CatchQuality; speed: number; at: number; pos: Vec3; self: boolean; milestone?: number }
+  | { k: 'catch'; by: string; q: CatchQuality; g: number; speed: number; at: number; pos: Vec3; self: boolean; milestone?: number }
   | { k: 'deflect'; by: string; speed: number; at: number; pos: Vec3 }
   | { k: 'drop'; by: string | null; void: boolean; at: number }
   | { k: 'recover'; by: string; from: Vec3 };
