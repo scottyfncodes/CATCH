@@ -83,7 +83,7 @@ export class Avatar {
 
     // Legs.
     for (const sx of [-0.1, 0.1]) {
-      const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.075, 0.72, 3, 8), pants);
+      const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.088, 0.7, 3, 8), pants);
       leg.position.set(sx, 0.47, 0);
       leg.rotation.z = sx * 0.25;
       leg.castShadow = true;
