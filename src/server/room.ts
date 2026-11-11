@@ -33,6 +33,7 @@ import {
   type ScoreState,
   type ServerMsg,
   type SnapEntry,
+  catchGrade,
   classifyCatch,
   groupKeyFor,
   sanitizeName,
@@ -78,6 +79,7 @@ export interface Member {
   charge: number;
   catches: number;
   drops: number;
+  perfects: number;
   seat: number;
   pos: Vec3;
   facing: number;
@@ -135,7 +137,7 @@ export class Room {
   playerInfo(m: Member): PlayerInfo {
     return {
       id: m.id, name: m.name, hand: m.hand, seat: m.seat, pos: m.pos, facing: m.facing,
-      connected: m.connected, bot: m.bot, catches: m.catches, drops: m.drops, look: m.look,
+      connected: m.connected, bot: m.bot, catches: m.catches, drops: m.drops, perfects: m.perfects, look: m.look,
     };
   }
 
@@ -190,7 +192,7 @@ export class Room {
       id: o.bot ? 'coach' : newId(), guest: o.guest, name: o.name, hand: o.hand, bot: o.bot,
       joinOrder: this.joinCounter++, look, conn: o.conn, connected: true, disconnectedAt: 0,
       pose: { x: 0, z: 0, yaw: 0, g: gloveReady(0, o.hand) }, poseAt: this.now(),
-      arm: Arm.Idle, charge: 0, catches: 0, drops: 0, seat: 0, pos: [0, 0, 0], facing: 0,
+      arm: Arm.Idle, charge: 0, catches: 0, drops: 0, perfects: 0, seat: 0, pos: [0, 0, 0], facing: 0,
     };
     this.members.set(m.id, m);
     return m;
@@ -400,10 +402,10 @@ export class Room {
     let q = classifyCatch(near.dist, speed);
     if (q === null) q = 'bobble';
     const pos = positionAt(tr, near.t);
-    this.resolveCatch(m, q, speed, b.t0 + near.t * 1000, pos, vel, self);
+    this.resolveCatch(m, q, catchGrade(near.dist), speed, b.t0 + near.t * 1000, pos, vel, self);
   }
 
-  private resolveCatch(m: Member, q: ReturnType<typeof classifyCatch>, speed: number, at: number, pos: Vec3, vel: Vec3, self: boolean) {
+  private resolveCatch(m: Member, q: ReturnType<typeof classifyCatch>, g: number, speed: number, at: number, pos: Vec3, vel: Vec3, self: boolean) {
     if (q === null) return;
     if (q === 'deflect') {
       // Off the heel of the glove and out: the throw is dead.
@@ -421,12 +423,13 @@ export class Room {
     if (!self) {
       this.streak++;
       m.catches++;
+      if (q === 'perfect') m.perfects++;
       if (STREAK_MILESTONES.includes(this.streak)) milestone = this.streak;
       this.sessionBest = Math.max(this.sessionBest, this.streak);
       this.records.raise(this.groupKey(), this.streak);
     }
     if (this.layoutDirty) this.relayout();
-    this.broadcastBall({ k: 'catch', by: m.id, q, speed, at, pos, self, milestone }, true);
+    this.broadcastBall({ k: 'catch', by: m.id, q, g, speed, at, pos, self, milestone }, true);
     if (m.bot) this.bot?.onGotBall(this.now());
   }
 
@@ -535,7 +538,7 @@ export class Room {
       if (b.phase !== 'flight' || !b.live || !this.traj || b.tid !== act.tid) return;
       const vel = velocityAt(this.traj, act.tSec);
       const pos = positionAt(this.traj, act.tSec);
-      this.resolveCatch(coach, act.q, len(vel), b.t0 + act.tSec * 1000, pos, vel, false);
+      this.resolveCatch(coach, act.q, act.g, len(vel), b.t0 + act.tSec * 1000, pos, vel, false);
     }
   }
 }

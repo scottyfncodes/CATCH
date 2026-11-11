@@ -52,6 +52,7 @@ export const REACH_V = 1.12;
 export const GLOVE_READY: [number, number, number] = [0, 1.18, 0.42];
 
 /** Catch zones: distance from glove pocket centre to the ball centre (metres). */
+export const CATCH_PERFECT = 0.045;
 export const CATCH_POCKET = 0.095;
 export const CATCH_WEB = 0.155;
 export const CATCH_BOBBLE = 0.205;

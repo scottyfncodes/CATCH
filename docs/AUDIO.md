@@ -10,7 +10,31 @@ from deterministic DSP (`src/client/dsp.ts`). They are not generic arcade
 effects, but they are not recordings either. Replacing the POP and ZIP layers
 with real, legally usable recordings is the main open audio task.
 
-## THE POP (glove impact)
+## THE POP is the catch grade
+
+The server measures how far the ball's centre passed from the glove pocket's
+centre and sends a grade `g` (0..1, `catchGrade()` in `src/shared/protocol.ts`)
+with every catch. The POP is synthesised from that number, so the sound *is* the
+score and every player hears the same one:
+
+| Grade | Distance from pocket centre | What you hear |
+|---|---|---|
+| perfect (g ≳ 0.78) | ≤ 4.5 cm | full-band crack + tight body + tonal pocket **ring** + slapback off the houses |
+| pocket | ≤ 9.5 cm | solid crack, full body, a little ring |
+| web | ≤ 15.5 cm | crack low-passed away, dull body, more leather shuffle |
+| bobble | ≤ 20.5 cm | muffled impact, then a second squeeze 130 ms later |
+
+Within the clean range it is continuous: crack level ∝ g^1.6, crack low-pass
+2.2 kHz → 17 kHz, body pitch/tightness and ring amount all follow g. Ball speed
+sets loudness and weight. `docs/pop-grades.wav` is an offline render of the
+ladder (perfect hard, perfect soft toss, pocket, web, bobble). Measured on that
+render: peak 0.82 / 0.61 / 0.52 / 0.37 / 0.27, high-frequency content ~7× higher
+for a perfect hard catch than a web catch.
+
+The master bus uses a transparent soft clip (linear below about -3 dBFS) instead
+of a DynamicsCompressor; the compressor was flattening the crack transient.
+
+## THE POP layers
 
 Layered per catch from pre-rendered variations (picked at random):
 

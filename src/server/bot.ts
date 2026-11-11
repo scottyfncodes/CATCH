@@ -13,7 +13,7 @@ import type { Member } from './room.js';
 
 export type BotAction =
   | { kind: 'throw'; p: Vec3; v: Vec3 }
-  | { kind: 'catch'; tid: number; tSec: number; q: CatchQuality };
+  | { kind: 'catch'; tid: number; tSec: number; q: CatchQuality; g: number };
 
 const WINDUP_MS = 700;
 
@@ -117,7 +117,12 @@ export class BotBrain {
       if (!this.decided && plan.t <= tSec + 0.02 && tSec > 0.25) {
         this.decided = true;
         const q = this.outcome(plan.norm, Math.hypot(this.vx, this.vz));
-        if (q) return { kind: 'catch', tid: ball.tid, tSec: Math.max(tSec - 0.01, plan.t), q };
+        if (q) {
+          // The grade the POP plays: easy balls are often dead centre, reaches are scrappier.
+          const r = this.rng();
+          const g = q === 'perfect' ? 0.82 + r * 0.15 : q === 'pocket' ? 0.55 + r * 0.2 : q === 'web' ? 0.3 + r * 0.2 : 0.1;
+          return { kind: 'catch', tid: ball.tid, tSec: Math.max(tSec - 0.01, plan.t), q, g: Math.round(g * 100) / 100 };
+        }
       }
       return null;
     }
@@ -134,7 +139,7 @@ export class BotBrain {
   private outcome(norm: number, speed: number): CatchQuality | null {
     const r = this.rng();
     const hustle = Math.min(0.25, speed * 0.04);
-    if (norm <= 0.62) return r < 0.985 - hustle * 0.2 ? (norm < 0.4 ? 'pocket' : 'web') : null;
+    if (norm <= 0.62) return r < 0.985 - hustle * 0.2 ? (norm < 0.4 ? (r < 0.45 ? 'perfect' : 'pocket') : 'web') : null;
     if (norm <= 0.86) return r < 0.9 - hustle ? (r < 0.5 ? 'web' : 'pocket') : r < 0.95 ? 'bobble' : null;
     if (norm <= 1.0) return r < 0.55 - hustle ? 'bobble' : r < 0.7 ? 'web' : null;
     if (norm <= 1.12) return r < 0.18 ? 'bobble' : null;

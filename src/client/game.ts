@@ -14,7 +14,7 @@ import {
   type Hand, type Pose, clampReach, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, releasePoint,
 } from '../shared/pose';
 import {
-  Arm, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, classifyCatch,
+  Arm, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, classifyCatch,
 } from '../shared/protocol';
 import { type Vec3, clamp, lerp, wrapAngle } from '../shared/vec';
 import { audio } from './audio';
@@ -469,7 +469,7 @@ export class Game {
         if (ev.by === mine) {
           const predicted = this.localCatch && this.localCatch.tid === b.tid;
           // Not predicted locally (rare): still give full feedback.
-          if (!predicted) this.popLocal(ev.q, ev.speed);
+          if (!predicted) this.popLocal(ev.q, ev.speed, ev.g ?? 0.6);
           this.localCatch = null;
           const at = this.lastCatchPerf || perf;
           this.catchShow = { by: mine, perf: at };
@@ -479,7 +479,7 @@ export class Game {
         } else {
           const av = this.avatarOf(ev.by);
           const at = av ? [av.gloveWorldPos.x, av.gloveWorldPos.y, av.gloveWorldPos.z] as Vec3 : ev.pos;
-          audio.pop({ speed: ev.speed, q: ev.q, pos: at });
+          audio.pop({ speed: ev.speed, q: ev.q, g: ev.g ?? 0.6, pos: at });
           if (av && this.traj) av.catchImpact(velocityAt(this.traj, (ev.at - prev.t0) / 1000), ev.speed);
           if (av) setTimeout(() => av.transfer(), 320);
           this.catchShow = { by: ev.by, perf };
@@ -491,7 +491,7 @@ export class Game {
       case 'deflect': {
         this.pinned = null;
         this.localCatch = null;
-        if (ev.by !== mine) audio.pop({ speed: ev.speed, q: 'deflect', pos: ev.pos });
+        if (ev.by !== mine) audio.pop({ speed: ev.speed, q: 'deflect', g: 0, pos: ev.pos });
         if (ev.by === mine) this.ev.moment('drop');
         break;
       }
@@ -513,9 +513,9 @@ export class Game {
     }
   }
 
-  private popLocal(q: CatchQuality | 'deflect', speed: number) {
-    audio.pop({ speed, q, pos: null, side: this.hand === 'R' ? -1 : 1 });
-    haptic(q === 'pocket' && speed > 18 ? 'firm' : 'light');
+  private popLocal(q: CatchQuality | 'deflect', speed: number, g: number) {
+    audio.pop({ speed, q, g, pos: null, side: this.hand === 'R' ? -1 : 1 });
+    haptic(g >= 0.75 ? 'firm' : 'light');
   }
 
   // ------------------------------------------------------------------ throwing
@@ -749,14 +749,14 @@ export class Game {
     this.net.send({ t: 'catch', tid: b.tid, at: b.t0 + res.t * 1000, pose: [at.x, at.z, at.yaw, at.g[0], at.g[1], at.g[2]] });
     const vel = velocityAt(this.traj, res.t);
     if (q === 'deflect') {
-      this.popLocal('deflect', speed);
+      this.popLocal('deflect', speed, 0);
       this.myAvatar?.catchImpact(vel, speed * 0.5);
       return;
     }
     this.localCatch = { tid: b.tid, q, at: res.t };
     this.lastCatchPerf = performance.now();
     this.myAvatar?.catchImpact(vel, speed);
-    this.popLocal(q, speed);
+    this.popLocal(q, speed, catchGrade(res.dist));
   }
 
   private interp(p: Remote, sNow: number) {

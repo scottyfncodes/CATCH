@@ -121,6 +121,8 @@ try {
   check('catch detection: ball actually passed through the glove (server-validated)', !!caught);
   const pops = (await other.state()).audio.filter((x) => x.k === 'pop').length;
   check('no duplicate impact sounds for one catch', pops === 1, `pops=${pops}`);
+  const popEv = (await other.state()).audio.find((x) => x.k === 'pop');
+  check('the POP carries the catch grade from the server', typeof popEv?.g === 'number' && popEv.g > 0, `g=${popEv?.g} q=${popEv?.q}`);
   const zipSoft = (await other.state()).zipPeak;
 
   // Throw back, harder: ZIP must be louder for the faster ball.

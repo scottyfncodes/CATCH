@@ -25,6 +25,10 @@ One thumb, no buttons on screen:
   running when it arrives: it may tip off the web or pop out. Too far: it's gone.
   Watch the ball's shadow on the grass to judge where it will come down.
 - Let go and you wander back to your spot. Desktop: arrow keys / WASD also move.
+- **The POP is your grade.** The server scores each catch by how close the ball
+  came to the centre of your pocket, and everyone hears that grade: a perfect
+  catch cracks and rings off the houses, an off-centre one thwaps, a bobble
+  squeezes twice. Perfect catches are counted in the pause sheet.
 - Every caught throw adds one to the room's streak; a drop resets it.
 
 ## Architecture

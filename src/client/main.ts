@@ -445,7 +445,7 @@ function pauseSheet(code: string) {
   const people = [...roster].sort((a, b) => a.seat - b.seat).map((p) => `
     <li><span class="dot" style="background:${LOOKS[p.look % LOOKS.length].shirt}"></span>
       <span class="nm">${esc(p.name)}${p.id === me ? ' <em>you</em>' : ''}${p.bot ? ' <em>practice</em>' : ''}${p.connected ? '' : ' <em>reconnecting</em>'}</span>
-      <span class="num">${p.catches} caught</span><span class="num">${p.drops} dropped</span></li>`).join('');
+      <span class="num">${p.catches} caught${p.perfects ? ` · ${p.perfects} perfect` : ''}</span><span class="num">${p.drops} dropped</span></li>`).join('');
   const el = sheet(`
     <h2>Paused</h2>
     <p class="sub">The game keeps going for everyone else.</p>
