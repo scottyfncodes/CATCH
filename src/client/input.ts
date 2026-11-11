@@ -1,72 +1,53 @@
-// Two-thumb controls.
+// One-thumb controls, decided at touch-down by what you're doing:
 //
-//   Glove thumb (left for right-handers): drag anywhere on that half. The
-//   glove follows relative motion and stays where you leave it.
+//   You have the ball → touch anywhere and pull back. How far you pull sets
+//   how hard you throw; pulling off to one side sends it to the other (like a
+//   slingshot). Let go to throw. Slide back to where you started (or pull
+//   upward) and let go to cancel.
 //
-//   Throwing thumb (right for right-handers), on the other half:
-//     • while you DON'T have the ball: drag anywhere to look around
-//     • while you DO have the ball:
-//         upper part of the screen → look around (aim with your eyes)
-//         lower part, or on the ball → grip it:
-//           pull down   → wind up (further = harder; your arm draws back)
-//           slide left/right → aim the arm (a faint arc shows the throw)
-//           let go      → throw
-//           slide back up to where you started and let go → cancel
+//   You don't → touch anywhere and drag to move. The touch point is a
+//   floating stick that follows your thumb; lift to stop. Your glove reaches
+//   for the ball by itself: your job is to get there.
 //
-// The gesture type is fixed at touch-down by where the thumb lands, so a look
-// drag can never become a throw, and a throw only happens on release with a
-// real pull-back.
+// A move drag can never become a throw: the gesture type is fixed at
+// touch-down, and a second finger is ignored while one is active.
 
-import type { Hand } from '../shared/pose';
-
-export interface ThrowRelease {
-  /** 0..1 from how far the ball was pulled back. */
-  charge: number;
-  /** -1..1 arm aim from the sideways slide (+ = right). */
-  aim: number;
-  /** 0..1 bonus from snapping the thumb up as you let go (optional skill). */
-  snap: number;
+export interface Aim {
+  /** 0..1 from how far you pulled back. */
+  power: number;
+  /** Throw direction, radians from straight ahead (+ = to the right). */
+  angle: number;
+  /** Whether letting go now would throw. */
+  armed: boolean;
 }
 
 export interface InputHandlers {
-  canGrip(): boolean;
-  /** Screen position (CSS px) of the ball in your throwing hand. */
-  gripPoint(): { x: number; y: number } | null;
-  onLook(dx: number, dy: number): void;
-  onLookActive(active: boolean): void;
-  onGlove(du: number, dv: number): void;
-  onGloveActive(active: boolean): void;
-  onGrip(): void;
-  /** Live windup: charge 0..1 and arm aim -1..1. */
-  onWind(charge: number, aim: number): void;
-  onRelease(r: ThrowRelease): void;
-  onCancel(): void;
+  canThrow(): boolean;
+  onAimStart(): void;
+  onAim(a: Aim): void;
+  onThrow(a: Aim): void;
+  onAimCancel(): void;
+  /** Stick in screen space, -1..1, x to the right, y up the screen. */
+  onMove(x: number, y: number): void;
 }
 
-type Role = 'glove' | 'look' | 'throw';
+type Role = 'aim' | 'move';
 
-interface Track {
-  role: Role;
-  x: number; y: number;
-  sx: number; sy: number;
-  hist: { x: number; y: number; t: number }[];
-}
+interface Track { role: Role; id: number; ox: number; oy: number; x: number; y: number }
 
-export const GRIP_RADIUS = 90;
-/** Fraction of screen height from the top where the throwing side's grip zone starts. */
-export const GRIP_ZONE_TOP = 0.5;
-/** Pull distance (fraction of screen height) for a full-power throw. */
-const FULL_PULL = 0.3;
-/** Sideways slide (fraction of screen width) for full arm aim. */
-const FULL_AIM = 0.32;
-export const MIN_CHARGE = 0.07;
+/** Pull (as a fraction of the screen height) for a full-strength throw. */
+const FULL_PULL = 0.27;
+const DEAD = 14;
+const STICK = 58;
 
 export class Controls {
-  private tracks = new Map<number, Track>();
-  hand: Hand = 'R';
+  private track: Track | null = null;
   enabled = true;
+  private ring: HTMLDivElement;
+  private knob: HTMLDivElement;
+  private band: HTMLDivElement;
   /** Diagnostics for tests. */
-  stats = { looks: 0, throws: 0, cancels: 0, grips: 0 };
+  stats = { moves: 0, throws: 0, cancels: 0, aims: 0 };
 
   constructor(private el: HTMLElement, private h: InputHandlers) {
     el.addEventListener('pointerdown', this.down, { passive: false });
@@ -78,127 +59,128 @@ export class Controls {
     for (const ev of ['touchstart', 'touchmove', 'touchend', 'gesturestart', 'gesturechange', 'dblclick', 'contextmenu']) {
       el.addEventListener(ev, (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
     }
+    this.ring = document.createElement('div');
+    this.ring.className = 'touch-ring';
+    this.band = document.createElement('div');
+    this.band.className = 'touch-band';
+    this.knob = document.createElement('div');
+    this.knob.className = 'touch-knob';
+    el.append(this.ring, this.band, this.knob);
+    this.hideMarks();
   }
 
-  private gloveSideIsLeft() { return this.hand === 'R'; }
-
-  private roleFor(x: number, y: number): Role {
-    const w = this.el.clientWidth, h = this.el.clientHeight;
-    const leftHalf = x < w / 2;
-    if (leftHalf === this.gloveSideIsLeft()) return 'glove';
-    if (this.h.canGrip()) {
-      const g = this.h.gripPoint();
-      if (y > h * GRIP_ZONE_TOP) return 'throw';
-      if (g && Math.hypot(x - g.x, y - g.y) <= GRIP_RADIUS) return 'throw';
-    }
-    return 'look';
+  private local(e: PointerEvent) {
+    const r = this.el.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
 
   private down = (e: PointerEvent) => {
     e.preventDefault();
-    if (!this.enabled) return;
-    const r = this.el.getBoundingClientRect();
-    const x = e.clientX - r.left, y = e.clientY - r.top;
-    const role = this.roleFor(x, y);
-    // One finger per role; a second finger on the same side is ignored.
-    for (const t of this.tracks.values()) {
-      if (t.role === role || (role !== 'glove' && t.role !== 'glove')) return;
-    }
+    if (!this.enabled || this.track) return;
+    const { x, y } = this.local(e);
+    const role: Role = this.h.canThrow() ? 'aim' : 'move';
     try { this.el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-    this.tracks.set(e.pointerId, { role, x, y, sx: x, sy: y, hist: [{ x, y, t: e.timeStamp }] });
-    if (role === 'glove') this.h.onGloveActive(true);
-    else if (role === 'look') { this.h.onLookActive(true); this.stats.looks++; }
-    else { this.h.onGrip(); this.h.onWind(0, 0); this.stats.grips++; }
+    this.track = { role, id: e.pointerId, ox: x, oy: y, x, y };
+    if (role === 'aim') { this.stats.aims++; this.h.onAimStart(); }
+    else this.stats.moves++;
+    this.draw();
   };
 
   private move = (e: PointerEvent) => {
-    const t = this.tracks.get(e.pointerId);
-    if (!t) return;
+    const t = this.track;
+    if (!t || t.id !== e.pointerId) return;
     e.preventDefault();
-    const r = this.el.getBoundingClientRect();
-    const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
-    const list = evs.length ? evs : [e];
-    for (const ev of list) {
-      const x = ev.clientX - r.left, y = ev.clientY - r.top;
-      const dx = x - t.x, dy = y - t.y;
-      t.x = x; t.y = y;
-      t.hist.push({ x, y, t: ev.timeStamp });
-      if (t.hist.length > 32) t.hist.shift();
-      if (t.role === 'glove') {
-        const W = this.el.clientWidth, H = this.el.clientHeight;
-        this.h.onGlove(dx * (2.3 / (0.46 * W)), -dy * (2.3 / (0.34 * H)));
-      } else if (t.role === 'look') {
-        this.h.onLook(dx, dy);
-      }
+    const { x, y } = this.local(e);
+    t.x = x; t.y = y;
+    if (t.role === 'move') {
+      // Floating stick: the origin follows a thumb that runs past the edge.
+      const dx = t.x - t.ox, dy = t.y - t.oy, l = Math.hypot(dx, dy);
+      if (l > STICK) { t.ox = t.x - (dx / l) * STICK; t.oy = t.y - (dy / l) * STICK; }
+      this.emitMove(t);
+    } else {
+      this.h.onAim(this.aimOf(t));
     }
-    if (t.role === 'throw') {
-      const w = this.wind(t);
-      this.h.onWind(w.charge, w.aim);
-    }
+    this.draw();
   };
 
-  /** Current windup from the thumb's offset to where it gripped. */
-  private wind(t: Track, x = t.x, y = t.y) {
-    const W = this.el.clientWidth, H = this.el.clientHeight;
-    const pull = Math.max(0, (y - t.sy) / (FULL_PULL * H));
-    const charge = Math.min(1, pull);
-    const aim = Math.max(-1, Math.min(1, (x - t.sx) / (FULL_AIM * W)));
-    return { charge, aim };
+  private emitMove(t: Track) {
+    const dx = t.x - t.ox, dy = t.y - t.oy, l = Math.hypot(dx, dy);
+    if (l < 4) { this.h.onMove(0, 0); return; }
+    const m = Math.min(1, (l - 4) / (STICK - 4));
+    this.h.onMove((dx / l) * m, (-dy / l) * m);
+  }
+
+  aimOf(t: { ox: number; oy: number; x: number; y: number }): Aim {
+    const H = this.el.clientHeight || 800;
+    const dx = t.x - t.ox, dy = t.y - t.oy;
+    const l = Math.hypot(dx, dy);
+    const power = Math.min(1, Math.max(0, (l - DEAD) / (FULL_PULL * H)));
+    // Throw goes opposite the pull. Straight down = straight at your friend.
+    const angle = Math.max(-1, Math.min(1, Math.atan2(-dx, Math.max(1, dy))));
+    const armed = l > DEAD + 4 && dy > l * 0.3;
+    return { power, angle, armed };
   }
 
   private up = (e: PointerEvent) => {
-    const t = this.tracks.get(e.pointerId);
-    if (!t) return;
-    this.tracks.delete(e.pointerId);
-    if (t.role === 'glove') { this.h.onGloveActive(false); return; }
-    if (t.role === 'look') { this.h.onLookActive(false); return; }
-    // Release. If the thumb snapped upward just before lifting, use the windup
-    // from just before the snap (so "pull, then flick" also works) and give a
-    // little extra zip.
-    const H = this.el.clientHeight;
-    const last = t.hist[t.hist.length - 1];
-    let before = last;
-    for (let i = t.hist.length - 1; i >= 0; i--) {
-      before = t.hist[i];
-      if (last.t - t.hist[i].t > 90) break;
-    }
-    const dt = Math.max(8, last.t - before.t) / 1000;
-    const upSpeed = (before.y - last.y) / H / dt; // screen heights / s
-    let w = this.wind(t);
-    let snap = 0;
-    if (upSpeed > 1.2) {
-      const pre = this.wind(t, before.x, before.y);
-      if (pre.charge > w.charge) w = pre;
-      snap = Math.min(1, (upSpeed - 1.2) / 3);
-    }
-    if (w.charge >= MIN_CHARGE) {
-      this.stats.throws++;
-      this.h.onRelease({ charge: w.charge, aim: w.aim, snap });
-    } else {
-      this.stats.cancels++;
-      this.h.onCancel();
-    }
+    const t = this.track;
+    if (!t || t.id !== e.pointerId) return;
+    this.track = null;
+    this.hideMarks();
+    if (t.role === 'move') { this.h.onMove(0, 0); return; }
+    const a = this.aimOf(t);
+    if (a.armed && this.h.canThrow()) { this.stats.throws++; this.h.onThrow(a); }
+    else { this.stats.cancels++; this.h.onAimCancel(); }
   };
 
   private cancel = (e: Event) => {
-    const id = (e as PointerEvent).pointerId;
-    const t = this.tracks.get(id);
-    if (!t) return;
-    this.tracks.delete(id);
-    if (t.role === 'glove') this.h.onGloveActive(false);
-    else if (t.role === 'look') this.h.onLookActive(false);
-    else { this.stats.cancels++; this.h.onCancel(); }
+    const t = this.track;
+    if (!t || t.id !== (e as PointerEvent).pointerId) return;
+    this.track = null;
+    this.hideMarks();
+    if (t.role === 'move') this.h.onMove(0, 0);
+    else { this.stats.cancels++; this.h.onAimCancel(); }
   };
 
   /** Abort any in-progress gesture (e.g. when the ball is taken away). */
   reset() {
-    for (const t of this.tracks.values()) {
-      if (t.role === 'throw') this.h.onCancel();
-      if (t.role === 'look') this.h.onLookActive(false);
-      if (t.role === 'glove') this.h.onGloveActive(false);
-    }
-    this.tracks.clear();
+    const t = this.track;
+    this.track = null;
+    this.hideMarks();
+    if (!t) return;
+    if (t.role === 'move') this.h.onMove(0, 0);
+    else this.h.onAimCancel();
   }
 
-  get gripping() { return [...this.tracks.values()].some((t) => t.role === 'throw'); }
+  get aiming() { return this.track?.role === 'aim'; }
+  get moving() { return this.track?.role === 'move'; }
+
+  // ---- the only on-screen control marks, and only under your thumb
+
+  private hideMarks() {
+    for (const m of [this.ring, this.knob, this.band]) m.style.opacity = '0';
+  }
+
+  private draw() {
+    const t = this.track;
+    if (!t) return;
+    const put = (m: HTMLElement, x: number, y: number) => { m.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`; };
+    put(this.ring, t.ox, t.oy);
+    put(this.knob, t.x, t.y);
+    this.ring.dataset.role = t.role;
+    this.knob.dataset.role = t.role;
+    if (t.role === 'move') {
+      this.ring.style.opacity = '1';
+      this.knob.style.opacity = '1';
+      this.band.style.opacity = '0';
+      return;
+    }
+    const a = this.aimOf(t);
+    const dx = t.x - t.ox, dy = t.y - t.oy, l = Math.hypot(dx, dy);
+    this.ring.style.opacity = '1';
+    this.knob.style.opacity = a.armed ? '1' : '0.45';
+    this.band.style.opacity = a.armed ? String(0.35 + 0.5 * a.power) : '0.15';
+    this.band.style.width = `${l.toFixed(1)}px`;
+    this.band.style.transform = `translate(${t.ox.toFixed(1)}px, ${t.oy.toFixed(1)}px) rotate(${Math.atan2(dy, dx).toFixed(3)}rad)`;
+    this.knob.style.setProperty('--p', a.power.toFixed(2));
+  }
 }

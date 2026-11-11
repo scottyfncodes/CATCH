@@ -47,9 +47,12 @@ Layered per catch from pre-rendered variations (picked at random):
 Quality changes the mix: **pocket** = crisp crack + full body; **web** = dulled
 crack, low-passed body, more settle; **bobble** = muffled first impact plus a
 second squeeze 130 ms later; **deflect** = dull thwap, no settle.
-Your own catches play dry and close (stereo, panned to the glove side);
-others' catches are HRTF-spatialised at their glove with distance roll-off,
-air absorption and speed-of-sound delay. A guard prevents double POPs between a
+Your own catches play dry and close (stereo, panned to the glove side), even
+though the camera is a few steps away: the POP is the game. Others' catches are
+HRTF-spatialised at their glove with distance roll-off, air absorption and
+speed-of-sound delay. The spatial listener sits between you and the camera,
+facing the way the camera faces, so the ball's ZIP crosses the stereo field the
+way you see it cross the screen. A guard prevents double POPs between a
 predicted local catch and its server confirmation.
 
 ## THE ZIP (ball in flight)

@@ -104,8 +104,8 @@ export function setGloveClosure(glove: THREE.Object3D, k: number) {
 
 /**
  * Bare throwing hand cradling a ball; origin at the ball centre. The ball sits
- * on the fingers with the palm under it, so the ball stays fully visible from
- * first person. Wrist toward +Z. Mirror on x for a left hand.
+ * on the fingers with the palm under it, so the ball stays visible in the
+ * hand. Wrist toward +Z. Mirror on x for a left hand.
  */
 export function buildHand(skin: string): THREE.Group {
   const mat = new THREE.MeshStandardMaterial({ color: skin, roughness: 0.62 });

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "CATCH. \u2014 a multiplayer first-person game of catch for phones.",
+  "description": "CATCH. \u2014 a game of catch for phones: two people, one ball, one continuous shot.",
   "engines": {
     "node": ">=20"
   },

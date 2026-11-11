@@ -92,10 +92,11 @@ export type BallEvent =
 export type ClientMsg =
   | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number }
   | { t: 'ping'; c: number }
-  /** yaw, pitch, gu, gv, arm, charge — rounded. */
-  | { t: 'st'; p: [number, number, number, number, number, number] }
+  /** x, z, yaw, gx, gy, gz, arm, charge — rounded. */
+  | { t: 'st'; p: PoseWire }
   | { t: 'throw'; rt: number; p: Vec3; v: Vec3; tid: number }
-  | { t: 'catch'; tid: number; at: number; pose: [number, number, number, number] }
+  /** Pose (x, z, yaw, gx, gy, gz) at the moment of contact. */
+  | { t: 'catch'; tid: number; at: number; pose: [number, number, number, number, number, number] }
   | { t: 'prof'; name: string; hand: Hand }
   | { t: 'rec'; key: string; best: number }
   | { t: 'leave' };
@@ -112,10 +113,14 @@ export type ServerMsg =
   | { t: 'snap'; s: number; e: SnapEntry[] }
   | { t: 'ball'; ball: BallState; score: ScoreState; ev?: BallEvent; players?: PlayerInfo[] };
 
-/** [id, yaw, pitch, gu, gv, arm, charge] */
-export type SnapEntry = [string, number, number, number, number, number, number];
+/** [x, z, yaw, gx, gy, gz, arm, charge] */
+export type PoseWire = [number, number, number, number, number, number, number, number];
 
-export const PROTOCOL_VERSION = 1;
+/** [id, x, z, yaw, gx, gy, gz, arm, charge] */
+export type SnapEntry = [string, number, number, number, number, number, number, number, number];
+
+/** 2: third-person bodies that move (pose carries position + glove point). */
+export const PROTOCOL_VERSION = 2;
 
 /** Room codes: 4 letters, no ambiguous characters. */
 export const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ';

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CATCH_GRACE_MS, EYE_HEIGHT, MAX_PLAYERS, RECOVER_DELAY_MS } from '../../src/shared/constants';
 import { positionAt, simulateFlight, solveElevation, solveThrowTo, velocityAt } from '../../src/shared/physics';
-import { type Pose, eyePosition, gloveWorld, lookAngles, releasePoint, seatLayout } from '../../src/shared/pose';
+import { type Pose, bodyToWorld, clampReach, eyePosition, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, releasePoint, seatLayout } from '../../src/shared/pose';
 import { type ServerMsg, catchGrade, classifyCatch, groupKeyFor } from '../../src/shared/protocol';
 import { type Vec3, dist, len } from '../../src/shared/vec';
 import { type Conn, MemoryRecords, Room } from '../../src/server/room';
@@ -30,16 +30,27 @@ function setup(n: number, practiceBot = false) {
   return { room, conns, ids, clock };
 }
 
-/** Throw from `from` straight at `to`'s glove held at a given pose. */
-function throwAt(room: Room, fromId: string, toId: string, t: number, pace = 15, offset: Vec3 = [0, 0, 0]) {
+type Wire = [number, number, number, number, number, number];
+const wire = (p: Pose): Wire => [p.x, p.z, p.yaw, p.g[0], p.g[1], p.g[2]];
+
+/** Stream a pose for a member (as the client does at 20 Hz). */
+function stream(room: Room, id: string, p: Pose) {
+  room.handle(id, { t: 'st', p: [p.x, p.z, p.yaw, p.g[0], p.g[1], p.g[2], 0, 0] });
+}
+
+/**
+ * Throw from `from` straight at `to`'s glove. The receiver stands at their
+ * spot (or `at`, if they moved), facing the thrower, glove in the ready spot.
+ */
+function throwAt(room: Room, fromId: string, toId: string, t: number, pace = 15, offset: Vec3 = [0, 0, 0], at?: Vec3) {
   const from = room.members.get(fromId)!;
   const to = room.members.get(toId)!;
-  const toEye = eyePosition(to.pos);
-  const look = lookAngles(toEye, eyePosition(from.pos));
-  const pose: Pose = { yaw: look.yaw, pitch: look.pitch - 0.25, gu: 0, gv: 0 };
-  const glove = gloveWorld(to.pos, pose);
+  const feet: Vec3 = at ?? to.pos;
+  const yawTo = lookAngles(feet, from.pos).yaw;
+  const pose: Pose = { x: feet[0], z: feet[2], yaw: yawTo, g: gloveReady(yawTo, to.hand) };
+  const glove = gloveWorld(pose);
   const target: Vec3 = [glove[0] + offset[0], glove[1] + offset[1], glove[2] + offset[2]];
-  const yaw = lookAngles(eyePosition(from.pos), target).yaw;
+  const yaw = lookAngles(from.pos, target).yaw;
   const p = releasePoint(from.pos, yaw, 'R');
   const T = dist(p, target) / pace;
   const v = solveThrowTo(p, target, T);
@@ -98,7 +109,29 @@ describe('physics', () => {
       }
     }
     const two = seatLayout(2);
-    expect(dist(two[0].pos, two[1].pos)).toBeGreaterThan(12);
+    expect(dist(two[0].pos, two[1].pos)).toBeGreaterThan(10);
+  });
+  it('the reach envelope: a crouch, a stretch, a step to the side — not further', () => {
+    expect(reachNorm([0, 1.2, 0.4])).toBeLessThan(0.5);
+    expect(reachNorm([0, 0.2, 0.3])).toBeLessThan(1);
+    expect(reachNorm([0, 2.25, 0.2])).toBeLessThan(1);
+    expect(reachNorm([0.95, 1.2, 0])).toBeLessThan(1);
+    expect(reachNorm([1.6, 1.2, 0])).toBeGreaterThan(1);
+    expect(reachNorm([0, 2.6, 0])).toBeGreaterThan(1);
+    const c = clampReach([3, 1.2, 0]);
+    expect(reachNorm(c)).toBeCloseTo(1, 6);
+    const r = bodyToWorld(0, [1, 0, 0]);
+    expect(r[0]).toBeCloseTo(1); expect(r[2]).toBeCloseTo(0);
+  });
+  it('plans the best moment to intercept a throw', () => {
+    const p: Vec3 = [0, 1.7, 6];
+    const target: Vec3 = [0.5, 1.3, -6];
+    const tr = simulateFlight(p, solveThrowTo(p, target, 1.0));
+    const ip = interceptPlan(tr, 0, 0, -6);
+    expect(ip.norm).toBeLessThan(0.7);
+    expect(Math.abs(ip.t - 1.0)).toBeLessThan(0.1);
+    // Standing far off to the side, the ball is out of reach.
+    expect(interceptPlan(tr, 0, 3, -6).norm).toBeGreaterThan(1);
   });
 });
 
@@ -130,7 +163,7 @@ describe('room', () => {
     expect(room.ball.phase).toBe('flight');
     const tid = room.ball.tid;
     clock.advance(T * 1000 + 30);
-    const claim = { t: 'catch' as const, tid, at: t0 + T * 1000, pose: [pose.yaw, pose.pitch, pose.gu, pose.gv] as [number, number, number, number] };
+    const claim = { t: 'catch' as const, tid, at: t0 + T * 1000, pose: wire(pose) };
     room.handle(ids[1], claim);
     room.handle(ids[1], claim);
     room.handle(ids[0], claim);
@@ -153,7 +186,7 @@ describe('room', () => {
       const t0 = clock.now();
       const { pose, T } = throwAt(room, holder, to, t0);
       clock.advance(T * 1000 + 20);
-      room.handle(to, { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: [pose.yaw, pose.pitch, pose.gu, pose.gv] });
+      room.handle(to, { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: wire(pose) });
       expect(room.ball.holder).toBe(to);
       holder = to;
       clock.advance(500);
@@ -165,11 +198,64 @@ describe('room', () => {
     const { room, ids, clock } = setup(2);
     const t0 = clock.now();
     const { pose, T } = throwAt(room, ids[0], ids[1], t0, 15, [0.6, 0, 0]);
-    void catchGrade;
     clock.advance(T * 1000 + 20);
-    room.handle(ids[1], { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: [pose.yaw, pose.pitch, pose.gu, pose.gv] });
+    room.handle(ids[1], { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: wire(pose) });
     expect(room.ball.phase).toBe('flight');
     expect(room.streak).toBe(0);
+  });
+
+  it('a player who moved to get under a throw can catch it there', () => {
+    const { room, ids, clock } = setup(2);
+    const to = room.members.get(ids[1])!;
+    const at: Vec3 = [to.pos[0] + 2.4, 0, to.pos[2] + 0.5];
+    const t0 = clock.now();
+    const { pose, T } = throwAt(room, ids[0], ids[1], t0, 14, [0, 0, 0], at);
+    stream(room, ids[1], pose);
+    clock.advance(T * 1000 + 20);
+    room.handle(ids[1], { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: wire(pose) });
+    expect(room.ball.holder).toBe(ids[1]);
+    expect(room.streak).toBe(1);
+  });
+
+  it('rejects a glove beyond reach, a body teleported far from its spot, or one far from its streamed position', () => {
+    const { room, ids, clock } = setup(2);
+    const to = room.members.get(ids[1])!;
+    // Glove out of the reach envelope (arm two metres long).
+    let t0 = clock.now();
+    let r = throwAt(room, ids[0], ids[1], t0);
+    const far: Pose = { ...r.pose, g: [r.pose.g[0] * 4, r.pose.g[1], r.pose.g[2] * 4] };
+    clock.advance(r.T * 1000);
+    room.handle(ids[1], { t: 'catch', tid: room.ball.tid, at: t0 + r.T * 1000, pose: wire(far) });
+    expect(room.streak).toBe(0);
+    for (let i = 0; i < 200 && room.ball.phase !== 'held'; i++) { clock.advance(50); room.tick(); }
+    // Body 7 m from home.
+    const holder = room.ball.holder!;
+    const recv = holder === ids[0] ? ids[1] : ids[0];
+    const rm = room.members.get(recv)!;
+    t0 = clock.now();
+    r = throwAt(room, holder, recv, t0, 14, [0, 0, 0], [rm.pos[0] + 7, 0, rm.pos[2]]);
+    clock.advance(r.T * 1000);
+    room.handle(recv, { t: 'catch', tid: room.ball.tid, at: t0 + r.T * 1000, pose: wire(r.pose) });
+    expect(room.streak).toBe(0);
+    // Claimed 3 m from where the player was just streaming.
+    for (let i = 0; i < 200 && room.ball.phase !== 'held'; i++) { clock.advance(50); room.tick(); }
+    const h2 = room.ball.holder!;
+    const r2 = h2 === ids[0] ? ids[1] : ids[0];
+    const rm2 = room.members.get(r2)!;
+    t0 = clock.now();
+    r = throwAt(room, h2, r2, t0, 14, [0, 0, 0], [rm2.pos[0] + 3, 0, rm2.pos[2]]);
+    clock.advance(r.T * 1000);
+    stream(room, r2, { x: rm2.pos[0], z: rm2.pos[2], yaw: rm2.facing, g: gloveReady(rm2.facing, 'R') });
+    room.handle(r2, { t: 'catch', tid: room.ball.tid, at: t0 + r.T * 1000, pose: wire(r.pose) });
+    expect(room.streak).toBe(0);
+    void to;
+  });
+
+  it('keeps streamed bodies near their spot', () => {
+    const { room, ids } = setup(2);
+    const m = room.members.get(ids[1])!;
+    stream(room, ids[1], { x: m.pos[0] + 20, z: m.pos[2], yaw: 0, g: [0, 1.2, -0.4] });
+    expect(Math.hypot(m.pose.x - m.pos[0], m.pose.z - m.pos[2])).toBeLessThanOrEqual(4.5 + 1e-9);
   });
 
   it('a miss resets the streak exactly once and the ball is recovered', () => {
@@ -180,7 +266,7 @@ describe('room', () => {
       const t0 = clock.now();
       const { pose, T } = throwAt(room, holder, other, t0);
       clock.advance(T * 1000);
-      room.handle(other, { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: [pose.yaw, pose.pitch, pose.gu, pose.gv] });
+      room.handle(other, { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: wire(pose) });
       [holder, other] = [other, holder];
     }
     expect(room.streak).toBe(2);
@@ -211,7 +297,7 @@ describe('room', () => {
     clock.advance(groundT * 1000 + CATCH_GRACE_MS + 60);
     room.tick();
     expect(room.ball.live).toBe(false);
-    room.handle(ids[1], { t: 'catch', tid, at: t0 + T * 1000, pose: [pose.yaw, pose.pitch, pose.gu, pose.gv] });
+    room.handle(ids[1], { t: 'catch', tid, at: t0 + T * 1000, pose: wire(pose) });
     expect(room.streak).toBe(0);
   });
 
@@ -232,7 +318,7 @@ describe('room', () => {
     const t0 = clock.now();
     const { pose, T } = throwAt(room, ids[0], ids[1], t0);
     clock.advance(T * 1000);
-    room.handle(ids[1], { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: [pose.yaw, pose.pitch, pose.gu, pose.gv] });
+    room.handle(ids[1], { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: wire(pose) });
     room.disconnect(ids[1], conns[1]);
     expect(conns[0].last('roster')!.players.find((p) => p.id === ids[1])!.connected).toBe(false);
     const again = new FakeConn();
@@ -249,7 +335,7 @@ describe('room', () => {
     const t0 = clock.now();
     const { pose, T } = throwAt(room, ids[0], ids[1], t0);
     clock.advance(T * 1000);
-    room.handle(ids[1], { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: [pose.yaw, pose.pitch, pose.gu, pose.gv] });
+    room.handle(ids[1], { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: wire(pose) });
     expect(room.streak).toBe(1);
     throwAt(room, ids[1], ids[0], clock.now());
     room.disconnect(ids[0], conns[0]);
@@ -283,14 +369,14 @@ describe('room', () => {
   it('self-catches neither score nor reset', () => {
     const { room, ids, clock } = setup(2);
     const me = room.members.get(ids[0])!;
-    const pose: Pose = { yaw: me.facing, pitch: 0.9, gu: 0, gv: 0 };
-    const glove = gloveWorld(me.pos, pose);
+    const pose: Pose = { x: me.pos[0], z: me.pos[2], yaw: me.facing, g: [0, 2.1, 0] };
+    const glove = gloveWorld(pose);
     const p = releasePoint(me.pos, me.facing, 'R');
     const t0 = clock.now();
     const v = solveThrowTo(p, glove, 1.2);
     room.handle(ids[0], { t: 'throw', rt: t0, p, v, tid: 1 });
     clock.advance(1200);
-    room.handle(ids[0], { t: 'catch', tid: 1, at: t0 + 1200, pose: [pose.yaw, pose.pitch, pose.gu, pose.gv] });
+    room.handle(ids[0], { t: 'catch', tid: 1, at: t0 + 1200, pose: wire(pose) });
     expect(room.ball.holder).toBe(ids[0]);
     expect(room.streak).toBe(0);
   });
@@ -331,5 +417,20 @@ describe('room', () => {
     let best = Infinity;
     for (let t = 0; t < traj.groundT; t += 0.01) best = Math.min(best, dist(positionAt(traj, t), [me.pos[0], EYE_HEIGHT - 0.3, me.pos[2]]));
     expect(best).toBeLessThan(0.75);
+  });
+
+  it('Coach runs to get under a wide throw', () => {
+    const { room, ids, clock } = setup(1, true);
+    const coach = room.members.get('coach')!;
+    const t0 = clock.now();
+    // 2.3 m to Coach's side: out of reach from the spot, catchable on the move.
+    throwAt(room, ids[0], 'coach', t0, 11, [2.3 * Math.cos(coach.facing), 0, -2.3 * Math.sin(coach.facing)]);
+    let moved = 0;
+    for (let i = 0; i < 90 && room.ball.phase === 'flight'; i++) {
+      clock.advance(33); room.tick();
+      moved = Math.max(moved, Math.hypot(coach.pose.x - coach.pos[0], coach.pose.z - coach.pos[2]));
+    }
+    expect(moved).toBeGreaterThan(1);
+    expect(room.ball.holder).toBe('coach');
   });
 });

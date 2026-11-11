@@ -1,15 +1,17 @@
 import './style.css';
 import * as THREE from 'three';
-import { EYE_HEIGHT } from '../shared/constants';
+import { CHEST_HEIGHT } from '../shared/constants';
 import { positionAt, simulateFlight, solveThrowTo, type Trajectory } from '../shared/physics';
-import { type Hand, eyePosition, lookAngles, releasePoint, seatLayout } from '../shared/pose';
-import { type BallEvent, type PlayerInfo, type ScoreState, isRoomCode, randomRoomCode, sanitizeName } from '../shared/protocol';
+import { type Hand, clampReach, gloveReady, interceptPlan, lookAngles, releasePoint, seatLayout } from '../shared/pose';
+import { Arm, type BallEvent, type PlayerInfo, type ScoreState, isRoomCode, randomRoomCode, sanitizeName } from '../shared/protocol';
+import type { Vec3 } from '../shared/vec';
 import { audio } from './audio';
 import { Game } from './game';
 import type { NetStatus } from './net';
 import { serverHttpUrl } from './net';
 import { Avatar, LOOKS } from './scene/avatar';
 import { buildBall } from './scene/gear';
+import { CameraRig } from './scene/camera';
 import { buildWorld } from './scene/world';
 import { prefs, save } from './storage';
 import { Tutorial } from './tutorial';
@@ -42,79 +44,99 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 class Backdrop {
   private world = buildWorld(true);
-  private camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500);
+  private rig = new CameraRig();
   private avatars: Avatar[] = [];
+  private seats = seatLayout(2);
   private ball = buildBall();
   private traj: Trajectory | null = null;
-  private t0 = 0;
   private from = 0;
+  private cycle = -1;
+  private caught = false;
+  private transferred = false;
   private raf = 0;
+  private last = 0;
   private running = false;
 
   constructor() {
-    const seats = seatLayout(2);
-    seats.forEach((s, i) => {
+    this.seats.forEach((s, i) => {
       const a = new Avatar(s.pos, s.yaw, i === 0 ? 'R' : 'L', i === 0 ? 0 : 2);
-      this.world.scene.add(a.root, a.arms);
+      this.world.scene.add(a.root);
       this.avatars.push(a);
     });
-    this.ball.scale.setScalar(1.6);
     this.world.scene.add(this.ball);
   }
 
   start() {
     if (this.running) return;
     this.running = true;
+    this.last = performance.now();
     const loop = (now: number) => {
       if (!this.running) return;
       this.raf = requestAnimationFrame(loop);
-      this.frame(now / 1000);
+      const dt = Math.min(0.05, (now - this.last) / 1000);
+      this.last = now;
+      this.frame(now / 1000, dt);
     };
     this.raf = requestAnimationFrame(loop);
   }
 
   stop() { this.running = false; cancelAnimationFrame(this.raf); }
 
-  private frame(t: number) {
+  private frame(t: number, dt: number) {
     const w = window.innerWidth, h = window.innerHeight;
     renderer.setSize(w, h, false);
-    this.camera.aspect = w / h;
-    this.camera.fov = w < h ? 58 : 42;
-    this.camera.updateProjectionMatrix();
-    // Over-the-shoulder of one friend, looking across at the other; a slow breathing drift.
-    const drift = Math.sin(t * 0.07);
-    this.camera.position.set(2.2 + drift * 0.5, 2.05 + Math.sin(t * 0.11) * 0.06, 12.8);
-    this.camera.lookAt(-0.9 + drift * 0.2, 1.05, -4);
-
-    const [A, B] = this.avatars;
-    const thrower = this.avatars[this.from], catcher = this.avatars[1 - this.from];
-    if (!this.traj || t - this.t0 > 2.0) {
-      // Next lazy toss.
-      if (this.traj) this.from = 1 - this.from;
-      const th = this.avatars[this.from], ca = this.avatars[1 - this.from];
-      const yaw = lookAngles(eyePosition(th.seatPos), eyePosition(ca.seatPos)).yaw;
-      const p = releasePoint(th.seatPos, yaw, th.hand);
-      const target: [number, number, number] = [ca.seatPos[0] * 0.95, EYE_HEIGHT - 0.25 + Math.sin(t) * 0.15, ca.seatPos[2] * 0.95];
-      this.traj = simulateFlight(p, solveThrowTo(p, target, 1.05));
-      this.t0 = t;
+    // A lazy rhythm: hold, wind up, toss, catch, take it out of the glove, swap.
+    const PERIOD = 3.4, WIND = 1.0, REL = 1.55;
+    const c = Math.floor(t / PERIOD);
+    const ft = t - c * PERIOD;
+    if (c !== this.cycle) {
+      this.cycle = c;
+      this.from = c % 2;
+      this.traj = null;
+      this.caught = false;
+      this.transferred = false;
     }
-    const ft = t - this.t0;
-    for (const av of [A, B]) {
-      const other = av === A ? B : A;
-      const look = lookAngles(eyePosition(av.seatPos), eyePosition(other.seatPos));
-      const isCatcher = av === catcher;
-      const arm = av === thrower ? (ft < 0.25 ? 3 : 0) : ft > 1.2 ? (ft < 1.6 ? 1 : 2) : 0;
-      av.update(1 / 60, { yaw: look.yaw, pitch: -0.05, gu: isCatcher ? 0 : (av.hand === 'R' ? -0.5 : 0.5), gv: isCatcher ? -0.3 : -0.45 }, arm, ft > 1.6 ? Math.min(1, (ft - 1.6) * 2.5) * 0.5 : 0);
+    const th = this.avatars[this.from], ca = this.avatars[1 - this.from];
+    const ts = this.seats[this.from], cs = this.seats[1 - this.from];
+    if (!this.traj) {
+      const yaw = lookAngles(ts.pos, cs.pos).yaw;
+      const p = releasePoint(ts.pos, yaw, th.hand);
+      const wob = Math.sin(c * 2.3);
+      const target: Vec3 = [cs.pos[0] + wob * 0.35, CHEST_HEIGHT - 0.1 + Math.cos(c * 1.7) * 0.2, cs.pos[2]];
+      this.traj = simulateFlight(p, solveThrowTo(p, target, 1.15));
     }
-    if (ft < 1.05) {
-      const p = positionAt(this.traj, ft);
-      this.ball.position.set(p[0], p[1], p[2]);
-    } else {
-      if (ft - 1.05 < 1 / 50) catcher.catchImpact([0, 0, 1], 12);
-      this.ball.position.copy(ft < 1.35 ? catcher.gloveWorldPos : catcher.handBall);
-    }
-    this.world.update(1 / 60, t);
-    renderer.render(this.world.scene, this.camera);
+    const fl = ft - REL;
+    const plan = interceptPlan(this.traj, 0, cs.pos[0], cs.pos[2]);
+    const flying = fl >= 0 && fl < plan.t;
+    if (!flying && fl >= plan.t && !this.caught) { this.caught = true; ca.catchImpact([0, -0.2, 1], 12); }
+    if (this.caught && !this.transferred && fl > plan.t + 0.32) { this.transferred = true; ca.transfer(); }
+    const ballPos: Vec3 = flying ? positionAt(this.traj, fl) : [0, 0, 0];
+    this.avatars.forEach((av, i) => {
+      const seat = this.seats[i];
+      const other = this.seats[1 - i];
+      const yaw = lookAngles(seat.pos, other.pos).yaw;
+      let g = gloveReady(yaw, av.hand);
+      let arm: number = Arm.Idle, charge = 0;
+      if (av === th) {
+        if (fl < 0) {
+          arm = ft > WIND ? Arm.Windup : Arm.Holding;
+          charge = ft > WIND ? Math.min(1, (ft - WIND) / (REL - WIND)) * 0.7 : 0;
+        } else if (fl < 0.42) arm = Arm.Release;
+      } else {
+        if (fl > plan.t - 0.7) g = clampReach([plan.point[0] - seat.pos[0], plan.point[1], plan.point[2] - seat.pos[2]]);
+        if (this.caught) arm = Arm.Holding;
+      }
+      const look: Vec3 = flying ? ballPos : [other.pos[0], 1.5, other.pos[2]];
+      av.update(dt, { pose: { x: seat.pos[0], z: seat.pos[2], yaw, g }, arm, charge, look, gloved: this.caught && !this.transferred });
+    });
+    if (flying) this.ball.position.set(ballPos[0], ballPos[1], ballPos[2]);
+    else if (fl < 0) this.ball.position.copy(th.handBall);
+    else this.ball.position.copy(this.transferred ? ca.handBall : ca.gloveWorldPos);
+    this.ball.scale.setScalar(Math.max(1, this.rig.camera.position.distanceTo(this.ball.position) * 0.13));
+    this.rig.aspect = w / h;
+    this.rig.update(dt, { me: this.seats[0].pos, partner: this.seats[1].pos, ball: flying ? ballPos : null, side: -1 });
+    this.world.update(dt, t);
+    renderer.render(this.world.scene, this.rig.camera);
   }
 }
 
@@ -132,7 +154,7 @@ function home(notice?: string) {
   setUI(`
     <main class="home">
       <h1 class="wordmark">CATCH<i>.</i></h1>
-      <p class="tagline">Two thumbs. One ball.<br/>Keep it off the grass.</p>
+      <p class="tagline">Two people. One ball.<br/>Keep it off the grass.</p>
       <div class="spacer"></div>
       <div class="stack">
         <button class="btn btn-primary" data-act="play">PLAY CATCH</button>
@@ -176,7 +198,7 @@ function bindHand(root: HTMLElement, onPick: (h: Hand) => void) {
 }
 
 function handHint(h: Hand) {
-  return h === 'R' ? 'Left thumb works the glove. Right thumb throws.' : 'Right thumb works the glove. Left thumb throws.';
+  return h === 'R' ? 'You throw with your right arm; the glove goes on your left.' : 'You throw with your left arm; the glove goes on your right.';
 }
 
 function ensureProfile(title: string, then: () => void, sub?: string) {
@@ -247,7 +269,6 @@ function settingsBody(): string {
     </section>
     <section>
       <div class="row"><label for="vol">Volume</label><input id="vol" type="range" min="0" max="1" step="0.05" value="${p.volume}"/></div>
-      <div class="row"><label for="look">Look speed</label><input id="look" type="range" min="0.5" max="1.8" step="0.05" value="${p.lookSensitivity}"/></div>
       <div class="row"><label id="hapl">Haptics</label><button class="toggle" id="hap" role="switch" aria-labelledby="hapl" aria-checked="${p.haptics}"></button></div>
       <p class="hint">Sound plays even with the silent switch on. Haptics depend on your phone and browser.</p>
     </section>
@@ -268,7 +289,6 @@ function bindSettings(el: HTMLElement) {
     const v = Number((e.target as HTMLInputElement).value);
     save({ volume: v }); audio.setVolume(v);
   });
-  el.querySelector<HTMLInputElement>('#look')!.addEventListener('input', (e) => save({ lookSensitivity: Number((e.target as HTMLInputElement).value) }));
   const hap = el.querySelector<HTMLButtonElement>('#hap')!;
   hap.addEventListener('click', () => { const on = hap.getAttribute('aria-checked') !== 'true'; hap.setAttribute('aria-checked', String(on)); save({ haptics: on }); });
   el.querySelector('#tut')!.addEventListener('click', () => {
@@ -357,7 +377,7 @@ function startTutorial() {
   if (!game || !hud) return;
   const g = game;
   tutorial?.destroy();
-  tutorial = new Tutorial(hud, () => prefs().hand, () => g.gripScreen(), () => g.canThrow());
+  tutorial = new Tutorial(hud, () => g.canThrow());
   clearInterval(tutTimer);
   tutTimer = window.setInterval(() => {
     if (!tutorial || !game) { clearInterval(tutTimer); return; }
