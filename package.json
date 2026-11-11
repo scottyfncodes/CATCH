@@ -1,0 +1,35 @@
+{
+  "name": "catch",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "CATCH. — a multiplayer first-person game of catch for phones.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "concurrently -k -n server,client \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:client": "vite --host",
+    "dev:server": "tsx watch src/server/index.ts",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "tsc --noEmit -p tsconfig.json && vite build",
+    "build:server": "esbuild src/server/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist-server/index.js --packages=external",
+    "start": "node dist-server/index.js",
+    "test": "vitest run",
+    "test:e2e": "node tests/e2e/run.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/three": "^0.180.0",
+    "@types/ws": "^8.5.13",
+    "concurrently": "^9.1.0",
+    "esbuild": "^0.25.0",
+    "three": "^0.180.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.0"
+  }
+}

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f3b97c"/>
+      <stop offset="0.55" stop-color="#e48a54"/>
+      <stop offset="1" stop-color="#9c4f2c"/>
+    </linearGradient>
+    <radialGradient id="ball" cx="0.38" cy="0.32" r="0.75">
+      <stop offset="0" stop-color="#fffaf0"/>
+      <stop offset="0.7" stop-color="#f1e7d4"/>
+      <stop offset="1" stop-color="#cdbb9b"/>
+    </radialGradient>
+    <clipPath id="c"><circle cx="512" cy="540" r="300"/></clipPath>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <ellipse cx="512" cy="880" rx="250" ry="34" fill="#5a2c14" opacity="0.28"/>
+  <circle cx="512" cy="540" r="300" fill="url(#ball)"/>
+  <g clip-path="url(#c)" fill="none" stroke="#c8372d" stroke-width="13" stroke-linecap="round">
+    <path d="M300 260 C 430 400, 430 680, 300 820" stroke-dasharray="1 34"/>
+    <path d="M724 260 C 594 400, 594 680, 724 820" stroke-dasharray="1 34"/>
+    <path d="M318 270 C 448 410, 448 670, 318 810" stroke="#c8372d" stroke-width="5" opacity="0.55"/>
+    <path d="M706 270 C 576 410, 576 670, 706 810" stroke="#c8372d" stroke-width="5" opacity="0.55"/>
+  </g>
+  <g clip-path="url(#c)">
+    <path d="M300 260 C 430 400, 430 680, 300 820" fill="none" stroke="#c8372d" stroke-width="22" stroke-dasharray="2 32" stroke-linecap="round" transform="translate(-14 0)" opacity="0.9"/>
+    <path d="M724 260 C 594 400, 594 680, 724 820" fill="none" stroke="#c8372d" stroke-width="22" stroke-dasharray="2 32" stroke-linecap="round" transform="translate(14 0)" opacity="0.9"/>
+  </g>
+</svg>
