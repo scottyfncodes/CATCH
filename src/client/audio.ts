@@ -26,6 +26,8 @@ export class AudioEngine {
   ctx: AudioContext | null = null;
   private master!: GainNode;
   private sfx!: GainNode;
+  /** Outdoor slapback (the POP bouncing off the houses) for the best catches. */
+  private slap!: AudioNode;
   private amb!: GainNode;
   private bufs: Bufs = {};
   private zip: {
@@ -38,7 +40,7 @@ export class AudioEngine {
   private volume = 0.9;
   private unlocked = false;
   private ready = false;
-  private lastPopAt = 0;
+  private lastPopAt = -1;
   private lastCreak = 0;
   /** Peak ZIP level of the current/last flight (diagnostics). */
   zipPeak = 0;
@@ -78,11 +80,29 @@ export class AudioEngine {
     (window as unknown as { __catchAudioCtx: AudioContext }).__catchAudioCtx = ctx;
     this.master = ctx.createGain();
     this.master.gain.value = this.volume;
-    // Gentle peak limiter: catches the hottest POPs on phone speakers without squashing transients.
-    const lim = ctx.createDynamicsCompressor();
-    lim.threshold.value = -4; lim.knee.value = 2; lim.ratio.value = 14; lim.attack.value = 0.001; lim.release.value = 0.12;
-    this.master.connect(lim).connect(ctx.destination);
+    // Safety stage: a transparent soft clip. Below ~-3 dBFS it's a straight line,
+    // so the POP's crack keeps its full transient (a DynamicsCompressor here
+    // flattened it); only overs are rounded off instead of hard clipping.
+    const clip = ctx.createWaveShaper();
+    const n = 2048, curve = new Float32Array(n), knee = 0.7;
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1, ax = Math.abs(x);
+      curve[i] = ax <= knee ? x : Math.sign(x) * (knee + (1 - knee) * Math.tanh((ax - knee) / (1 - knee)));
+    }
+    clip.curve = curve;
+    clip.oversample = '2x';
+    this.master.connect(clip).connect(ctx.destination);
     this.sfx = ctx.createGain(); this.sfx.connect(this.master);
+    {
+      const d = ctx.createDelay(0.5); d.delayTime.value = 0.092;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2400;
+      const g = ctx.createGain(); g.gain.value = 0.14;
+      const d2 = ctx.createDelay(0.5); d2.delayTime.value = 0.067;
+      const g2 = ctx.createGain(); g2.gain.value = 0.35;
+      d.connect(lp).connect(g).connect(this.sfx);
+      g.connect(d2).connect(g2).connect(lp);
+      this.slap = d;
+    }
     this.amb = ctx.createGain(); this.amb.gain.value = 0.0; this.amb.connect(this.master);
     // Keep audio alive across iOS interruptions (calls, Siri, app switching).
     ctx.addEventListener('statechange', () => {
@@ -112,7 +132,7 @@ export class AudioEngine {
   private render() {
     const sr = this.ctx!.sampleRate;
     const N = (s: number) => Math.floor(s * sr);
-    const out: Bufs = { crack: [], body: [], settle: [], ground: [], transfer: [], creak: [], bird: [], noise: [], wind: [], palm: [] };
+    const out: Bufs = { ring: [], crack: [], body: [], settle: [], ground: [], transfer: [], creak: [], bird: [], noise: [], wind: [], palm: [] };
 
     for (let v = 0; v < 4; v++) {
       const r = rng(101 + v * 17);
@@ -146,6 +166,21 @@ export class AudioEngine {
     }
 
     for (let v = 0; v < 3; v++) {
+      // Ring: the pocket's leather and the ball sounding together on a dead-centre
+      // catch. Tonal, short, a little hollow — the part that makes a perfect POP sing.
+      const rr = rng(707 + v * 31);
+      const rn = N(0.16);
+      const ring = new Float32Array(rn);
+      const f0 = 1080 * (0.95 + rr() * 0.1);
+      mix(ring, tone(rn, sr, f0 * 1.12, f0, 0.034, 0.006), 0.9);
+      mix(ring, tone(rn, sr, f0 * 2.1, f0 * 2.02, 0.018, 0.004), 0.42);
+      mix(ring, tone(rn, sr, 610 * (0.96 + rr() * 0.08), 600, 0.046, 0.01), 0.55);
+      const air = white(rn, rr);
+      biquad(air, sr, 'bandpass', 3200, 1.6);
+      envelope(air, sr, 0.0003, 0.006);
+      mix(ring, air, 0.5);
+      envelope(ring, sr, 0.0004, 1);
+      out.ring.push(this.buf(fadeEdges(normalize(ring, 0.9), sr, 2)));
       const r = rng(303 + v * 29);
       // Settle: the ball seating, laces and leather shifting (stick-slip micro clicks).
       const n = N(0.38);
@@ -306,44 +341,63 @@ export class AudioEngine {
   // ------------------------------------------------------------- one-shots
 
   /**
-   * THE POP. speed in m/s, quality from the authoritative catch.
+   * THE POP — and the grade. `g` (0..1, from the server) is how close the ball
+   * came to the dead centre of the pocket; the POP is how you hear it:
+   *   ~1.0  perfect: a crisp, ringing crack that slaps back off the houses
+   *   ~0.6  pocket:  a solid, clean pop
+   *   ~0.35 web:     a dull leather thwap
+   *   <0.25 bobble:  a muffled double squeeze
+   * Speed scales loudness and weight; the grade sets the character.
    * `pos` null = your own glove (stereo, close); otherwise spatialised.
    */
-  pop(o: { speed: number; q: CatchQuality | 'deflect'; pos: Vec3 | null; side?: number }) {
+  pop(o: { speed: number; q: CatchQuality | 'deflect'; g: number; pos: Vec3 | null; side?: number }) {
     if (!this.ready || !this.ctx) return;
     const ctx = this.ctx;
     // De-duplicate: a predicted local catch and its server confirmation must not double up.
     if (ctx.currentTime - this.lastPopAt < 0.09) return;
     this.lastPopAt = ctx.currentTime;
     const s = Math.min(1, Math.max(0, o.speed / 28));
+    const g = Math.min(1, Math.max(0, o.g));
     const { node, delay } = this.placeAt(o.pos, (o.side ?? 0) * 0.28);
     const t = ctx.currentTime + delay;
-    const jitter = () => 1 + (Math.random() - 0.5) * 0.05;
-    const rate = (0.9 + 0.16 * s) * jitter();
-    this.log.push({ k: 'pop', t: performance.now(), q: o.q, speed: o.speed });
-    switch (o.q) {
-      case 'pocket':
-        this.play('crack', node, 0.18 + 1.05 * Math.pow(s, 1.25), t, jitter());
-        this.play('body', node, 0.55 + 0.5 * s, t, rate, s < 0.4 ? { type: 'lowpass', f: 1600 + 4000 * s } : undefined);
-        this.play('settle', node, 0.16 + 0.12 * s, t + 0.012);
-        break;
-      case 'web':
-        this.play('crack', node, 0.08 + 0.4 * s, t, jitter() * 0.92, { type: 'lowpass', f: 3800 });
-        this.play('body', node, 0.5 + 0.3 * s, t, rate * 0.95, { type: 'lowpass', f: 2100 });
-        this.play('settle', node, 0.24, t + 0.02, 0.92);
-        break;
-      case 'bobble':
-        this.play('body', node, 0.42 + 0.2 * s, t, rate * 1.05, { type: 'lowpass', f: 1500 });
-        this.play('crack', node, 0.08, t, 0.85, { type: 'lowpass', f: 3000 });
-        // It pops up, and is squeezed again.
-        this.play('body', node, 0.32, t + 0.13, rate * 0.9, { type: 'lowpass', f: 1900 });
-        this.play('settle', node, 0.3, t + 0.15, 0.95);
-        break;
-      case 'deflect':
-        this.play('body', node, 0.5 + 0.2 * s, t, rate * 1.1, { type: 'lowpass', f: 1300 });
-        this.play('crack', node, 0.12, t, 0.8, { type: 'bandpass', f: 1800, q: 1 });
-        break;
+    const jitter = () => 1 + (Math.random() - 0.5) * 0.04;
+    this.log.push({ k: 'pop', t: performance.now(), q: o.q, g, speed: o.speed });
+    const loud = 0.55 + 0.45 * s;
+
+    if (o.q === 'deflect') {
+      this.play('body', node, 0.5 + 0.2 * s, t, (0.95 + 0.1 * s) * jitter(), { type: 'lowpass', f: 1200 });
+      this.play('crack', node, 0.1, t, 0.8, { type: 'bandpass', f: 1700, q: 1 });
+      return;
     }
+    if (o.q === 'bobble') {
+      this.play('body', node, 0.45 * loud, t, (0.95 + 0.1 * s) * jitter(), { type: 'lowpass', f: 1300 });
+      this.play('crack', node, 0.06, t, 0.85, { type: 'lowpass', f: 2400 });
+      // It pops up and is squeezed again.
+      this.play('body', node, 0.3, t + 0.13, 0.88 * jitter(), { type: 'lowpass', f: 1700 });
+      this.play('settle', node, 0.32, t + 0.15, 0.95);
+      return;
+    }
+    // Clean catches: one continuous ladder from thwap to POP.
+    // Crack: brighter and louder the closer to the centre.
+    const crackGain = (0.06 + 1.15 * Math.pow(g, 1.6)) * (0.25 + 0.75 * Math.pow(s, 1.1));
+    const crackCut = 2200 + 15000 * g * g;
+    this.play('crack', node, crackGain, t, (0.94 + 0.08 * g) * jitter(), { type: 'lowpass', f: crackCut });
+    // Body: tighter (higher, shorter) on a centred catch, duller off it.
+    const bodyRate = (0.86 + 0.12 * s + 0.1 * g) * jitter();
+    const bodyCut = 1500 + 9000 * g;
+    this.play('body', node, (0.5 + 0.35 * g) * loud, t, bodyRate, { type: 'lowpass', f: bodyCut });
+    // Ring: only near the centre.
+    const ringAmt = Math.max(0, (g - 0.5) / 0.5);
+    if (ringAmt > 0) {
+      this.play('ring', node, Math.pow(ringAmt, 1.4) * (0.32 + 0.4 * s), t + 0.001, (0.97 + 0.06 * s) * jitter());
+    }
+    // A perfect one echoes off the houses across the street.
+    if (g >= 0.78) {
+      this.play('crack', this.slap, crackGain * 0.9, t, 1);
+      this.play('body', this.slap, 0.4 * loud, t, bodyRate);
+    }
+    // Settle: more leather shuffling when it wasn't clean.
+    this.play('settle', node, 0.12 + 0.22 * (1 - g), t + 0.012, 0.92 + 0.1 * g);
   }
 
   thud(speed: number, pos: Vec3) {

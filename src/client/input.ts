@@ -4,25 +4,28 @@
 //   glove follows relative motion and stays where you leave it.
 //
 //   Throwing thumb (right for right-handers), on the other half:
-//     • drag from anywhere that is NOT the ball → look around
-//     • press ON the ball (only while you hold it) → grip
-//         pull down → wind up (how far = how hard)
-//         flick up → release (flick angle bends the throw left/right)
-//         lift without a flick, or slide back → cancel, nothing is thrown
+//     • while you DON'T have the ball: drag anywhere to look around
+//     • while you DO have the ball:
+//         upper part of the screen → look around (aim with your eyes)
+//         lower part, or on the ball → grip it:
+//           pull down   → wind up (further = harder; your arm draws back)
+//           slide left/right → aim the arm (a faint arc shows the throw)
+//           let go      → throw
+//           slide back up to where you started and let go → cancel
 //
-// A look drag can never become a throw: the gesture type is decided at
-// touch-down by where the thumb lands, and a throw needs a pull-back plus an
-// upward flick.
+// The gesture type is fixed at touch-down by where the thumb lands, so a look
+// drag can never become a throw, and a throw only happens on release with a
+// real pull-back.
 
 import type { Hand } from '../shared/pose';
 
 export interface ThrowRelease {
   /** 0..1 from how far the ball was pulled back. */
   charge: number;
-  /** 0..1 how fast the flick was (beyond the threshold). */
-  flick: number;
-  /** Flick direction, radians from straight up (+ = toward the right). */
-  angle: number;
+  /** -1..1 arm aim from the sideways slide (+ = right). */
+  aim: number;
+  /** 0..1 bonus from snapping the thumb up as you let go (optional skill). */
+  snap: number;
 }
 
 export interface InputHandlers {
@@ -34,7 +37,8 @@ export interface InputHandlers {
   onGlove(du: number, dv: number): void;
   onGloveActive(active: boolean): void;
   onGrip(): void;
-  onCharge(charge: number): void;
+  /** Live windup: charge 0..1 and arm aim -1..1. */
+  onWind(charge: number, aim: number): void;
   onRelease(r: ThrowRelease): void;
   onCancel(): void;
 }
@@ -45,14 +49,17 @@ interface Track {
   role: Role;
   x: number; y: number;
   sx: number; sy: number;
-  /** Lowest point reached while winding (max pull). */
-  maxPullY: number;
   hist: { x: number; y: number; t: number }[];
 }
 
-export const GRIP_RADIUS = 78;
-const FLICK_SPEED = 0.85; // screen heights per second
-const MIN_CHARGE = 0.04;
+export const GRIP_RADIUS = 90;
+/** Fraction of screen height from the top where the throwing side's grip zone starts. */
+export const GRIP_ZONE_TOP = 0.5;
+/** Pull distance (fraction of screen height) for a full-power throw. */
+const FULL_PULL = 0.3;
+/** Sideways slide (fraction of screen width) for full arm aim. */
+const FULL_AIM = 0.32;
+export const MIN_CHARGE = 0.07;
 
 export class Controls {
   private tracks = new Map<number, Track>();
@@ -76,11 +83,12 @@ export class Controls {
   private gloveSideIsLeft() { return this.hand === 'R'; }
 
   private roleFor(x: number, y: number): Role {
-    const w = this.el.clientWidth;
+    const w = this.el.clientWidth, h = this.el.clientHeight;
     const leftHalf = x < w / 2;
     if (leftHalf === this.gloveSideIsLeft()) return 'glove';
     if (this.h.canGrip()) {
       const g = this.h.gripPoint();
+      if (y > h * GRIP_ZONE_TOP) return 'throw';
       if (g && Math.hypot(x - g.x, y - g.y) <= GRIP_RADIUS) return 'throw';
     }
     return 'look';
@@ -97,11 +105,10 @@ export class Controls {
       if (t.role === role || (role !== 'glove' && t.role !== 'glove')) return;
     }
     try { this.el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-    const t: Track = { role, x, y, sx: x, sy: y, maxPullY: y, hist: [{ x, y, t: e.timeStamp }] };
-    this.tracks.set(e.pointerId, t);
+    this.tracks.set(e.pointerId, { role, x, y, sx: x, sy: y, hist: [{ x, y, t: e.timeStamp }] });
     if (role === 'glove') this.h.onGloveActive(true);
     else if (role === 'look') { this.h.onLookActive(true); this.stats.looks++; }
-    else { this.h.onGrip(); this.stats.grips++; }
+    else { this.h.onGrip(); this.h.onWind(0, 0); this.stats.grips++; }
   };
 
   private move = (e: PointerEvent) => {
@@ -109,7 +116,6 @@ export class Controls {
     if (!t) return;
     e.preventDefault();
     const r = this.el.getBoundingClientRect();
-    // Use coalesced events for smooth, high-rate input where available.
     const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
     const list = evs.length ? evs : [e];
     for (const ev of list) {
@@ -117,74 +123,60 @@ export class Controls {
       const dx = x - t.x, dy = y - t.y;
       t.x = x; t.y = y;
       t.hist.push({ x, y, t: ev.timeStamp });
-      if (t.hist.length > 24) t.hist.shift();
+      if (t.hist.length > 32) t.hist.shift();
       if (t.role === 'glove') {
         const W = this.el.clientWidth, H = this.el.clientHeight;
         this.h.onGlove(dx * (2.3 / (0.46 * W)), -dy * (2.3 / (0.34 * H)));
       } else if (t.role === 'look') {
         this.h.onLook(dx, dy);
-      } else if (this.windAndMaybeRelease(t)) {
-        this.tracks.delete(e.pointerId);
-        return;
       }
+    }
+    if (t.role === 'throw') {
+      const w = this.wind(t);
+      this.h.onWind(w.charge, w.aim);
     }
   };
 
-  private chargeOf(t: Track) {
-    const H = this.el.clientHeight;
-    return Math.min(1, Math.max(0, (t.maxPullY - t.sy) / (0.24 * H)));
-  }
-
-  /** Returns true when the throw was released. */
-  private windAndMaybeRelease(t: Track): boolean {
-    const H = this.el.clientHeight;
-    if (t.y > t.maxPullY) t.maxPullY = t.y;
-    const charge = this.chargeOf(t);
-    this.h.onCharge(charge);
-    const v = this.flickVelocity(t);
-    const risen = (t.maxPullY - t.y) / H;
-    if (charge >= MIN_CHARGE && v.up >= FLICK_SPEED && risen > 0.035) {
-      this.release(t, charge, v);
-      return true;
-    }
-    return false;
-  }
-
-  /** Velocity over the last ~70 ms, in screen heights per second. */
-  private flickVelocity(t: Track) {
-    const H = this.el.clientHeight;
-    const last = t.hist[t.hist.length - 1];
-    let first = last;
-    for (let i = t.hist.length - 1; i >= 0; i--) {
-      first = t.hist[i];
-      if (last.t - t.hist[i].t > 70) break;
-    }
-    const dt = Math.max(8, last.t - first.t) / 1000;
-    const vx = (last.x - first.x) / H / dt;
-    const vy = (last.y - first.y) / H / dt;
-    return { up: -vy, side: vx };
-  }
-
-  private release(_t: Track, charge: number, v: { up: number; side: number }) {
-    const flick = Math.min(1, Math.max(0, (v.up - FLICK_SPEED) / 3));
-    const angle = Math.atan2(v.side, Math.max(0.01, v.up));
-    this.stats.throws++;
-    this.h.onRelease({ charge, flick, angle });
+  /** Current windup from the thumb's offset to where it gripped. */
+  private wind(t: Track, x = t.x, y = t.y) {
+    const W = this.el.clientWidth, H = this.el.clientHeight;
+    const pull = Math.max(0, (y - t.sy) / (FULL_PULL * H));
+    const charge = Math.min(1, pull);
+    const aim = Math.max(-1, Math.min(1, (x - t.sx) / (FULL_AIM * W)));
+    return { charge, aim };
   }
 
   private up = (e: PointerEvent) => {
     const t = this.tracks.get(e.pointerId);
     if (!t) return;
     this.tracks.delete(e.pointerId);
-    if (t.role === 'glove') this.h.onGloveActive(false);
-    else if (t.role === 'look') this.h.onLookActive(false);
-    else {
-      // Lifting mid-flick still throws if the thumb was clearly moving up.
-      const charge = this.chargeOf(t);
-      const v = this.flickVelocity(t);
-      const risen = (t.maxPullY - t.y) / this.el.clientHeight;
-      if (charge >= MIN_CHARGE && v.up >= FLICK_SPEED * 0.7 && risen > 0.03) this.release(t, charge, v);
-      else { this.stats.cancels++; this.h.onCancel(); }
+    if (t.role === 'glove') { this.h.onGloveActive(false); return; }
+    if (t.role === 'look') { this.h.onLookActive(false); return; }
+    // Release. If the thumb snapped upward just before lifting, use the windup
+    // from just before the snap (so "pull, then flick" also works) and give a
+    // little extra zip.
+    const H = this.el.clientHeight;
+    const last = t.hist[t.hist.length - 1];
+    let before = last;
+    for (let i = t.hist.length - 1; i >= 0; i--) {
+      before = t.hist[i];
+      if (last.t - t.hist[i].t > 90) break;
+    }
+    const dt = Math.max(8, last.t - before.t) / 1000;
+    const upSpeed = (before.y - last.y) / H / dt; // screen heights / s
+    let w = this.wind(t);
+    let snap = 0;
+    if (upSpeed > 1.2) {
+      const pre = this.wind(t, before.x, before.y);
+      if (pre.charge > w.charge) w = pre;
+      snap = Math.min(1, (upSpeed - 1.2) / 3);
+    }
+    if (w.charge >= MIN_CHARGE) {
+      this.stats.throws++;
+      this.h.onRelease({ charge: w.charge, aim: w.aim, snap });
+    } else {
+      this.stats.cancels++;
+      this.h.onCancel();
     }
   };
 
