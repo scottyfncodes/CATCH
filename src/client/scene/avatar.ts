@@ -175,7 +175,8 @@ export class Avatar {
     this.root.add(...this.legSegs, ...this.knees, ...this.shoes);
 
     // Pelvis carries the torso; it drops and shifts with weight.
-    const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.1, 4, 10), pants);
+    // (The hips fade with the head and chest in first person: from above they are just a blob.)
+    const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.1, 4, 10), core(L.pants));
     hips.rotation.z = Math.PI / 2;
     hips.scale.set(1, 1, 0.75);
     this.pelvis.add(hips);
