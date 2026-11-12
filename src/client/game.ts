@@ -1387,9 +1387,9 @@ export class Game {
       av.setCoreOpacity(this.rig.blend > 0 ? smooth01((this.rig.camera.position.distanceTo(av.eye) - 0.55) / 0.6) : 1);
       av.fadeSleeve(this.rig.blend > 0 ? this.rig.camera.position : null);
     }
-    // Big mitt: everyone's glove is the room's size; yours goes see-through in your own eyes while it is huge.
+    // Big mitt: everyone's glove is the room's size (and solid: the ring and the pocket mark show through it).
     const gsize = this.score.glove;
-    av?.setGloveSize(gsize, this.rig.blend * smooth01((gsize - 1.15) / 0.7));
+    av?.setGloveSize(gsize);
     for (const p of this.players.values()) if (p.avatar && p.info.id !== this.me) p.avatar.setGloveSize(gsize);
     if (first !== this.first) { this.first = first; this.ev.view(first); }
     const l = this.rig.listener(me);
