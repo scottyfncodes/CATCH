@@ -176,6 +176,9 @@ export class Game {
   private trajKey = '';
   private impactIdx = 0;
   private pinned: { id: string; until: number } | null = null;
+  /** The ball going into a glove: where it struck, relative to the pocket, easing in over a few frames. */
+  private seat: { off: THREE.Vector3; perf: number } | null = null;
+  private spinAxis = new THREE.Vector3(1, 0, 0);
   private incomingTid = -1;
   private sentRecordFor = '';
   private lastCatchPerf = 0;
@@ -200,7 +203,7 @@ export class Game {
     this.renderer = renderer;
     this.pixelRatio = renderer.getPixelRatio();
     this.renderer.shadowMap.enabled = !lowSpec;
-    this.world = buildWorld(lowSpec);
+    this.world = buildWorld(lowSpec, renderer);
     this.scene = this.world.scene;
     this.scene.add(this.rig.camera, this.aimArc.group, this.guide.group);
     this.rig.instant = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
@@ -1090,7 +1093,11 @@ export class Game {
     }
     this.localCatch = { tid: b.tid, q, at: res.t };
     this.lastCatchPerf = performance.now();
-    this.myAvatar?.catchImpact(vel, speed);
+    // Where the ball actually met the leather, from the middle of the pocket.
+    const hit = positionAt(this.traj, res.t), pocket = gloveWorld(at);
+    const off: Vec3 = [hit[0] - pocket[0], hit[1] - pocket[1], hit[2] - pocket[2]];
+    this.seat = { off: new THREE.Vector3(off[0], off[1], off[2]), perf: this.lastCatchPerf };
+    this.myAvatar?.catchImpact(vel, speed, off);
     const grade = catchGrade(res.dist, this.score.glove);
     this.popLocal(q, speed, grade);
     // The knock of the ball through your view, and a ring off the pocket.
@@ -1264,7 +1271,11 @@ export class Game {
           for (const r of this.players.values()) {
             if (!r.avatar || r.info.id === this.me || r.info.id === b.thrower) continue;
             const gp = r.avatar.gloveWorldPos;
-            if (Math.hypot(p[0] - gp.x, p[1] - gp.y, p[2] - gp.z) < 0.24 * this.score.glove) { this.pinned = { id: r.info.id, until: now + 380 }; break; }
+            if (Math.hypot(p[0] - gp.x, p[1] - gp.y, p[2] - gp.z) < 0.24 * this.score.glove) {
+              this.pinned = { id: r.info.id, until: now + 380 };
+              this.seat = { off: new THREE.Vector3(p[0] - gp.x, p[1] - gp.y, p[2] - gp.z), perf: now };
+              break;
+            }
           }
         }
         if (this.pinned && now > this.pinned.until) this.pinned = null;
@@ -1295,10 +1306,21 @@ export class Game {
       }
     } else visible = false;
 
+    // Into a glove: the ball goes from where it struck down into the pocket (quick, but you see it go in).
+    if (this.seat && !zip) {
+      const k = clamp((now - this.seat.perf) / 90, 0, 1);
+      if (k >= 1) this.seat = null; else pos.addScaledVector(this.seat.off, (1 - k) * (1 - k));
+    } else if (zip) this.seat = null;
     this.ballMesh.visible = visible;
     this.ballShadow.visible = visible;
     this.ballMesh.position.copy(pos);
-    this.ballMesh.rotation.x += zip ? Math.hypot(...vel) * dt * 2.5 : 0;
+    // Spin about the right axis: backspin off the fingers in the air, rolling forward along the grass.
+    if (zip) {
+      const h = Math.hypot(vel[0], vel[2]);
+      if (h > 0.05) this.spinAxis.set(vel[2] / h, 0, -vel[0] / h);
+      const sp = Math.hypot(...vel);
+      this.ballMesh.rotateOnWorldAxis(this.spinAxis, airborne ? -sp * dt * 2.4 : (h / BALL_RADIUS) * dt);
+    }
     // Perceptual size floor so a distant ball stays readable (still a real ball
     // up close). Through your own eyes, with the wide view a catch needs, the
     // floor is set in pixels: a throw you can't see is a throw you can't catch.

@@ -58,7 +58,7 @@ async function player(room, name, hand = 'R', guest, expect = 'open', windup = 3
     if (!localStorage.getItem('catch.prefs.v1')) localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: g, name, hand, profiled: true, tutorialDone: true, windup }));
   }, [g, name, hand, windup]);
   const errors = [];
-  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('pageerror', (e) => errors.push(e.stack || e.message));
   await page.goto(`${BASE}/r/${room}?server=${encodeURIComponent(WS)}`);
   await page.locator('#go').tap();
   await waitFor(() => page.evaluate((x) => window.__catch?.game?.debugState().status === x, expect), 10000, 50);
@@ -76,7 +76,7 @@ async function ctxHome() {
   const ctx = await browser.newContext({ ...devices['iPhone 13'], deviceScaleFactor: 1 });
   const page = await ctx.newPage();
   const errors = [];
-  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('pageerror', (e) => errors.push(e.stack || e.message));
   await page.addInitScript(() => { if (!localStorage.getItem('catch.prefs.v1')) localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: 'home-' + Math.random(), name: 'Sam', hand: 'R', profiled: true, tutorialDone: true })); });
   await page.goto(`${BASE}/?server=${encodeURIComponent(WS)}`);
   await page.locator('[data-act=play]').waitFor();

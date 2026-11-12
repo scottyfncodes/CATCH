@@ -3,6 +3,7 @@
 // instanced meshes so it stays cheap on phones.
 
 import * as THREE from 'three';
+import { skyEnvironment } from './light';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 export const SUN_DIR = new THREE.Vector3(-0.62, 0.24, -0.75).normalize();
@@ -160,7 +161,7 @@ export interface World {
   focus(x: number, z: number): void;
 }
 
-export function buildWorld(lowSpec: boolean): World {
+export function buildWorld(lowSpec: boolean, renderer?: THREE.WebGLRenderer): World {
   const scene = new THREE.Scene();
   scene.fog = new THREE.Fog(PALETTE.fog, 80, 280);
 
@@ -171,8 +172,13 @@ export function buildWorld(lowSpec: boolean): World {
   scene.add(sky);
 
   // Light: low sun + sky fill.
-  const hemi = new THREE.HemisphereLight('#cfe0f5', '#5b4a2e', 1.25);
+  const hemi = new THREE.HemisphereLight('#cfe0f5', '#5b4a2e', renderer ? 0.62 : 1.25);
   scene.add(hemi);
+  // The sky itself lights things too: warm from the sun's side, blue from above (see light.ts).
+  if (renderer) {
+    scene.environment = skyEnvironment(renderer, { zenith: PALETTE.zenith, horizon: PALETTE.horizon, ground: '#66703c', sun: PALETTE.sun, sunDir: SUN_DIR });
+    scene.environmentIntensity = 0.62;
+  }
   const sun = new THREE.DirectionalLight('#ffd2a1', 2.6);
   sun.position.copy(SUN_DIR).multiplyScalar(40);
   sun.target.position.set(0, 0, 0);
