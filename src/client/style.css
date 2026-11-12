@@ -165,6 +165,19 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .jersey[aria-checked='true'] { background: var(--ink); color: var(--cream); }
 .jersey[aria-checked='true']::before { background: var(--stitch); opacity: 1; }
 
+/* ------------------------------------------------------------ game picker */
+
+.modes { display: flex; flex-direction: column; gap: 10px; margin-bottom: 6px; }
+.mode {
+  display: block; width: 100%; text-align: left; padding: 16px 18px; border-radius: 16px; background: var(--cream-2); color: var(--ink);
+  border: 1.5px solid transparent; transition: transform 120ms ease, background-color 160ms ease;
+}
+.mode:active { transform: scale(0.985); }
+.mode b { display: block; font-size: 19px; font-weight: 800; letter-spacing: -0.01em; }
+.mode span { display: block; margin-top: 3px; font-size: 14px; line-height: 1.35; color: var(--muted); font-weight: 500; }
+/* The one you played last. */
+.mode[data-last] { background: #fffaf1; border-color: var(--ink); }
+
 /* ------------------------------------------------------------ look editor */
 
 .wu-head .wu-num:not(:empty) { text-align: right; }

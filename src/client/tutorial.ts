@@ -88,7 +88,7 @@ export class Tutorial {
     }
     if (this.done.has('throw') && this.done.has('catch')) {
       if (!this.finale) this.finale = performance.now();
-      this.show('streak', 'That’s it. Every catch is a step further apart', null);
+      this.show('streak', 'That’s it. Keep it going', null);
       if (performance.now() - this.finale > 4200) this.finish();
       return;
     }

@@ -218,6 +218,7 @@ export class Avatar {
   private gloveK = 0;
   private gloveV = 0;
   private gloveSet = false;
+  private gloveAlpha = 1;
   private debt = 0;
   private showK = 0;
   /** World position of the eyes (first-person camera). */
@@ -398,6 +399,25 @@ export class Avatar {
     if (m.transparent !== t) { m.transparent = t; m.needsUpdate = true; }
     m.opacity = a;
     m.depthWrite = a > 0.6;
+  }
+
+  /**
+   * Big mitt: the glove at `size` times a regular one. `ghost` (0..1) lets you
+   * see through your own giant glove in first person, so it can't hide the ball.
+   */
+  setGloveSize(size: number, ghost = 0) {
+    const sx = this.hand === 'L' ? -size : size;
+    if (this.glove.scale.y !== size) this.glove.scale.set(sx, size, size);
+    const a = 1 - 0.62 * ghost;
+    if (a === this.gloveAlpha) return;
+    this.gloveAlpha = a;
+    this.glove.traverse((o) => {
+      const mt = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      if (!mt || !('opacity' in mt)) return;
+      const t = a < 0.995;
+      if (mt.transparent !== t) { mt.transparent = t; mt.needsUpdate = true; }
+      mt.opacity = a; mt.depthWrite = !t;
+    });
   }
 
   /** Seconds into the delivery clip (-1 when not throwing). The ball leaves at RELEASE_TIME. */

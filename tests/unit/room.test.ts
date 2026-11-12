@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { CATCH_GRACE_MS, DIST_MAX, EYE_HEIGHT, LEAP_HEIGHT, MAX_PLAYERS, RECOVER_DELAY_MS, THROW_SPEED_LIMIT } from '../../src/shared/constants';
+import { CATCH_BOBBLE, CATCH_GRACE_MS, DIST_MAX, MITT_MIN, MITT_START, EYE_HEIGHT, LEAP_HEIGHT, MAX_PLAYERS, RECOVER_DELAY_MS, THROW_SPEED_LIMIT } from '../../src/shared/constants';
 import { positionAt, simulateFlight, solveArc, solveElevation, solveThrowTo, throwElevation, velocityAt } from '../../src/shared/physics';
 import { type Pose, bodyToWorld, clampReach, eyePosition, gloveReady, gloveWorld, interceptPlan, lookAngles, maxSteps, reachNorm, ringSpread, seatLayout } from '../../src/shared/pose';
-import { Arm, type ServerMsg, catchGrade, catchStyle, classifyCatch, groupKeyFor, isGreatCatch } from '../../src/shared/protocol';
+import { Arm, type Mode, type ServerMsg, catchGrade, catchStyle, classifyCatch, gloveSize, groupKeyFor, isGreatCatch, toMode } from '../../src/shared/protocol';
 import { type Vec3, dist, len } from '../../src/shared/vec';
 import { DEFAULT_WINDUP, HOUSE_WINDUP, RELEASE_TIME, WINDUP_IDS, getWindup, releasePointFor } from '../../src/shared/windups';
 import { type Conn, MemoryRecords, Room } from '../../src/server/room';
@@ -720,7 +720,7 @@ describe('room', () => {
     expect(lookAngles(a.pos, b.pos).yaw).toBeCloseTo(a.facing, 6);
   });
 
-  it('a miss is a step back in, and a catch after it steps out again', () => {
+  it('a miss is a step back in, and a catch after it steps out again (the miss still counts)', () => {
     const { room, ids, clock } = setup(2);
     for (let i = 0; i < 4; i++) exchange(room, clock, ids);
     expect(room.score().dist).toBe(18);
@@ -730,21 +730,26 @@ describe('room', () => {
     expect(apart(room, ids)).toBeCloseTo(17, 6);
     exchange(room, clock, ids);
     expect(room.score().dist).toBe(18);
-    expect(room.score().misses).toBe(0);
+    expect(room.score().misses).toBe(1);
   });
 
-  it('three misses in a row and the distance starts again; two do not', () => {
+  it('misses are counted in total: the third starts the distance again, however many catches came between', () => {
     const { room, ids, clock } = setup(2);
     for (let i = 0; i < 10; i++) exchange(room, clock, ids);
     expect(room.score().dist).toBe(24);
-    miss(room, clock, ids); miss(room, clock, ids);
-    expect(room.score().dist).toBe(22);
-    exchange(room, clock, ids);
-    miss(room, clock, ids); miss(room, clock, ids);
-    expect(room.score()).toMatchObject({ dist: 21, misses: 2 });
+    miss(room, clock, ids);
+    for (let i = 0; i < 5; i++) exchange(room, clock, ids);
+    miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 27, misses: 2 });
+    for (let i = 0; i < 8; i++) exchange(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 35, misses: 2 });
     miss(room, clock, ids);
     expect(room.score()).toMatchObject({ dist: 14, misses: 0 });
     expect(apart(room, ids)).toBeCloseTo(14, 6);
+    // And the count starts again with the distance.
+    exchange(room, clock, ids);
+    miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 14, misses: 1 });
   });
 
   it('a miss at the starting distance does not bring you closer than the start', () => {
@@ -867,5 +872,96 @@ describe('room', () => {
     expect(arrive).toBeGreaterThan(22);
     expect(classifyCatch(0.18, arrive)).toBe('bobble');
     expect(classifyCatch(0.18, 40)).toBe('deflect');
+  });
+
+  // ---------------------------------------------------------------- modes
+
+  function modeRoom(mode: Mode | undefined, n = 2) {
+    let t = 1_000_000;
+    const clock = { now: () => t, advance: (ms: number) => { t += ms; } };
+    const room = new Room('ABCD', clock.now, new MemoryRecords(), { practiceBot: false });
+    const conns: FakeConn[] = [], ids: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const c = new FakeConn();
+      // Only the first player says which game; a joiner's choice is ignored.
+      ids.push(room.join(c, { t: 'hello', room: 'ABCD', guest: `g${i}`, name: `P${i}`, hand: 'R', v: 6, w: HOUSE_WINDUP, m: i === 0 ? mode : 'fixed' })!.id);
+      conns.push(c);
+    }
+    return { room, conns, ids, clock };
+  }
+
+  it('whoever opens the room chooses the game, and everyone is told which it is', () => {
+    for (const mode of ['long', 'fixed', 'mitt'] as const) {
+      const { room, conns } = modeRoom(mode);
+      expect(room.mode).toBe(mode);
+      expect(conns[1].last('welcome')!.score.mode).toBe(mode);
+    }
+    expect(modeRoom(undefined).room.mode).toBe('long');
+    expect(toMode('nonsense')).toBe('long');
+  });
+
+  it('fixed distance: catches and misses move nobody', () => {
+    const { room, ids, clock } = modeRoom('fixed');
+    for (let i = 0; i < 6; i++) exchange(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 14, glove: 1, streak: 6 });
+    for (let i = 0; i < 4; i++) miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 14, glove: 1, misses: 0, streak: 0 });
+    expect(apart(room, ids)).toBeCloseTo(14, 6);
+  });
+
+  it('big mitt: the glove starts giant and shrinks with every catch, past regular, to small', () => {
+    expect(gloveSize('mitt', 0)).toBe(MITT_START);
+    expect(gloveSize('long', 30)).toBe(1);
+    expect(gloveSize('fixed', 30)).toBe(1);
+    let last = Infinity;
+    for (let n = 0; n < 40; n++) { const g = gloveSize('mitt', n); expect(g).toBeLessThanOrEqual(last); last = g; }
+    expect(gloveSize('mitt', 13)).toBeLessThan(1.05);
+    expect(gloveSize('mitt', 100)).toBe(MITT_MIN);
+    const { room, ids, clock } = modeRoom('mitt');
+    expect(room.score()).toMatchObject({ glove: MITT_START, dist: 14 });
+    for (let i = 0; i < 5; i++) exchange(room, clock, ids);
+    expect(room.score().glove).toBe(gloveSize('mitt', 5));
+    expect(room.score().dist).toBe(14);
+    // A miss: a size bigger. The third miss: the giant glove is back.
+    miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ glove: gloveSize('mitt', 4), misses: 1 });
+    miss(room, clock, ids); miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ glove: MITT_START, misses: 0 });
+  });
+
+  it('big mitt: the catch is as big as the glove (and no bigger)', () => {
+    const off = (glove: number, mode: Mode) => {
+      const { room, ids, clock } = modeRoom(mode);
+      const t0 = clock.now();
+      const { pose, T } = throwAt(room, ids[0], ids[1], t0);
+      // The ball passes 40 cm above where the glove is held.
+      const claim = { ...pose, g: [pose.g[0], pose.g[1] - 0.4, pose.g[2]] as Vec3 };
+      clock.advance(T * 1000);
+      expect(room.glove()).toBe(glove);
+      room.handle(ids[1], { t: 'catch', tid: 1, at: t0 + T * 1000, pose: wire(claim) });
+      return room.ball.holder === ids[1];
+    };
+    expect(0.4).toBeGreaterThan(CATCH_BOBBLE);
+    expect(off(1, 'long')).toBe(false);
+    expect(off(MITT_START, 'mitt')).toBe(true);
+    // The zones scale with the glove: dead centre of a giant glove is still a perfect catch, its edge still a bobble.
+    expect(classifyCatch(0.1, 10, 3)).toBe('perfect');
+    expect(classifyCatch(0.55, 10, 3)).toBe('bobble');
+    expect(classifyCatch(0.65, 10, 3)).toBe(null);
+    expect(classifyCatch(0.1, 10, 0.6)).toBe('bobble');
+    expect(catchGrade(0.3, 3)).toBeGreaterThan(catchGrade(0.3, 1));
+  });
+
+  it('Coach plays every game', () => {
+    for (const mode of ['fixed', 'mitt'] as const) {
+      let t = 1e6;
+      const room = new Room('ABCD', () => t, new MemoryRecords(), { practiceBot: true });
+      const m = room.join(new FakeConn(), { t: 'hello', room: 'ABCD', guest: 'g', name: 'P', hand: 'R', v: 6, w: HOUSE_WINDUP, m: mode })!;
+      const clock = { now: () => t, advance: (ms: number) => { t += ms; } };
+      throwAt(room, m.id, 'coach', t);
+      for (let i = 0; i < 90 && room.ball.phase === 'flight'; i++) { clock.advance(33); room.tick(); }
+      expect(room.ball.holder, mode).toBe('coach');
+      expect(room.score()).toMatchObject({ mode, dist: 14, streak: 1 });
+    }
   });
 });

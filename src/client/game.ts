@@ -15,7 +15,7 @@ import {
   type Hand, type Pose, bodyToWorld, clampReach, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, worldToBody,
 } from '../shared/pose';
 import {
-  Arm, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, catchStyle, classifyCatch,
+  Arm, type Mode, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, catchStyle, classifyCatch,
 } from '../shared/protocol';
 import { type Vec3, clamp, dist, lerp, wrapAngle } from '../shared/vec';
 import { type Style, sameStyle } from '../shared/style';
@@ -99,7 +99,7 @@ export class Game {
   players = new Map<string, Remote>();
   ball: BallState = { phase: 'held', holder: null, tid: 0, thrower: null, t0: 0, p0: [0, 0, 0], v0: [0, 0, 0], live: false };
   traj: Trajectory | null = null;
-  score: ScoreState = { streak: 0, sessionBest: 0, groupBest: 0, groupKey: '', dist: 14, misses: 0 };
+  score: ScoreState = { streak: 0, sessionBest: 0, groupBest: 0, groupKey: '', dist: 14, misses: 0, mode: 'long', glove: 1 };
 
   // Local player: a body on the grass.
   hand: Hand;
@@ -193,7 +193,7 @@ export class Game {
   private releaseGap = -1;
   private releaseClip = -1;
 
-  constructor(private root: HTMLElement, renderer: THREE.WebGLRenderer, touchLayer: HTMLElement, readonly room: string, private ev: GameEvents) {
+  constructor(private root: HTMLElement, renderer: THREE.WebGLRenderer, touchLayer: HTMLElement, readonly room: string, private ev: GameEvents, mode?: Mode) {
     this.hand = prefs().hand;
     this.windup = prefs().windup;
     const lowSpec = (navigator.hardwareConcurrency || 4) <= 2;
@@ -239,7 +239,7 @@ export class Game {
       onGloveActive: (a) => { this.gloveDragging = a; this.lastInputAt = performance.now(); },
     });
 
-    this.net = new Net(room, () => ({ guest: prefs().guest, name: prefs().name, hand: prefs().hand, windup: prefs().windup, style: prefs().style }));
+    this.net = new Net(room, () => ({ guest: prefs().guest, name: prefs().name, hand: prefs().hand, windup: prefs().windup, style: prefs().style, mode }));
     this.net.onMessage = (m) => this.onMessage(m);
     this.net.onStatus = (s) => this.ev.status(s);
 
@@ -705,6 +705,12 @@ export class Game {
     this.flightLag = 0;
     this.forMe = false;
     this.predThrowAt = now;
+    // The throw's own moment: the snap of it, a knock through the shot, a ring off the hand.
+    const side = this.hand === 'R' ? 1 : -1;
+    audio.release(pd.power, side);
+    haptic('firm');
+    this.rig.kick(0.45 + 0.5 * pd.power);
+    this.guide.burst(p0, 0.35 + 0.5 * pd.power);
     this.ev.moment('throw');
   }
 
@@ -906,9 +912,10 @@ export class Game {
       const gw: Vec3 = [this.pos[0] + want[0], want[1], this.pos[2] + want[2]];
       const ca = closestApproach(this.traj, gw);
       const until = ca.t - tNow;
-      if (until > -0.02 && until < 0.2 && ca.dist > 0.16 && ca.dist < LUNGE_REACH) {
+      const gs = this.score.glove;
+      if (until > -0.02 && until < 0.2 && ca.dist > 0.16 * gs && ca.dist < LUNGE_REACH + 0.16 * (gs - 1)) {
         const bp = positionAt(this.traj, ca.t);
-        const k = 1 - 0.135 / ca.dist;
+        const k = 1 - (0.135 * gs) / ca.dist;
         want = clampReach([want[0] + (bp[0] - gw[0]) * k, want[1] + (bp[1] - gw[1]) * k, want[2] + (bp[2] - gw[2]) * k], 1, lift);
         lunging = true;
         if (this.lungeTid !== b.tid) this.lungeTid = b.tid;
@@ -1058,7 +1065,7 @@ export class Game {
     const res = sweptMinDistance(this.traj, tPrev, tNow, prevG, g);
     const speed = Math.hypot(...velocityAt(this.traj, res.t));
     const lift = this.lift, dive = this.diveAmt;
-    const q = classifyCatch(res.dist, speed);
+    const q = classifyCatch(res.dist, speed, this.score.glove);
     if (!q) return;
     // Still closing on the pocket? Wait for the true closest pass (the grade is
     // how close it came, not where it was when it first touched leather).
@@ -1084,7 +1091,7 @@ export class Game {
     this.localCatch = { tid: b.tid, q, at: res.t };
     this.lastCatchPerf = performance.now();
     this.myAvatar?.catchImpact(vel, speed);
-    const grade = catchGrade(res.dist);
+    const grade = catchGrade(res.dist, this.score.glove);
     this.popLocal(q, speed, grade);
     // The knock of the ball through your view, and a ring off the pocket.
     this.rig.kick(clamp(speed / 22, 0.35, 1));
@@ -1257,7 +1264,7 @@ export class Game {
           for (const r of this.players.values()) {
             if (!r.avatar || r.info.id === this.me || r.info.id === b.thrower) continue;
             const gp = r.avatar.gloveWorldPos;
-            if (Math.hypot(p[0] - gp.x, p[1] - gp.y, p[2] - gp.z) < 0.24) { this.pinned = { id: r.info.id, until: now + 380 }; break; }
+            if (Math.hypot(p[0] - gp.x, p[1] - gp.y, p[2] - gp.z) < 0.24 * this.score.glove) { this.pinned = { id: r.info.id, until: now + 380 }; break; }
           }
         }
         if (this.pinned && now > this.pinned.until) this.pinned = null;
@@ -1296,18 +1303,25 @@ export class Game {
     // up close). Through your own eyes, with the wide view a catch needs, the
     // floor is set in pixels: a throw you can't see is a throw you can't catch.
     const camD = this.rig.camera.position.distanceTo(pos);
-    const pxFloor = (camD * Math.tan((this.rig.camera.fov * Math.PI) / 360) * 5.5) / ((this.root.clientHeight || 700) / 2) / BALL_RADIUS;
-    const s = Math.max(1, camD * 0.13, zip ? pxFloor * this.rig.blend : 0);
+    // A thrown ball gets small as it goes: that shrinking is what speed looks
+    // like. It is only kept from vanishing (a couple of pixels). Coming at you
+    // in first person it is kept bigger: a throw you can't see is a throw you can't catch.
+    const px = (camD * Math.tan((this.rig.camera.fov * Math.PI) / 360)) / ((this.root.clientHeight || 700) / 2) / BALL_RADIUS;
+    const s = Math.max(1, px * (zip ? 2.2 + 3.3 * this.rig.blend : 2.2));
     this.ballMesh.scale.setScalar(s);
-    // Subtle motion blur on fast balls.
+    // A streak behind a fast ball: about a twentieth of a second of its travel,
+    // so a hard throw draws a long line and a soft one barely any.
     const sp = Math.hypot(...vel);
-    this.ballBlur.visible = visible && zip && sp > 9;
+    this.ballBlur.visible = visible && zip && sp > 7;
     if (this.ballBlur.visible) {
+      const mineOut = b.thrower === this.me && b.phase === 'flight';
       const dir = tmpV.set(vel[0], vel[1], vel[2]).normalize();
-      const len = Math.min(0.9, sp * 0.016);
+      const len = Math.min(2.6, sp * (mineOut ? 0.06 : 0.035));
+      const wide = Math.max(s * 0.8, px * 1.5);
       this.ballBlur.position.copy(pos).addScaledVector(dir, -len / 2);
       this.ballBlur.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-      this.ballBlur.scale.set(s * 0.85, (len / (BALL_RADIUS * 2)) + s, s * 0.85);
+      this.ballBlur.scale.set(wide, (len / (BALL_RADIUS * 2)) + s, wide);
+      (this.ballBlur.material as THREE.MeshBasicMaterial).opacity = mineOut ? 0.42 : 0.26;
     }
     // Ground shadow: the outfielder's depth cue. Sharper and darker as the ball comes down.
     this.ballShadow.position.set(pos.x, 0.012, pos.z);
@@ -1373,6 +1387,10 @@ export class Game {
       av.setCoreOpacity(this.rig.blend > 0 ? smooth01((this.rig.camera.position.distanceTo(av.eye) - 0.55) / 0.6) : 1);
       av.fadeSleeve(this.rig.blend > 0 ? this.rig.camera.position : null);
     }
+    // Big mitt: everyone's glove is the room's size; yours goes see-through in your own eyes while it is huge.
+    const gsize = this.score.glove;
+    av?.setGloveSize(gsize, this.rig.blend * smooth01((gsize - 1.15) / 0.7));
+    for (const p of this.players.values()) if (p.avatar && p.info.id !== this.me) p.avatar.setGloveSize(gsize);
     if (first !== this.first) { this.first = first; this.ev.view(first); }
     const l = this.rig.listener(me);
     audio.setListener(l.pos, l.fwd, l.up);
@@ -1406,13 +1424,14 @@ export class Game {
         this.ev.toast(high > 0 ? 'Over your head: flick up to jump' : 'Out of reach: flick toward it to dive');
       }
       const pocket = gloveWorld(this.myPose());
-      const on = clamp(1 - (dist(pocket, c.at) - CATCH_PERFECT) / (CATCH_WEB - CATCH_PERFECT), 0, 1);
+      const gsz = this.score.glove;
+      const on = clamp(1 - (dist(pocket, c.at) / gsz - CATCH_PERFECT) / (CATCH_WEB - CATCH_PERFECT), 0, 1);
       // The trail runs from just ahead of the ball you see to the spot.
       const seen = this.lastBallPos ?? c.at;
       const from = clamp(c.t - Math.hypot(seen[0] - c.at[0], seen[1] - c.at[1], seen[2] - c.at[2]) / Math.max(4, Math.hypot(...velocityAt(this.traj!, tNow))), 0, c.t);
       const path: Vec3[] = [];
       for (let i = 1; i <= TRAIL && c.t - from > 0.08; i++) path.push(positionAt(this.traj!, from + ((c.t - from) * i) / (TRAIL + 1)));
-      st = { at: c.at, pocket, k: clamp(tNow / Math.max(0.05, c.t), 0, 1), tier, on, path };
+      st = { at: c.at, pocket, k: clamp(tNow / Math.max(0.05, c.t), 0, 1), tier, on, path, size: gsz };
       // Off the edge of your view: point at it.
       tmpV.set(c.at[0], c.at[1], c.at[2]).project(this.rig.camera);
       if (tmpV.z > 1 || Math.abs(tmpV.x) > 0.9 || Math.abs(tmpV.y) > 0.9) {
@@ -1447,7 +1466,7 @@ export class Game {
       const pav = this.avatarOf(this.aimPartnerId);
       const off = pav ? dist(this.aimRing, [pav.gloveWorldPos.x, pav.gloveWorldPos.y, pav.gloveWorldPos.z]) : 1;
       const glove: Vec3 | null = pav ? [pav.gloveWorldPos.x, pav.gloveWorldPos.y, pav.gloveWorldPos.z] : null;
-      this.aimArc.show(this.aimTraj, pd ? pd.power : a!.power, this.rig.camera, dt, { pos: this.aimRing, onTarget: clamp(1 - (off - CATCH_PERFECT) / (CATCH_WEB - CATCH_PERFECT), 0, 1), glove });
+      this.aimArc.show(this.aimTraj, pd ? pd.power : a!.power, this.rig.camera, dt, { pos: this.aimRing, onTarget: clamp(1 - (off / this.score.glove - CATCH_PERFECT) / (CATCH_WEB - CATCH_PERFECT), 0, 1), glove });
     } else {
       if (!this.controls.aiming) this.aimRing = null;
       this.aimArc.show(null, 0, this.rig.camera, dt, null);

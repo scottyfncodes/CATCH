@@ -1,6 +1,6 @@
 // WebSocket connection with clock sync and automatic reconnection.
 
-import type { ClientMsg, ServerMsg } from '../shared/protocol';
+import type { ClientMsg, Mode, ServerMsg } from '../shared/protocol';
 import { PROTOCOL_VERSION } from '../shared/protocol';
 import type { Hand } from '../shared/pose';
 
@@ -35,7 +35,7 @@ export class Net {
   onMessage: (m: ServerMsg) => void = () => {};
   onStatus: (s: NetStatus) => void = () => {};
 
-  constructor(private room: string, private hello: () => { guest: string; name: string; hand: Hand; windup: number; style: number[] }) {}
+  constructor(private room: string, private hello: () => { guest: string; name: string; hand: Hand; windup: number; style: number[]; mode?: Mode }) {}
 
   now(): number { return performance.now() + this.offset; }
 
@@ -48,7 +48,7 @@ export class Net {
     this.setStatus(this.retry ? 'reconnecting' : 'connecting');
     ws.onopen = () => {
       const h = this.hello();
-      this.sendRaw({ t: 'hello', room: this.room, guest: h.guest, name: h.name, hand: h.hand, v: PROTOCOL_VERSION, w: h.windup, s: h.style });
+      this.sendRaw({ t: 'hello', room: this.room, guest: h.guest, name: h.name, hand: h.hand, v: PROTOCOL_VERSION, w: h.windup, s: h.style, m: h.mode });
       this.bestRtt = Infinity;
       // Burst of pings to converge the clock quickly, then a slow cadence.
       for (let i = 0; i < 5; i++) setTimeout(() => this.ping(), i * 120);

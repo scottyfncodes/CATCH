@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { CHEST_HEIGHT } from '../shared/constants';
 import { positionAt, simulateFlight, solveThrowTo, type Trajectory } from '../shared/physics';
 import { type Hand, clampReach, gloveReady, interceptPlan, lookAngles, seatLayout } from '../shared/pose';
-import { Arm, type BallEvent, type PlayerInfo, type ScoreState, isGreatCatch, isRoomCode, randomRoomCode, sanitizeName } from '../shared/protocol';
+import { Arm, MODES, type Mode, type BallEvent, type PlayerInfo, type ScoreState, isGreatCatch, isRoomCode, randomRoomCode, sanitizeName } from '../shared/protocol';
 import type { Vec3 } from '../shared/vec';
 import { sameStyle } from '../shared/style';
 import { DEFAULT_WINDUP, HOUSE_WINDUP, RELEASE_TIME, WINDUPS, getWindup, releasePointFor } from '../shared/windups';
@@ -283,7 +283,7 @@ function home(notice?: string) {
     </main>`);
   ui.querySelector('[data-act=play]')!.addEventListener('click', () => {
     audio.unlock();
-    ensureProfile('Before you head out', () => enterRoom(randomRoomCode()));
+    ensureProfile('Before you head out', () => modeSheet((mode) => enterRoom(randomRoomCode(), mode)));
   });
   ui.querySelector('[data-act=join]')!.addEventListener('click', () => { audio.unlock(); joinSheet(); });
   ui.querySelector('[data-act=settings]')!.addEventListener('click', () => settingsSheet(() => home()));
@@ -594,14 +594,39 @@ function toast(text: string) {
   setTimeout(() => t.remove(), 2700);
 }
 
-function enterRoom(code: string) {
+const MODE_INFO: Record<Mode, { name: string; line: string }> = {
+  long: { name: 'Long toss', line: 'Every catch is a step further apart.' },
+  fixed: { name: 'Classic', line: 'Stay 46 feet apart. Just play catch.' },
+  mitt: { name: 'Big mitt', line: 'Giant gloves that shrink with every catch.' },
+};
+
+/** Which game to play. Whoever opens the room chooses; friends who join play the same one. */
+function modeSheet(then: (mode: Mode) => void) {
+  const last = prefs().mode;
+  const el = sheet(`
+    <h2>Pick a game</h2>
+    <p class="sub">Friends who join your room play the same one.</p>
+    <div class="modes" role="group" aria-label="Game">
+      ${MODES.map((m) => `<button type="button" class="mode" data-mode="${m}" ${m === last ? 'data-last' : ''}>
+        <b>${MODE_INFO[m].name}</b><span>${MODE_INFO[m].line}</span></button>`).join('')}
+    </div>`);
+  el.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => b.addEventListener('click', () => {
+    const mode = b.dataset.mode as Mode;
+    save({ mode });
+    audio.unlock();
+    el.remove();
+    then(mode);
+  }));
+}
+
+function enterRoom(code: string, mode?: Mode) {
   backdrop.stop();
   audio.unlock();
   audio.setVolume(prefs().volume);
   audio.startAmbience();
-  if (location.pathname !== `/r/${code}`) history.pushState({}, '', `/r/${code}`);
+  if (location.pathname !== `/r/${code}`) history.pushState({}, '', `/r/${code}${location.search}`);
   app.classList.add('playing');
-  roster = []; me = null; lastStreak = 0;
+  roster = []; me = null; lastStreak = 0; lastProgress = '';
   setUI(`
     <div class="hud">
       <div class="streak" aria-live="polite"><b id="streak">0</b><span id="streakLabel">in a row</span><em class="grade" id="grade"></em></div>
@@ -628,7 +653,7 @@ function enterRoom(code: string) {
         app.classList.remove('cut'); void app.offsetWidth; app.classList.add('cut');
       }
     },
-  });
+  }, mode);
   (window as unknown as { __catch: unknown }).__catch = { game, tutorial: () => tutorial };
   game.start();
   onStatus('connecting');
@@ -692,14 +717,21 @@ function onScore(s: ScoreState, ev?: BallEvent) {
   }
   // How far apart you are, in feet (it's baseball), beside the streak.
   if (!el.classList.contains('milestone')) label.innerHTML = distLabel(s);
-  if (s.dist !== lastDist) {
-    label.classList.remove('step'); void label.offsetWidth; label.classList.add('step');
-    lastDist = s.dist;
+  const progress = `${s.mode}:${s.dist}:${s.glove}`;
+  if (progress !== lastProgress) {
+    if (lastProgress.startsWith(s.mode)) { label.classList.remove('step'); void label.offsetWidth; label.classList.add('step'); }
+    else if (hud && !lastProgress) toast(`${MODE_INFO[s.mode].name}: ${MODE_INFO[s.mode].line}`);
+    lastProgress = progress;
   }
   if ((ev?.k === 'drop' && !ev.void) || ev?.k === 'deflect') {
     // A miss is a step in; three in a row and you start again.
+    // Misses are counted in total: the third one starts the distance (or the glove) again.
     const reset = s.misses === 0;
-    toast(`${lastStreak >= 5 ? `Dropped at ${lastStreak}. ` : ''}${reset ? 'Three misses: back to the start' : `A step in (miss ${s.misses} of 3)`}`);
+    const what = s.mode === 'fixed' ? ''
+      : s.mode === 'long' ? (reset ? 'Third miss: back to the start' : `A step in (miss ${s.misses} of 3)`)
+      : reset ? 'Third miss: the big mitt is back' : `Glove a size bigger (miss ${s.misses} of 3)`;
+    const said = `${lastStreak >= 5 ? `Dropped at ${lastStreak}. ` : ''}${what}`.trim();
+    if (said) toast(said);
   }
   if (ev?.k === 'catch') showGrade(ev.q, ev.st);
   if (ev?.k === 'drop' && !ev.void) showGrade(ev.by && ev.by === game?.ball.thrower ? 'wild' : 'miss');
@@ -717,9 +749,14 @@ function onScore(s: ScoreState, ev?: BallEvent) {
   updateCompany();
 }
 
-let lastDist = 0;
+let lastProgress = '';
 const feet = (m: number) => Math.round(m * 3.28084);
-function distLabel(s: ScoreState) { return `in a row · <em class="ft">${feet(s.dist)} ft</em>`; }
+/** Beside the streak: the thing this game is about (how far apart, or how big the glove). */
+function distLabel(s: ScoreState) {
+  if (s.mode === 'long') return `in a row · <em class="ft">${feet(s.dist)} ft</em>`;
+  if (s.mode === 'mitt') return `in a row · <em class="ft">glove ×${s.glove.toFixed(1)}</em>`;
+  return 'in a row';
+}
 
 const GRADE_WORDS: Record<string, string> = { perfect: 'Perfect pop', pocket: 'Pocket', web: 'Off the web', bobble: 'Bobbled', miss: 'Dropped', wild: 'Wild throw' };
 const STYLE_WORDS: Record<string, string> = { dive: 'Diving catch', leap: 'Leaping grab', run: 'On the run', high: 'High snag', scoop: 'Scooped', backhand: 'Backhand', reach: 'Reaching grab' };
@@ -747,7 +784,7 @@ function pauseSheet(code: string) {
       <span class="num">${p.catches} caught${p.perfects ? ` · ${p.perfects} perfect` : ''}${p.saves ? ` · ${p.saves} great` : ''}</span><span class="num">${p.drops} dropped</span></li>`).join('');
   const el = sheet(`
     <h2>Paused</h2>
-    <p class="sub">The game keeps going for everyone else.</p>
+    <p class="sub">${s ? `${MODE_INFO[s.mode].name}. ` : ''}The game keeps going for everyone else.</p>
     <section>
       <h3>Invite</h3>
       <div class="invite-code"><div><small>Room code</small><b>${code}</b></div><button class="btn btn-ink btn-sm" id="share">Share link</button></div>
@@ -755,7 +792,9 @@ function pauseSheet(code: string) {
     <section>
       <h3>Streaks</h3>
       <div class="stats">
-        <div class="stat"><b>${s ? feet(s.dist) : 0}<small> ft</small></b><span>Apart right now</span></div>
+        ${s?.mode === 'mitt'
+    ? `<div class="stat"><b>×${s.glove.toFixed(1)}</b><span>Glove size right now</span></div>`
+    : `<div class="stat"><b>${s ? feet(s.dist) : 0}<small> ft</small></b><span>Apart${s?.mode === 'long' ? ' right now' : ''}</span></div>`}
         <div class="stat"><b>${s?.streak ?? 0}</b><span>Current</span></div>
         <div class="stat"><b>${s?.sessionBest ?? 0}</b><span>Best this session</span></div>
         <div class="stat"><b>${s?.groupBest ?? 0}</b><span>Best with this group</span></div>

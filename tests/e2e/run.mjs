@@ -626,6 +626,52 @@ try {
     errsExtra.push(...P.errors, ...U.errors, ...V.errors);
   }
 
+  console.log('\nGAMES (long toss, classic, big mitt) AND THE THROW');
+  {
+    const G = await ctxHome();
+    await G.page.locator('[data-act=play]').tap();
+    const names = await G.page.locator('.mode b').allInnerTexts();
+    check('PLAY asks which game: long toss, classic or big mitt', names.join('|') === 'Long toss|Classic|Big mitt', names.join(' · '));
+    await G.page.locator('.mode[data-mode=mitt]').tap();
+    await waitFor(() => G.page.evaluate(() => window.__catch?.game?.debugState().status === 'open'), 10000, 50);
+    await G.page.evaluate(() => { const g = window.__catch.game; g.renderEnabled = false; g.steadyAim = true; });
+    const gcdp = await G.ctx.newCDPSession(G.page);
+    G.touch = (type, pts) => gcdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((q) => ({ x: q[0], y: q[1], id: q[2] ?? 0 })) });
+    G.state = () => G.page.evaluate(() => window.__catch.game.debugState());
+    const g0 = await waitFor(async () => { const s = await G.state(); return s.score.mode === 'mitt' && s.players.length === 2 ? s : null; }, 5000);
+    const lab0 = await G.page.locator('#streakLabel').textContent();
+    check('big mitt: everyone starts with a giant glove', g0?.score.glove === 3 && /glove ×3\.0/i.test(lab0), `glove ×${g0?.score.glove} · "${lab0}"`);
+    const drawn = await G.page.evaluate(() => { const g = window.__catch.game; return [...g.players.values()].map((p) => (p.avatar ?? g.myAvatar)?.glove.scale.y); });
+    check('…and it is drawn that size on every player', drawn.every((x) => x === 3), JSON.stringify(drawn));
+    await waitCanThrow(G);
+    await sleep(400);
+    // A throw 45 cm off Coach's glove: a miss with a regular glove, a catch with this one.
+    const pa = await G.page.evaluate(() => window.__catch.game.pullFor('coach'));
+    const relBefore = (await G.state()).audio.filter((x) => x.k === 'release').length;
+    await throwGesture(G, { pull: pa.pull, side: pa.side + 38, x: 195 - (pa.side + 38) / 2, y: 330 });
+    const gc = await waitFor(async () => { const s = await G.state(); return s.ball.holder === 'coach' ? s : s.ball.phase === 'loose' ? { fail: true } : null; }, 6000);
+    await sleep(300);
+    const g1 = await G.state();
+    check('a throw well off the pocket still finds a giant glove', !!gc && !gc.fail && g1.score.streak === 1, `streak=${g1.score.streak} q=${g1.lastCatch?.q}`);
+    check('…and the glove is a size smaller after the catch', g1.score.glove < 3 && g1.score.glove > 2.7 && g1.score.dist === 14, `glove ×${g1.score.glove}, ${g1.score.dist} m apart`);
+    const rel = g1.audio.filter((x) => x.k === 'release');
+    check('the throw has its own sound: a snap as the ball leaves the hand', rel.length === relBefore + 1 && rel[rel.length - 1].power > 0, `power=${rel[rel.length - 1]?.power?.toFixed(2)}`);
+    await G.page.reload();
+    await G.page.locator('#go').waitFor();
+    const lastMode = await G.page.evaluate(() => JSON.parse(localStorage.getItem('catch.prefs.v1')).mode);
+    check('the game you picked is remembered for next time', lastMode === 'mitt');
+    await G.ctx.close();
+
+    const F = await ctxHome();
+    await F.page.locator('[data-act=play]').tap();
+    await F.page.locator('.mode[data-mode=fixed]').tap();
+    const fs = await waitFor(async () => { const s = await F.page.evaluate(() => window.__catch?.game?.debugState()); return s?.status === 'open' && s.score.mode === 'fixed' ? s : null; }, 10000, 50);
+    const flab = await F.page.locator('#streakLabel').textContent();
+    check('classic: a regular glove at a fixed 46 feet, with nothing else on the scoreboard', fs?.score.glove === 1 && fs.score.dist === 14 && flab.trim() === 'in a row', `"${flab}"`);
+    errsExtra.push(...G.errors, ...F.errors);
+    await F.ctx.close();
+  }
+
   console.log('\nPERFORMANCE / STABILITY');
   const errs = [...[A, B, C, D, L, X, Y, S1].flatMap((x) => x.errors), ...errsExtra];
   check('no page errors in any client', errs.length === 0, errs.slice(0, 3).join(' | '));

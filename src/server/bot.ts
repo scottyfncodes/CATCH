@@ -47,7 +47,7 @@ export class BotBrain {
     this.throwAt = t + 1500 + this.rng() * 1200;
   }
 
-  update(t: number, coach: Member, human: Member | null, ball: BallState, traj: Trajectory | null, streak: number): BotAction | null {
+  update(t: number, coach: Member, human: Member | null, ball: BallState, traj: Trajectory | null, streak: number, glove = 1): BotAction | null {
     const dt = this.lastT ? Math.min(0.1, (t - this.lastT) / 1000) : 1 / 30;
     this.lastT = t;
     const pose = coach.pose;
@@ -144,7 +144,8 @@ export class BotBrain {
         this.reactAt = t + 180 + this.rng() * 140;
         const gw: Vec3 = [pose.x + pose.g[0], pose.g[1], pose.z + pose.g[2]];
         const ca = closestApproach(traj, gw);
-        this.offBy = ca.dist;
+        // (With a bigger glove, further off still finds leather.)
+        this.offBy = ca.dist / glove;
         this.runTo = null;
         if (ca.dist > 0.45) {
           // Where to stand: under the ball as it comes through chest height near the spot.
