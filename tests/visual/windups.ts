@@ -9,6 +9,7 @@
 import * as THREE from 'three';
 import { Arm } from '../../src/shared/protocol';
 import { RELEASE_TIME, getWindup } from '../../src/shared/windups';
+import { defaultStyle } from '../../src/shared/style';
 import { Avatar } from '../../src/client/scene/avatar';
 import { buildBall } from '../../src/client/scene/gear';
 
@@ -54,7 +55,7 @@ line.rotation.x = -Math.PI / 2;
 line.position.set(0, 0.002, -1.5);
 scene.add(line);
 
-const avatar = new Avatar([0, 0, 0], 0, hand, 0, id);
+const avatar = new Avatar([0, 0, 0], 0, hand, defaultStyle('filmstrip'), id);
 scene.add(avatar.root);
 const ball = buildBall();
 scene.add(ball);

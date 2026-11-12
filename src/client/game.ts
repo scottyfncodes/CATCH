@@ -18,6 +18,7 @@ import {
   Arm, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, catchStyle, classifyCatch,
 } from '../shared/protocol';
 import { type Vec3, clamp, dist, lerp, wrapAngle } from '../shared/vec';
+import { type Style, sameStyle } from '../shared/style';
 import { RELEASE_TIME, getWindup, releasePointFor, windupId } from '../shared/windups';
 import { audio } from './audio';
 import { haptic } from './haptics';
@@ -238,7 +239,7 @@ export class Game {
       onGloveActive: (a) => { this.gloveDragging = a; this.lastInputAt = performance.now(); },
     });
 
-    this.net = new Net(room, () => ({ guest: prefs().guest, name: prefs().name, hand: prefs().hand, windup: prefs().windup }));
+    this.net = new Net(room, () => ({ guest: prefs().guest, name: prefs().name, hand: prefs().hand, windup: prefs().windup, style: prefs().style }));
     this.net.onMessage = (m) => this.onMessage(m);
     this.net.onStatus = (s) => this.ev.status(s);
 
@@ -288,16 +289,19 @@ export class Game {
 
   setHand(h: Hand) {
     this.hand = h;
-    this.net.send({ t: 'prof', name: prefs().name, hand: h, w: this.windup });
+    this.net.send({ t: 'prof', name: prefs().name, hand: h, w: this.windup, s: prefs().style });
   }
 
-  setName(name: string) { this.net.send({ t: 'prof', name, hand: this.hand, w: this.windup }); }
+  setName(name: string) { this.net.send({ t: 'prof', name, hand: this.hand, w: this.windup, s: prefs().style }); }
+
+  /** Change what you look like and wear (everyone sees it at once). */
+  setStyle(style: Style) { this.net.send({ t: 'prof', name: prefs().name, hand: this.hand, w: this.windup, s: style }); }
 
   /** Change the windup you throw with (everyone sees it from your next throw). */
   setWindup(id: number) {
     this.windup = windupId(id);
     this.myAvatar?.setWindup(this.windup);
-    this.net.send({ t: 'prof', name: prefs().name, hand: this.hand, w: this.windup });
+    this.net.send({ t: 'prof', name: prefs().name, hand: this.hand, w: this.windup, s: prefs().style });
   }
 
   // ------------------------------------------------------------------ view
@@ -450,13 +454,13 @@ export class Game {
         this.players.set(info.id, p);
       }
       const moved = p.info.pos[0] !== info.pos[0] || p.info.pos[2] !== info.pos[2];
-      const handChanged = p.info.hand !== info.hand;
+      const handChanged = p.info.hand !== info.hand || !sameStyle(p.info.style, info.style);
       p.info = info;
       if (info.id === this.me) {
         if (!this.myAvatar || handChanged) {
           this.myAvatar?.dispose();
           this.hand = info.hand;
-          this.myAvatar = new Avatar(this.pos, this.yaw, info.hand, info.look, this.windup);
+          this.myAvatar = new Avatar(this.pos, this.yaw, info.hand, info.style, this.windup);
           this.scene.add(this.myAvatar.root);
         }
         if (moved) this.placeAtHome(info, false);
@@ -464,7 +468,7 @@ export class Game {
       }
       if (!p.avatar || handChanged) {
         p.avatar?.dispose();
-        p.avatar = new Avatar([p.pose.x, 0, p.pose.z], p.pose.yaw, info.hand, info.look, info.windup);
+        p.avatar = new Avatar([p.pose.x, 0, p.pose.z], p.pose.yaw, info.hand, info.style, info.windup);
         this.scene.add(p.avatar.root);
       }
       if (p.avatar.windupId !== info.windup) p.avatar.setWindup(info.windup);

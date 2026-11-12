@@ -2,6 +2,7 @@
 // Clearing site data or switching devices creates a new guest identity.
 
 import type { Hand } from '../shared/pose';
+import { type Style, defaultStyle, sanitizeStyle, wearable } from '../shared/style';
 import { windupId } from '../shared/windups';
 
 export interface Prefs {
@@ -10,6 +11,12 @@ export interface Prefs {
   hand: Hand;
   /** The windup you throw with (a number from the library). */
   windup: number;
+  /** What you look like and wear. */
+  style: Style;
+  /** The streak milestones you have reached (each gave you something to wear, once). */
+  earned: number[];
+  /** Rewards you haven't looked at yet. */
+  fresh: number[];
   /** Whether the player has completed the profile step. */
   profiled: boolean;
   tutorialDone: boolean;
@@ -39,8 +46,13 @@ let cache: Prefs | null = null;
 export function prefs(): Prefs {
   if (cache) return cache;
   const s = safeGet();
+  const guest = typeof s.guest === 'string' && s.guest ? s.guest : uuid();
+  const earned = Array.isArray(s.earned) ? s.earned.filter((x) => typeof x === 'number') : [];
   cache = {
-    guest: typeof s.guest === 'string' && s.guest ? s.guest : uuid(),
+    guest,
+    style: wearable(sanitizeStyle(s.style, defaultStyle(guest)), earned),
+    earned,
+    fresh: Array.isArray(s.fresh) ? s.fresh.filter((x) => typeof x === 'number') : [],
     name: typeof s.name === 'string' ? s.name : '',
     hand: s.hand === 'L' ? 'L' : 'R',
     windup: windupId(s.windup),

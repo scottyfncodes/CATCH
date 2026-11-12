@@ -89,7 +89,7 @@ export const RECOVER_DELAY_MS = 900;
 /** Disconnected players keep their spot this long (ms). */
 export const RECONNECT_GRACE_MS = 90_000;
 
-export const STREAK_MILESTONES = [10, 25, 50, 100, 250, 500, 1000];
+/** (The streaks that are celebrated and rewarded are MILESTONES, in style.ts.) */
 
 /** Network rates. */
 export const CLIENT_STATE_HZ = 20;

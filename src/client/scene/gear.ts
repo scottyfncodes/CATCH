@@ -3,10 +3,9 @@
 import * as THREE from 'three';
 import { BALL_RADIUS } from '../../shared/constants';
 
-const leather = new THREE.MeshStandardMaterial({ color: '#b97a40', roughness: 0.66, metalness: 0 });
-const leatherDark = new THREE.MeshStandardMaterial({ color: '#8d5629', roughness: 0.72 });
-const pocketMat = new THREE.MeshStandardMaterial({ color: '#7a4720', roughness: 0.85 });
-const laceMat = new THREE.MeshStandardMaterial({ color: '#5a3417', roughness: 0.8 });
+/** The leathers a glove is made of. */
+export interface GloveColors { leather: string; dark: string; pocket: string; lace: string }
+const TAN: GloveColors = { leather: '#b97a40', dark: '#8d5629', pocket: '#7a4720', lace: '#5a3417' };
 
 function capsule(r: number, len: number, mat: THREE.Material, seg = 8) {
   return new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 4, seg), mat);
@@ -17,9 +16,13 @@ function capsule(r: number, len: number, mat: THREE.Material, seg = 8) {
  * point). Pocket faces -Z, fingers point +Y, and seen from behind (+Z) the
  * thumb is on +X. Mirror with scale.x = -1 for a right-hand glove.
  */
-export function buildGlove(): THREE.Group {
+export function buildGlove(colors: GloveColors = TAN): THREE.Group {
   const g = new THREE.Group();
   g.name = 'glove';
+  const leather = new THREE.MeshStandardMaterial({ color: colors.leather, roughness: 0.66, metalness: 0 });
+  const leatherDark = new THREE.MeshStandardMaterial({ color: colors.dark, roughness: 0.72 });
+  const pocketMat = new THREE.MeshStandardMaterial({ color: colors.pocket, roughness: 0.85 });
+  const laceMat = new THREE.MeshStandardMaterial({ color: colors.lace, roughness: 0.8 });
 
   // Palm shell: a deep, rounded body.
   const palm = new THREE.Mesh(new THREE.SphereGeometry(0.1, 20, 14), leather);
@@ -73,6 +76,7 @@ export function buildGlove(): THREE.Group {
 
   // Laced web between thumb and index.
   const web = new THREE.Group();
+  web.name = 'web';
   web.position.set(0.066, 0.12, -0.004);
   for (let i = 0; i < 3; i++) {
     const bar = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.011, 0.01), laceMat);
@@ -94,12 +98,19 @@ export function buildGlove(): THREE.Group {
   return g;
 }
 
-/** Snap the glove closed (0..1). */
+/**
+ * Shape the glove. At rest (0) it is a cup: fingers curled a little over the
+ * pocket, thumb turned in, the way a broken-in glove sits. Below zero it
+ * opens wide to take a ball; at 1 it is shut around one. Values past 1 are a
+ * squeeze (the snap overshoots).
+ */
 export function setGloveClosure(glove: THREE.Object3D, k: number) {
   const fingers = glove.getObjectByName('fingers');
   const thumb = glove.getObjectByName('thumb');
-  if (fingers) fingers.rotation.x = -0.65 * k;
-  if (thumb) thumb.rotation.y = 0.55 * k;
+  const web = glove.getObjectByName('web');
+  if (fingers) fingers.rotation.x = -0.2 - 0.62 * k;
+  if (thumb) { thumb.rotation.y = 0.18 + 0.5 * k; thumb.rotation.x = -0.1 - 0.3 * k; }
+  if (web) web.rotation.x = -0.12 - 0.4 * k;
 }
 
 /**

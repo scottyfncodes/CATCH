@@ -7,6 +7,7 @@ import {
   DEFAULT_WINDUP, DELIVERY_LENGTH, HOUSE_WINDUP, RELEASE_REACH, RELEASE_TIME, RIG, WINDUPS, WINDUP_IDS,
   deliveryPose, getWindup, pelvisHeight, releasePointFor, sampleKeys, shoulderOf, windupId, windupPose,
 } from '../../src/shared/windups';
+import { defaultStyle } from '../../src/shared/style';
 import { Avatar } from '../../src/client/scene/avatar';
 
 describe('windup library', () => {
@@ -120,7 +121,7 @@ describe('the avatar performs the delivery', () => {
   const dt = 1 / 120;
   /** Wind up for the full tempo, let go, and run the clip to `until` seconds. */
   function deliver(id: number, hand: 'R' | 'L', until: number) {
-    const av = new Avatar([2, 0, 5], 0.4, hand, 0, id);
+    const av = new Avatar([2, 0, 5], 0.4, hand, defaultStyle('test'), id);
     const base = { pose: { x: 2, z: 5, yaw: 0.4, g: [0, 1.18, -0.4] as Vec3 }, look: null };
     for (let i = 0; i < 60; i++) av.update(dt, { ...base, arm: Arm.Holding, charge: 0 });
     const n = Math.round(getWindup(id).params.tempo / dt);
@@ -148,7 +149,7 @@ describe('the avatar performs the delivery', () => {
   });
 
   it('a remote delivery that starts late catches up, so its release lines up with the real one', () => {
-    const av = new Avatar([0, 0, 0], 0, 'R', 0, 16);
+    const av = new Avatar([0, 0, 0], 0, 'R', defaultStyle('test'), 16);
     const base = { pose: { x: 0, z: 0, yaw: 0, g: [0, 1.18, -0.4] as Vec3 }, look: null, lag: 0.11 };
     av.update(dt, { ...base, arm: Arm.Holding, charge: 0 });
     let t = 0;
