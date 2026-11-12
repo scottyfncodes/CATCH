@@ -452,6 +452,51 @@ export class AudioEngine {
   }
 
   /** A soft two-note chime for streak milestones (quiet; no fanfare). */
+  /**
+   * The ball leaving your hand: the snap of the wrist and the hiss of the
+   * seams. This is the throw's answer to the POP: harder throws crack louder.
+   */
+  release(power: number, side: number) {
+    if (!this.ready || !this.ctx) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const pan = ctx.createStereoPanner(); pan.pan.value = side * 0.3;
+    pan.connect(this.sfx);
+    // The snap: a very short bright burst.
+    const snap = ctx.createBufferSource();
+    snap.buffer = this.bufs.noise[0];
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 2200 + power * 1800;
+    const gs = ctx.createGain();
+    gs.gain.setValueAtTime(0.0001, t);
+    gs.gain.exponentialRampToValueAtTime(0.22 + power * 0.4, t + 0.006);
+    gs.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+    snap.connect(hp).connect(gs).connect(pan);
+    snap.start(t, Math.random()); snap.stop(t + 0.09);
+    // The body behind it: a short low thump.
+    const o = ctx.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(150 + power * 40, t);
+    o.frequency.exponentialRampToValueAtTime(62, t + 0.09);
+    const go = ctx.createGain();
+    go.gain.setValueAtTime(0.0001, t);
+    go.gain.exponentialRampToValueAtTime(0.16 + power * 0.3, t + 0.008);
+    go.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
+    o.connect(go).connect(pan);
+    o.start(t); o.stop(t + 0.15);
+    // The ball going away: a hiss that falls as it leaves.
+    const hiss = ctx.createBufferSource();
+    hiss.buffer = this.bufs.noise[0]; hiss.loop = true;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 2.2;
+    bp.frequency.setValueAtTime(2600 + power * 1400, t);
+    bp.frequency.exponentialRampToValueAtTime(700, t + 0.42);
+    const gh = ctx.createGain();
+    gh.gain.setValueAtTime(0.0001, t);
+    gh.gain.exponentialRampToValueAtTime(0.07 + power * 0.16, t + 0.03);
+    gh.gain.exponentialRampToValueAtTime(0.0001, t + 0.46);
+    hiss.connect(bp).connect(gh).connect(pan);
+    hiss.start(t, Math.random()); hiss.stop(t + 0.5);
+    this.log.push({ k: 'release', t: performance.now(), power });
+  }
+
   milestone() {
     if (!this.ctx) return;
     const ctx = this.ctx;

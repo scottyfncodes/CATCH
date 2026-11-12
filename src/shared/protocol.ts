@@ -7,12 +7,31 @@ import {
   CATCH_PERFECT,
   CATCH_POCKET,
   CATCH_WEB,
+  MITT_MIN,
+  MITT_SHRINK,
+  MITT_START,
 } from './constants.js';
 import type { Hand } from './pose.js';
 import type { Style } from './style.js';
 import type { Vec3 } from './vec.js';
 
 export type CatchQuality = 'perfect' | 'pocket' | 'web' | 'bobble';
+
+/**
+ * How a room plays. Chosen by whoever opens the room; everyone who joins plays it.
+ *   long:  every catch is a step further apart.
+ *   fixed: you stay where you started, across the road.
+ *   mitt:  giant gloves that shrink with every catch.
+ */
+export type Mode = 'long' | 'fixed' | 'mitt';
+export const MODES: Mode[] = ['long', 'fixed', 'mitt'];
+export const toMode = (x: unknown, fallback: Mode = 'long'): Mode => (MODES.includes(x as Mode) ? (x as Mode) : fallback);
+
+/** How big the glove is after `steps` catches (1 = a regular glove). Only Big mitt changes it. */
+export function gloveSize(mode: Mode, steps: number): number {
+  if (mode !== 'mitt') return 1;
+  return Math.round(Math.max(MITT_MIN, MITT_START * Math.pow(MITT_SHRINK, steps)) * 1000) / 1000;
+}
 
 /**
  * How a catch was made, beyond how cleanly: what the receiver had to do to get
@@ -42,8 +61,12 @@ export function catchStyle(g: Vec3, hand: Hand, lift: number, dive: number, spee
   return null;
 }
 
-/** Classify a glove/ball encounter. `null` = clean miss, 'deflect' = off the glove and out. */
-export function classifyCatch(distance: number, relSpeed: number): CatchQuality | 'deflect' | null {
+/**
+ * Classify a glove/ball encounter. `null` = clean miss, 'deflect' = off the
+ * glove and out. `glove` is the glove's size (the zones grow and shrink with it).
+ */
+export function classifyCatch(distance: number, relSpeed: number, glove = 1): CatchQuality | 'deflect' | null {
+  distance /= glove;
   if (distance <= CATCH_PERFECT) return 'perfect';
   if (distance <= CATCH_POCKET) return 'pocket';
   if (distance <= CATCH_WEB) return 'web';
@@ -55,8 +78,8 @@ export function classifyCatch(distance: number, relSpeed: number): CatchQuality 
  * How well a ball was caught, 0..1 (1 = dead centre of the pocket). This is
  * the grade the POP plays: everyone hears the same number.
  */
-export function catchGrade(distance: number): number {
-  const g = 1 - distance / CATCH_BOBBLE;
+export function catchGrade(distance: number, glove = 1): number {
+  const g = 1 - distance / glove / CATCH_BOBBLE;
   return Math.round(Math.max(0, Math.min(1, g)) * 100) / 100;
 }
 
@@ -113,8 +136,11 @@ export interface ScoreState {
   groupKey: string;
   /** How far across the ring is right now (m): for two players, how far apart you are. */
   dist: number;
-  /** Misses in a row. Three and the distance starts again. */
+  /** Misses so far (in total). The third and the distance, or the glove, starts again. */
   misses: number;
+  mode: Mode;
+  /** The size of everyone's glove (1 = regular; Big mitt starts at 3 and shrinks). */
+  glove: number;
 }
 
 export type BallEvent =
@@ -127,7 +153,7 @@ export type BallEvent =
 // ---- client -> server ------------------------------------------------------
 
 export type ClientMsg =
-  | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number; w?: number; s?: number[] }
+  | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number; w?: number; s?: number[]; m?: Mode }
   | { t: 'ping'; c: number }
   /** x, z, yaw, gx, gy, gz, arm, windup phase, lift, dive — rounded. */
   | { t: 'st'; p: PoseWire }
@@ -165,13 +191,14 @@ export type PoseWire = [number, number, number, number, number, number, number, 
 export type SnapEntry = [string, number, number, number, number, number, number, number, number, number, number];
 
 /**
+ * 6: rooms have a mode (long toss, fixed distance, big mitt).
  * 5: players carry a style (body, hat, glove, top) instead of a palette number.
  * 4: long-distance catch (the room carries its distance; throws are as hard as the distance takes).
  * 2: third-person bodies that move (pose carries position + glove point).
  * 3: signature windups (players carry a windup; the ball leaves the hand a
  *    beat after the arm starts forward) and leaps/dives in the pose.
  */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 /** Room codes: 4 letters, no ambiguous characters. */
 export const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ';

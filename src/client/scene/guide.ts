@@ -22,6 +22,8 @@ export interface GuideState {
   tier: TierId;
   /** 1 when the pocket is dead on the spot, 0 when it is a glove away. */
   on: number;
+  /** The glove's size (the ring is the size of its pocket). */
+  size?: number;
   /** Points along the rest of the flight, from the ball to the spot (a depth cue). */
   path: Vec3[];
 }
@@ -89,10 +91,11 @@ export class CatchGuide {
     if (s) {
       this.col.copy(COLORS[s.tier]).lerp(GOLD, s.tier === 0 ? s.on : 0);
       for (const o of [this.spot, this.closing]) { o.m.position.set(s.at[0], s.at[1], s.at[2]); o.m.quaternion.copy(q); o.mat.color.copy(this.col); }
-      this.spot.m.scale.setScalar(R);
+      const r = R * (s.size ?? 1);
+      this.spot.m.scale.setScalar(r);
       // The closing ring: wide when the ball leaves the hand, shut on the spot as it arrives.
       const open = 1 - s.k;
-      this.closing.m.scale.setScalar(R * (1 + 3.4 * open * open));
+      this.closing.m.scale.setScalar(r * (1 + 3.4 * open * open));
       this.pocket.m.position.set(s.pocket[0], s.pocket[1], s.pocket[2]);
       this.pocketRing.m.position.copy(this.pocket.m.position);
       this.pocket.m.quaternion.copy(q); this.pocketRing.m.quaternion.copy(q);

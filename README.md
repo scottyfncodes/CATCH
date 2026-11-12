@@ -9,11 +9,19 @@ person**, through your own eyes, with the ball coming at you. Two to five
 friends can share a room and keep one streak of consecutive catches alive;
 alone, Coach keeps you company.
 
-**It's long-distance catch.** You start 46 feet apart. Every catch takes you
-both a step further back, and the throws get longer, higher and harder to
-match: at 394 feet (as far as anyone can throw a baseball) it is a 107 mph
-throw that hangs for five seconds. A miss brings you a step back in; three
-misses in a row and you start again from the beginning. Nobody is ever out.
+**Three games.** Whoever opens the room picks one; friends who join play it.
+
+- **Long toss.** You start 46 feet apart. Every catch takes you both a step
+  further back, and the throws get longer, higher and harder: at 394 feet (as
+  far as anyone can throw a baseball) it is a 107 mph throw that hangs for
+  five seconds. A miss brings you a step back in. Misses are counted in total:
+  the third one starts the distance again.
+- **Classic.** Stay 46 feet apart and just play catch.
+- **Big mitt.** Everyone starts with a giant glove (three times the size), and
+  it shrinks with every catch, past a regular glove to a small one. A miss
+  makes it a size bigger; the third miss brings the giant one back.
+
+Nobody is ever out, in any of them.
 
 No accounts, no installs: open the link, pick a name and a throwing hand, play.
 
@@ -97,7 +105,17 @@ tests/visual/ authoring tool: a filmstrip of any windup, frame by frame
   another phone, and the server takes it on trust; that is acceptable only
   because nothing cosmetic affects play. A build changes how thick the limbs
   are drawn, never where the joints are, so reach and release are identical.
-- **The glove** is a regular glove at its real size. It rests as a cup, opens
+- **Modes** (`Mode` in `src/shared/protocol.ts`). The room carries its mode;
+  `gloveSize(mode, steps)` and the seat layout are both computed from the same
+  `steps`, so one counter drives either the distance or the glove. In Big
+  mitt the catch zones scale with the glove on the client and the server
+  alike; in the other two the glove is always size 1.
+- **The throw has a moment of its own.** As the ball leaves the hand: a snap
+  and a hiss that grow with how hard it was thrown, a knock through the shot,
+  a haptic tap, a ring off the hand. In flight the ball is drawn at its true
+  size (only kept from vanishing), so it shrinks into the distance, with a
+  streak behind it as long as it is fast.
+- **The glove** is a regular glove at its real size (except in Big mitt). It rests as a cup, opens
   to take a throw, and snaps shut on the ball on a stiff spring (so it
   overshoots into a squeeze) before easing back.
 - **Bodies and reach.** A player is a body at (x, z) near their spot (they can

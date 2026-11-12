@@ -36,6 +36,9 @@ import {
   type ServerMsg,
   type SnapEntry,
   type CatchStyle,
+  type Mode,
+  gloveSize,
+  toMode,
   catchGrade,
   catchStyle,
   classifyCatch,
@@ -120,7 +123,9 @@ export class Room {
   traj: Trajectory | null = null;
   streak = 0;
   sessionBest = 0;
-  /** Steps back from where the room began, and misses in a row. */
+  /** How this room plays (set by whoever opens it). */
+  mode: Mode;
+  /** Catches' worth of progress (steps back in long toss, shrinks of the glove in big mitt), and misses so far. */
   steps = 0;
   misses = 0;
   lastActive: number;
@@ -133,8 +138,9 @@ export class Room {
     code: string,
     private now: () => number,
     private records: RecordStore,
-    private opts: { practiceBot?: boolean; startSteps?: number } = {},
+    private opts: { practiceBot?: boolean; startSteps?: number; mode?: Mode } = {},
   ) {
+    this.mode = opts.mode ?? 'long';
     this.steps = Math.max(0, Math.floor(opts.startSteps ?? 0));
     this.code = code;
     this.lastActive = now();
@@ -153,7 +159,8 @@ export class Room {
     const key = this.groupKey();
     return {
       streak: this.streak, sessionBest: this.sessionBest, groupBest: this.records.get(key), groupKey: key,
-      dist: ringSpread(Math.max(2, this.members.size), this.steps), misses: this.misses,
+      dist: ringSpread(Math.max(2, this.members.size), this.back()), misses: this.misses,
+      mode: this.mode, glove: this.glove(),
     };
   }
 
@@ -174,6 +181,11 @@ export class Room {
       m.id, r(m.pose.x), r(m.pose.z), r(m.pose.yaw), r(m.pose.g[0]), r(m.pose.g[1]), r(m.pose.g[2]), m.arm, r(m.charge, 100), r(m.lift, 100), r(m.dive, 100),
     ]);
   }
+
+  /** Steps back from the start (only long toss moves anyone). */
+  private back(): number { return this.mode === 'long' ? this.steps : 0; }
+  /** The size of everyone's glove right now. */
+  glove(): number { return gloveSize(this.mode, this.steps); }
 
   // ---------------------------------------------------------------- membership
 
@@ -196,6 +208,8 @@ export class Room {
       this.broadcastRoster();
       return existing;
     }
+    // Whoever opens the room chooses how it plays.
+    if (this.humans().length === 0 && msg.m !== undefined) this.mode = toMode(msg.m, this.mode);
     if (this.humans().length >= MAX_PLAYERS) {
       conn.send({ t: 'full', room: this.code, max: MAX_PLAYERS });
       return null;
@@ -274,8 +288,8 @@ export class Room {
   private relayout() {
     if (this.ball.phase !== 'held') return;
     const list = [...this.members.values()].sort((a, b) => a.joinOrder - b.joinOrder);
-    this.steps = Math.min(this.steps, maxSteps(list.length));
-    const seats = seatLayout(list.length, this.steps);
+    if (this.mode === 'long') this.steps = Math.min(this.steps, maxSteps(list.length));
+    const seats = seatLayout(list.length, this.back());
     list.forEach((m, i) => {
       const fresh = m.poseAt === m.joinedAt && m.pose.x === 0 && m.pose.z === 0;
       m.seat = i;
@@ -438,15 +452,16 @@ export class Room {
     if (this.now() - m.poseAt < 600 && Math.hypot(pose.x - m.pose.x, pose.z - m.pose.z) > 1.8) return;
     const g = gloveWorld(pose);
     const near = sweptMinDistance(tr, Math.max(0, tSec - 0.03), Math.min(tr.groundT, tSec + 0.03), g, g);
-    if (near.dist > CATCH_BOBBLE + CATCH_VALIDATION_SLACK) return;
+    const gs = this.glove();
+    if (near.dist > CATCH_BOBBLE * gs + CATCH_VALIDATION_SLACK) return;
     const vel = velocityAt(tr, near.t);
     const speed = len(vel);
-    let q = classifyCatch(near.dist, speed);
+    let q = classifyCatch(near.dist, speed, gs);
     if (q === null) q = 'bobble';
     const pos = positionAt(tr, near.t);
     const feet = this.now() - m.poseAt < 600 ? m.speed : 0;
     const st = catchStyle(worldToBody(pose.yaw, [pose.g[0], pose.g[1] - lift, pose.g[2]]), m.hand, lift, dive, feet);
-    this.resolveCatch(m, q, catchGrade(near.dist), speed, b.t0 + near.t * 1000, pos, vel, self, st);
+    this.resolveCatch(m, q, catchGrade(near.dist, gs), speed, b.t0 + near.t * 1000, pos, vel, self, st);
   }
 
   private resolveCatch(m: Member, q: ReturnType<typeof classifyCatch>, g: number, speed: number, at: number, pos: Vec3, vel: Vec3, self: boolean, st: CatchStyle = null) {
@@ -472,9 +487,9 @@ export class Room {
       if (MILESTONES.includes(this.streak)) milestone = this.streak;
       this.sessionBest = Math.max(this.sessionBest, this.streak);
       this.records.raise(this.groupKey(), this.streak);
-      // Caught: everyone takes a step back.
-      this.steps = Math.min(maxSteps(this.members.size), this.steps + 1);
-      this.misses = 0;
+      // Caught: everyone takes a step back (long toss), or the gloves get a size smaller (big mitt).
+      if (this.mode === 'long') this.steps = Math.min(maxSteps(this.members.size), this.steps + 1);
+      else if (this.mode === 'mitt') this.steps = Math.min(60, this.steps + 1);
     }
     this.relayout();
     this.broadcastBall({ k: 'catch', by: m.id, q, g, speed, at, pos, self, milestone, st: st ?? undefined }, true);
@@ -561,8 +576,12 @@ export class Room {
     this.broadcastBall({ k: 'drop', by: blame?.id ?? null, void: isVoid, at }, true);
   }
 
-  /** A miss: a step back in. Three in a row and the distance starts again. */
+  /**
+   * A miss: a step back in (or the glove a size bigger). Misses are counted
+   * in total; the third starts the distance, or the glove, again.
+   */
   private missed() {
+    if (this.mode === 'fixed') return;
     this.misses++;
     this.steps = Math.max(0, this.steps - 1);
     if (this.misses >= MISSES_TO_RESET) { this.steps = 0; this.misses = 0; }
@@ -587,7 +606,7 @@ export class Room {
     if (!coach || !this.bot) return;
     const px = coach.pose.x, pz = coach.pose.z;
     const was = coach.arm;
-    const act = this.bot.update(t, coach, human ?? null, this.ball, this.traj, this.streak);
+    const act = this.bot.update(t, coach, human ?? null, this.ball, this.traj, this.streak, this.glove());
     if (coach.arm === Arm.Release && was !== Arm.Release && this.ball.holder === coach.id) this.broadcast({ t: 'go', by: coach.id, at: t });
     coach.speed = Math.hypot(coach.pose.x - px, coach.pose.z - pz) * SERVER_TICK_HZ;
     if (!act) return;

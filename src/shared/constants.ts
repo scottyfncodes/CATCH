@@ -30,14 +30,23 @@ export const MAX_SIM_TIME = 12;
 export const THROW_SPEED_LIMIT = 64;
 
 /**
- * Long-distance catch: the room starts at arm's-length-of-the-road apart and
- * every catch takes everyone a step further back. A miss brings you a step
- * in; three misses in a row and you start again from the beginning.
+ * Long toss: the room starts across the road and every catch takes everyone a
+ * step further back. A miss brings you a step in; the third miss and you
+ * start again from the beginning (misses are counted in total, not in a row).
  */
 export const DIST_STEP = 1;
 /** As far apart as two people get (m): about as far as anyone can throw a baseball. */
 export const DIST_MAX = 120;
 export const MISSES_TO_RESET = 3;
+
+/**
+ * Big mitt: everyone starts with a giant glove and it shrinks with every
+ * catch, down past a regular glove to a small one. The catch zones are the
+ * glove's size, so this is the one mode where the glove changes the game.
+ */
+export const MITT_START = 3;
+export const MITT_SHRINK = 0.92;
+export const MITT_MIN = 0.6;
 
 export const EYE_HEIGHT = 1.62;
 export const CHEST_HEIGHT = 1.3;
