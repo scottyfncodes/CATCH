@@ -110,6 +110,10 @@ export interface ScoreState {
   /** Best streak for this exact group of people (persisted). */
   groupBest: number;
   groupKey: string;
+  /** How far across the ring is right now (m): for two players, how far apart you are. */
+  dist: number;
+  /** Misses in a row. Three and the distance starts again. */
+  misses: number;
 }
 
 export type BallEvent =
@@ -160,11 +164,12 @@ export type PoseWire = [number, number, number, number, number, number, number, 
 export type SnapEntry = [string, number, number, number, number, number, number, number, number, number, number];
 
 /**
+ * 4: long-distance catch (the room carries its distance; throws are as hard as the distance takes).
  * 2: third-person bodies that move (pose carries position + glove point).
  * 3: signature windups (players carry a windup; the ball leaves the hand a
  *    beat after the arm starts forward) and leaps/dives in the pose.
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** Room codes: 4 letters, no ambiguous characters. */
 export const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ';

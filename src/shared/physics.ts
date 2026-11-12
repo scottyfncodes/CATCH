@@ -213,6 +213,57 @@ export function solveElevation(speed: number, dist: number, h0: number, h1: numb
   return (lo + hi) / 2;
 }
 
+/** Fly a 2D throw (with drag) out to `dist`: its height there and how long it took, or null if it lands first. */
+function arcAt(speed: number, elev: number, dist: number, h0: number): { h: number; t: number } | null {
+  let x = 0, y = h0;
+  let vx = speed * Math.cos(elev), vy = speed * Math.sin(elev);
+  for (let i = 0; i < MAX_SIM_TIME / SIM_DT; i++) {
+    const sp = Math.sqrt(vx * vx + vy * vy);
+    const k = BALL_DRAG * sp;
+    vx += -k * vx * SIM_DT;
+    vy += (-GRAVITY - k * vy) * SIM_DT;
+    const px = x, py = y;
+    x += vx * SIM_DT; y += vy * SIM_DT;
+    if (x >= dist) {
+      const a = (dist - px) / (x - px);
+      return { h: py + (y - py) * a, t: (i + a) * SIM_DT };
+    }
+    if (y < BALL_RADIUS) return null;
+  }
+  return null;
+}
+
+/**
+ * How steeply a throw of `dist` metres leaves the hand (radians): a flat
+ * peg across the road, a high arc for a long one. This is what makes distance
+ * cost arm: the further away your friend is, the harder the same throw is thrown.
+ */
+export function throwElevation(dist: number): number {
+  const k = Math.max(0, Math.min(1, (dist - 14) / 100));
+  return ((13 + 25 * k * k * (3 - 2 * k)) * Math.PI) / 180;
+}
+
+/**
+ * The throw that leaves `p0` at elevation `elev` and passes through `target`:
+ * its velocity, speed and time of flight (with drag). The speed is whatever
+ * the distance takes; there is no "too far", only harder.
+ */
+export function solveArc(p0: Vec3, target: Vec3, elev: number): { v0: Vec3; speed: number; T: number } {
+  const dx = target[0] - p0[0], dz = target[2] - p0[2];
+  const d = Math.max(0.5, Math.hypot(dx, dz));
+  // The arc has to be at least steep enough to get up to the target at all.
+  const e = Math.max(elev, Math.atan2(target[1] - p0[1], d) + 0.06);
+  let lo = 2, hi = 160;
+  for (let i = 0; i < 34; i++) {
+    const m = (lo + hi) / 2;
+    const r = arcAt(m, e, d, p0[1]);
+    if (!r || r.h < target[1]) lo = m; else hi = m;
+  }
+  const r = arcAt(hi, e, d, p0[1]);
+  const ch = hi * Math.cos(e);
+  return { v0: [(dx / d) * ch, hi * Math.sin(e), (dz / d) * ch], speed: hi, T: r ? r.t : d / ch };
+}
+
 /** Velocity that reaches `target` from `p0` in `flightTime` seconds (drag-corrected). */
 export function solveThrowTo(p0: Vec3, target: Vec3, flightTime: number): Vec3 {
   const T = flightTime;

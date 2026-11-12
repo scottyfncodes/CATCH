@@ -6,7 +6,7 @@
 // says. When it throws, it aims at your glove: good, not perfect.
 
 import { MOVE_RADIUS, RUN_ACCEL, RUN_SPEED, WALK_SPEED } from '../shared/constants.js';
-import { type Trajectory, closestApproach, positionAt, solveThrowTo, velocityAt } from '../shared/physics.js';
+import { type Trajectory, closestApproach, positionAt, solveArc, throwElevation, velocityAt } from '../shared/physics.js';
 import { bodyToWorld, clampReach, gloveReady, interceptPlan, lookAngles } from '../shared/pose.js';
 import { Arm, type BallState, type CatchQuality, catchGrade, classifyCatch } from '../shared/protocol.js';
 import { type Vec3, dist, len, lerp, wrapAngle } from '../shared/vec.js';
@@ -225,19 +225,21 @@ export class BotBrain {
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);
     const warm = this.throws <= 3;
     const r = this.rng();
+    // A long throw is harder to put on the glove: Coach's misses grow with the distance (gently).
+    const far = Math.min(2.2, Math.sqrt(Math.max(1, dist(from, glove) / 14)));
     let ox: number, oy: number;
     let high = 0;
     if (warm || r < 0.64) {
       // On target, give or take a hand's width.
       const sd = warm ? 0.03 : Math.min(0.1, 0.045 + streak * 0.002);
-      ox = this.gauss() * sd; oy = this.gauss() * sd;
+      ox = this.gauss() * sd * far; oy = this.gauss() * sd * far;
     } else if (r < 0.84) {
       // A bit off: you'll have to adjust the glove.
-      const a = this.rng() * Math.PI * 2, m = 0.22 + this.rng() * 0.3;
+      const a = this.rng() * Math.PI * 2, m = (0.22 + this.rng() * 0.3) * far;
       ox = Math.cos(a) * m; oy = Math.sin(a) * m * 0.7;
     } else if (r < 0.92) {
       // Wide: go get it.
-      ox = (this.rng() < 0.5 ? -1 : 1) * (1.0 + this.rng() * Math.min(1.3, 0.5 + streak * 0.05)); oy = -0.2 + this.rng() * 0.4;
+      ox = (this.rng() < 0.5 ? -1 : 1) * (1.0 + this.rng() * Math.min(1.3, 0.5 + streak * 0.05)) * Math.min(1.5, far); oy = -0.2 + this.rng() * 0.4;
     } else if (r < 0.96) {
       // Sailed: over your head. Get up for it.
       ox = this.gauss() * 0.15; oy = 0; high = 2.25 + this.rng() * 0.4;
@@ -246,10 +248,10 @@ export class BotBrain {
       ox = this.gauss() * 0.2; oy = 0; high = 0.24 + this.rng() * 0.14;
     }
     const target: Vec3 = [glove[0] + rx * ox, high || Math.max(0.25, glove[1] + oy), glove[2] + rz * ox];
+    // Thrown as hard as the distance takes; a little flatter and quicker once you're warm.
     const d = dist(p, target);
-    const pace = warm ? 11 : 11.5 + this.rng() * Math.min(6, 2 + streak * 0.25);
-    const T = Math.max(0.6, d / pace);
-    return { p, v: solveThrowTo(p, target, T) };
+    const zip = warm ? 1.15 : 1.1 - this.rng() * Math.min(0.3, 0.1 + streak * 0.01);
+    return { p, v: solveArc(p, target, throwElevation(d) * zip).v0 };
   }
 }
 

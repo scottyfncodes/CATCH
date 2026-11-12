@@ -30,6 +30,12 @@ export interface Shot {
   aim?: Vec3 | null;
   /** You're winding up or delivering (0..1): crane up and keep all of you in the frame. */
   windup?: number;
+  /**
+   * Your long throw is in the air (0..1): let go of yourself and follow it.
+   * The frame becomes the ball and your friend, so it starts wide on the arc
+   * and closes in, like a long lens, as the ball comes down to their glove.
+   */
+  flight?: number;
 }
 
 /** What your own eyes are doing while you wait for (or go after) a throw. */
@@ -45,8 +51,10 @@ export interface EyeShot {
   /** How far the view tips down from `far` toward `near` (0..1), and how far it turns. */
   pitchK: number;
   yawK: number;
-  /** A throw is on its way (0..1): the view opens up to take in the ball and the catch. */
+  /** A throw is on its way (0..1, more for one dropping out of the sky): the view opens up to take in the ball and the catch. */
   wide: number;
+  /** The ball is about to arrive (0..1): where it lands matters more than where it is. */
+  landing?: number;
   /** Sideways lean of the body (rad): the horizon tips a little with it. */
   lean: number;
 }
@@ -70,6 +78,7 @@ export class CameraRig {
   private init = false;
   private t = Math.random() * 100;
   private wind = 0;
+  private fl = 0;
   /** 0 = third person, 1 = first person; `blend` is the eased version the camera uses. */
   private k = 0;
   blend = 0;
@@ -133,22 +142,27 @@ export class CameraRig {
 
     // Frame what matters: you from the hips up, your partner head to toe with
     // a little road under them, and the ball in flight.
+    this.fl = this.init ? damp(this.fl, s.flight ?? 0, s.flight ? 0.35 : 0.5, dt) : 0;
+    const fl = this.fl * this.fl * (3 - 2 * this.fl);
+    // Following a long throw, the points that keep you in the frame slide over to your friend (and so drop out).
+    const mine = (x: number, y: number, z: number): Vec3 => [x + (s.partner[0] - x) * fl, y + (1.2 - y) * fl, z + (s.partner[2] - z) * fl];
     const pts: Vec3[] = [
-      [s.me[0], 0.75, s.me[2]], [s.me[0], 2.0, s.me[2]],
-      [s.partner[0], -0.6, s.partner[2]], [s.partner[0], 2.3, s.partner[2]],
+      mine(s.me[0], 0.75, s.me[2]), mine(s.me[0], 2.0, s.me[2]),
+      [s.partner[0], -0.6 + 0.4 * fl, s.partner[2]], [s.partner[0], 2.3, s.partner[2]],
     ];
     // Room for your glove and throwing arm either side of you.
-    pts.push([s.me[0] + r.x * 0.5, 1.25, s.me[2] + r.z * 0.5], [s.me[0] - r.x * 0.5, 1.25, s.me[2] - r.z * 0.5]);
-    if (s.ball) pts.push([s.ball[0], Math.min(s.ball[1], 7), s.ball[2]]);
+    pts.push(mine(s.me[0] + r.x * 0.5, 1.25, s.me[2] + r.z * 0.5), mine(s.me[0] - r.x * 0.5, 1.25, s.me[2] - r.z * 0.5));
+    if (s.ball) pts.push([s.ball[0], Math.min(s.ball[1], 7 + 60 * fl) + 0.6 * fl, s.ball[2]]);
     if (w > 0.01) {
       // Head to toe, the hands over the head, and the stride.
-      pts.push([s.me[0], 0.75 - 0.85 * w, s.me[2]], [s.me[0], 2.0 + 0.3 * w, s.me[2]], [s.me[0] + f.x * 1.3 * w, 0.75 - 0.8 * w, s.me[2] + f.z * 1.3 * w]);
+      pts.push(mine(s.me[0], 0.75 - 0.85 * w, s.me[2]), mine(s.me[0], 2.0 + 0.3 * w, s.me[2]), mine(s.me[0] + f.x * 1.3 * w, 0.75 - 0.8 * w, s.me[2] + f.z * 1.3 * w));
     }
     if (s.aim) pts.push([s.aim[0], s.aim[1] + 0.2, s.aim[2]], [s.aim[0], s.aim[1] - 0.2, s.aim[2]]);
     const yawOf = (p: Vec3) => wrapAngle(Math.atan2(-(p[0] - pos.x), -(p[2] - pos.z)) - this.axis);
     const pitchOf = (p: Vec3) => Math.atan2(p[1] - pos.y, Math.hypot(p[0] - pos.x, p[2] - pos.z));
     // Your partner sits near the middle of the frame, you off to one side.
-    const centreYaw = yawOf([s.me[0], 0, s.me[2]]) * 0.42 + yawOf([s.partner[0], 0, s.partner[2]]) * 0.58;
+    const cm = 0.42 * (1 - fl);
+    const centreYaw = yawOf([s.me[0], 0, s.me[2]]) * cm + yawOf([s.partner[0], 0, s.partner[2]]) * (1 - cm);
     let ySpan = 0, pLo = Infinity, pHi = -Infinity;
     for (const p of pts) {
       ySpan = Math.max(ySpan, Math.abs(yawOf(p) - centreYaw));
@@ -159,7 +173,8 @@ export class CameraRig {
     const top = portrait ? 0.42 : 0.6, bottom = portrait ? -0.98 : -0.98, sideB = portrait ? 0.84 : 0.8;
     const hV = (pHi - pLo) / (top - bottom);
     const hH = Math.atan(Math.tan(ySpan / sideB) / this.aspect);
-    let half = clamp(Math.max(hV * 1.02, hH), portrait ? 0.34 - 0.06 * w : 0.28 - 0.06 * w, portrait ? 0.7 : 0.6);
+    const minHalf = (portrait ? 0.34 - 0.06 * w : 0.28 - 0.06 * w) * (1 - fl) + 0.055 * fl;
+    let half = clamp(Math.max(hV * 1.02, hH), minHalf, portrait ? 0.7 : 0.6);
     const midP = (pHi + pLo) / 2;
     const wantPitch = midP - ((top + bottom) / 2) * half;
     const wantYaw = this.axis + centreYaw;
@@ -227,7 +242,7 @@ export class CameraRig {
     const dy = wrapAngle(near.yaw - far.yaw) * s.yawK;
     const wantYaw = s.yaw + clamp(clamp(far.yaw, -EYE_TURN, EYE_TURN) + clamp(dy, -0.5 * hHalf, 0.5 * hHalf), -EYE_TURN, EYE_TURN);
     const dp = (near.pitch - far.pitch) * s.pitchK;
-    const wantPitch = clamp(far.pitch + clamp(dp, -0.62 * vHalf, 0.5 * vHalf), -1.2, 0.9);
+    const wantPitch = clamp(far.pitch + clamp(dp, -(0.86 + 0.4 * (s.landing ?? 0)) * vHalf, 0.5 * vHalf), -1.2, 0.9);
     const wantRoll = clamp(-s.lean * 0.3, -0.13, 0.13);
     if (!this.eInit) {
       this.eInit = true;

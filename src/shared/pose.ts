@@ -6,6 +6,8 @@
 // glove.
 
 import {
+  DIST_MAX,
+  DIST_STEP,
   EYE_HEIGHT,
   GLOVE_READY,
   REACH_CENTER_Y,
@@ -114,9 +116,19 @@ export function ringRadius(n: number): number {
   return n <= 2 ? 7 : n === 3 ? 7.6 : n === 4 ? 8.1 : 8.6;
 }
 
-/** Positions for n players around a loose circle, each facing the centre. */
-export function seatLayout(n: number): { pos: Vec3; yaw: number }[] {
-  const r = ringRadius(n);
+/** The most steps back a ring of n can take (the ring never gets wider than DIST_MAX across). */
+export function maxSteps(n: number): number {
+  return Math.max(0, Math.floor((DIST_MAX - 2 * ringRadius(n)) / DIST_STEP));
+}
+
+/** How far across the ring is after `steps` steps back (m): for two players, how far apart they are. */
+export function ringSpread(n: number, steps: number): number {
+  return 2 * ringRadius(n) + Math.min(steps, maxSteps(n)) * DIST_STEP;
+}
+
+/** Positions for n players around a loose circle, each facing the centre, `steps` steps back from where they began. */
+export function seatLayout(n: number, steps = 0): { pos: Vec3; yaw: number }[] {
+  const r = ringSpread(n, steps) / 2;
   const out: { pos: Vec3; yaw: number }[] = [];
   for (let i = 0; i < n; i++) {
     // Slight irregularity so it reads as friends standing around, not a clock face.

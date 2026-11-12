@@ -10,6 +10,7 @@ import {
   EYE_HEIGHT,
   LEAP_HEIGHT,
   MAX_PLAYERS,
+  MISSES_TO_RESET,
   MOVE_RADIUS,
   RECONNECT_GRACE_MS,
   RECOVER_DELAY_MS,
@@ -25,7 +26,7 @@ import {
   sweptMinDistance,
   velocityAt,
 } from '../shared/physics.js';
-import { type Hand, type Pose, clampReach, eyePosition, gloveReady, gloveWorld, reachNorm, seatLayout, worldToBody } from '../shared/pose.js';
+import { type Hand, type Pose, clampReach, eyePosition, gloveReady, gloveWorld, maxSteps, reachNorm, ringSpread, seatLayout, worldToBody } from '../shared/pose.js';
 import {
   Arm,
   type BallEvent,
@@ -81,6 +82,7 @@ export interface Member {
   disconnectedAt: number;
   pose: Pose;
   poseAt: number;
+  joinedAt: number;
   arm: number;
   /** How far through the windup (0..1). */
   charge: number;
@@ -118,10 +120,12 @@ export class Room {
   traj: Trajectory | null = null;
   streak = 0;
   sessionBest = 0;
+  /** Steps back from where the room began, and misses in a row. */
+  steps = 0;
+  misses = 0;
   lastActive: number;
   /** A disconnect/leave happened during the current flight: a drop will not reset the streak. */
   private flightDisrupted = false;
-  private layoutDirty = false;
   private joinCounter = 0;
   private bot: BotBrain | null = null;
 
@@ -129,8 +133,9 @@ export class Room {
     code: string,
     private now: () => number,
     private records: RecordStore,
-    private opts: { practiceBot?: boolean } = {},
+    private opts: { practiceBot?: boolean; startSteps?: number } = {},
   ) {
+    this.steps = Math.max(0, Math.floor(opts.startSteps ?? 0));
     this.code = code;
     this.lastActive = now();
     this.ball = { phase: 'held', holder: null, tid: 0, thrower: null, t0: 0, p0: [0, 0, 0], v0: [0, 0, 0], live: false };
@@ -146,7 +151,10 @@ export class Room {
 
   score(): ScoreState {
     const key = this.groupKey();
-    return { streak: this.streak, sessionBest: this.sessionBest, groupBest: this.records.get(key), groupKey: key };
+    return {
+      streak: this.streak, sessionBest: this.sessionBest, groupBest: this.records.get(key), groupKey: key,
+      dist: ringSpread(Math.max(2, this.members.size), this.steps), misses: this.misses,
+    };
   }
 
   playerInfo(m: Member): PlayerInfo {
@@ -207,7 +215,7 @@ export class Room {
     const m: Member = {
       id: o.bot ? 'coach' : newId(), guest: o.guest, name: o.name, hand: o.hand, bot: o.bot,
       joinOrder: this.joinCounter++, look, conn: o.conn, connected: true, disconnectedAt: 0,
-      pose: { x: 0, z: 0, yaw: 0, g: gloveReady(0, o.hand) }, poseAt: this.now(),
+      pose: { x: 0, z: 0, yaw: 0, g: gloveReady(0, o.hand) }, poseAt: this.now(), joinedAt: this.now(),
       arm: Arm.Idle, charge: 0, lift: 0, dive: 0, speed: 0, windup: o.windup, catches: 0, drops: 0, perfects: 0, saves: 0, seat: 0, pos: [0, 0, 0], facing: 0,
     };
     this.members.set(m.id, m);
@@ -266,17 +274,18 @@ export class Room {
   }
 
   private relayout() {
-    if (this.ball.phase !== 'held') { this.layoutDirty = true; return; }
-    this.layoutDirty = false;
+    if (this.ball.phase !== 'held') return;
     const list = [...this.members.values()].sort((a, b) => a.joinOrder - b.joinOrder);
-    const seats = seatLayout(list.length);
+    this.steps = Math.min(this.steps, maxSteps(list.length));
+    const seats = seatLayout(list.length, this.steps);
     list.forEach((m, i) => {
-      const moved = m.pos[0] !== seats[i].pos[0] || m.pos[2] !== seats[i].pos[2];
+      const fresh = m.poseAt === m.joinedAt && m.pose.x === 0 && m.pose.z === 0;
       m.seat = i;
       m.pos = seats[i].pos;
       m.facing = seats[i].yaw;
-      // A new layout puts everyone on their new spot (clients walk/snap there too).
-      if (moved || m.bot) m.pose = { x: m.pos[0], z: m.pos[2], yaw: m.facing, g: gloveReady(m.facing, m.hand) };
+      // A step back (or in) is walked: only a new arrangement of the ring puts
+      // a body straight on its new spot (clients snap there too).
+      if (fresh || Math.hypot(m.pose.x - m.pos[0], m.pose.z - m.pos[2]) > MOVE_RADIUS) m.pose = { x: m.pos[0], z: m.pos[2], yaw: m.facing, g: gloveReady(m.facing, m.hand) };
     });
   }
 
@@ -374,8 +383,8 @@ export class Room {
   private parsePose(m: Member, p: unknown[]): Pose | null {
     if (p.length < 6) return null;
     return {
-      x: finite(p[0], -60, 60, m.pos[0]),
-      z: finite(p[1], -60, 60, m.pos[2]),
+      x: finite(p[0], -150, 150, m.pos[0]),
+      z: finite(p[1], -150, 150, m.pos[2]),
       yaw: wrapAngle(finite(p[2], -10, 10, m.facing)),
       g: [finite(p[3], -2, 2), finite(p[4], 0, 3.2, 1.2), finite(p[5], -2, 2)],
     };
@@ -449,7 +458,7 @@ export class Room {
       const v: Vec3 = [-vel[0] * s + side * Math.cos(m.pose.yaw), 2.6, -vel[2] * s - side * Math.sin(m.pose.yaw)];
       this.launch(m.id, pos, v, at, false);
       const disrupted = this.flightDisrupted;
-      if (!disrupted) { this.streak = 0; m.drops++; }
+      if (!disrupted) { this.streak = 0; m.drops++; this.missed(); }
       this.broadcastBall({ k: 'deflect', by: m.id, speed, at, pos }, true);
       return;
     }
@@ -463,8 +472,11 @@ export class Room {
       if (STREAK_MILESTONES.includes(this.streak)) milestone = this.streak;
       this.sessionBest = Math.max(this.sessionBest, this.streak);
       this.records.raise(this.groupKey(), this.streak);
+      // Caught: everyone takes a step back.
+      this.steps = Math.min(maxSteps(this.members.size), this.steps + 1);
+      this.misses = 0;
     }
-    if (this.layoutDirty) this.relayout();
+    this.relayout();
     this.broadcastBall({ k: 'catch', by: m.id, q, g, speed, at, pos, self, milestone, st: st ?? undefined }, true);
     if (m.bot) this.bot?.onGotBall(this.now());
   }
@@ -540,10 +552,18 @@ export class Room {
     if (!isVoid) {
       this.streak = 0;
       if (blame) blame.drops++;
+      this.missed();
     }
     const at = this.ball.t0 + tr.groundT * 1000;
     this.ball = { ...this.ball, phase: 'loose', live: false };
     this.broadcastBall({ k: 'drop', by: blame?.id ?? null, void: isVoid, at }, true);
+  }
+
+  /** A miss: a step back in. Three in a row and the distance starts again. */
+  private missed() {
+    this.misses++;
+    this.steps = Math.max(0, this.steps - 1);
+    if (this.misses >= MISSES_TO_RESET) { this.steps = 0; this.misses = 0; }
   }
 
   private recover() {

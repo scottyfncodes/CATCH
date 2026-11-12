@@ -14,6 +14,8 @@ const PORT = Number(process.env.PORT || 8787);
 const ALLOWED = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const DATA_DIR = process.env.DATA_DIR || '';
 const ROOM_IDLE_MS = 15 * 60_000;
+/** Development only: start every room this many steps back (to look at long throws without earning them). */
+const START_STEPS = Number(process.env.START_STEPS || 0) || 0;
 const MAX_ROOMS = 500;
 
 // ---- records: memory, optionally mirrored to a JSON file when DATA_DIR is set.
@@ -42,7 +44,7 @@ function getRoom(code: string): Room | null {
   let r = rooms.get(code);
   if (!r) {
     if (rooms.size >= MAX_ROOMS) return null;
-    r = new Room(code, now, records);
+    r = new Room(code, now, records, { startSteps: START_STEPS });
     rooms.set(code, r);
   }
   return r;

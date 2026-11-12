@@ -182,6 +182,18 @@ try {
   const recovered = await waitFor(async () => { const s = await A.state(); return s.ball.phase === 'held' && s.ball.holder ? s : null; }, 9000);
   check('ball recovery after a drop', !!recovered, `holder=${recovered?.ball.holder}`);
 
+  console.log('\nLONG-DISTANCE CATCH');
+  {
+    const [da, db] = [await A.state(), await B.state()];
+    const gap = Math.hypot(da.home[0] - db.home[0], da.home[2] - db.home[2]);
+    check('both phones agree how far apart they are, and their spots are that far apart', da.score.dist === db.score.dist && Math.abs(gap - da.score.dist) < 0.01, `${da.score.dist} m, spots ${gap.toFixed(2)} m apart`);
+    check('three catches and one miss so far: three steps back, one step in', da.score.dist === 16 && da.score.misses === 1, `dist=${da.score.dist} misses=${da.score.misses}`);
+    const hudA = await A.page.locator('#streakLabel').textContent();
+    check('the distance is on screen beside the streak, in feet', /52 ft/i.test(hudA), hudA);
+    const walked = await waitFor(async () => { const s = await A.state(); return Math.hypot(s.pos[0] - s.home[0], s.pos[2] - s.home[2]) < 0.2 ? s : null; }, 6000);
+    check('players walk to their new spot on their own', !!walked);
+  }
+
   console.log('\nTHE PERFECT POP (both jobs)');
   for (const x of [A, B]) await setAutoMove(x, false);
   await sleep(2200); // everyone back on their spot, gloves held still
@@ -463,6 +475,8 @@ try {
   const before1b = (await T1.state()).score.streak;
   await throwGesture(T1, { pull: 60, side: 160 });
   const wide2 = await waitFor(() => crossOf(R1), 3000, 8);
+  // (Early enough that the ball arrives while they're still down on the grass.)
+  wide2.tta = await untilTta(R1, 0.78);
   await flick(R1, Math.sign(wide2.right) * 150, 0);
   const early = await waitFor(async () => { const s = await T1.state(); return s.ball.phase !== 'flight' ? s : null; }, 6000, 20);
   check('diving far too early misses: timing matters', before1b >= 1 && !!early && early.ball.phase === 'loose' && early.score.streak === 0, `dove with ${wide2?.tta?.toFixed(2)} s to go → ${early?.ball.phase}, streak ${before1b} → ${early?.score.streak}`);
