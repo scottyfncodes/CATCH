@@ -98,7 +98,7 @@ describe('physics', () => {
     expect(classifyCatch(0.07, 20)).toBe('pocket');
     expect(classifyCatch(0.13, 20)).toBe('web');
     expect(classifyCatch(0.19, 10)).toBe('bobble');
-    expect(classifyCatch(0.19, 28)).toBe('deflect');
+    expect(classifyCatch(0.19, 38)).toBe('deflect');
     expect(classifyCatch(0.4, 10)).toBeNull();
   });
   it('grades catches from dead centre (1) to the edge of the glove (0)', () => {
@@ -816,5 +816,56 @@ describe('room', () => {
     // From 120 m: within a few steps of you.
     expect(best).toBeLessThan(6);
     expect(len(room.ball.v0)).toBeGreaterThan(40);
+  });
+
+  it('a ball that comes off Coach\'s glove is one miss, not two', () => {
+    const { room, ids, conns, clock } = setup(1, true);
+    room.steps = 30;
+    exchange(room, clock, [ids[0], 'coach']);
+    // Get the ball back to the player and let everyone settle on their spots.
+    for (let i = 0; i < 4000 && room.ball.holder !== ids[0]; i++) {
+      clock.advance(10); room.tick();
+      if (room.ball.phase === 'flight' && room.ball.thrower === 'coach') {
+        const me = room.members.get(ids[0])!;
+        const tr = room.traj!;
+        const g = gloveWorld({ x: me.pos[0], z: me.pos[2], yaw: me.facing, g: gloveReady(me.facing, 'R') });
+        let bt = 0, bd = Infinity;
+        for (let q = 0; q < tr.groundT; q += 0.004) { const d = dist(positionAt(tr, q), g); if (d < bd) { bd = d; bt = q; } }
+        if ((clock.now() - room.ball.t0) / 1000 >= bt) {
+          const at = positionAt(tr, bt);
+          room.handle(ids[0], { t: 'catch', tid: room.ball.tid, at: room.ball.t0 + bt * 1000, pose: [me.pos[0], me.pos[2], me.facing, at[0] - me.pos[0], at[1], at[2] - me.pos[2]] });
+        }
+      }
+    }
+    expect(room.ball.holder).toBe(ids[0]);
+    const before = { steps: room.steps, misses: room.misses };
+    const n0 = conns[0].events().length;
+    const t0 = clock.now();
+    const { T } = throwAt(room, ids[0], 'coach', t0);
+    // Coach gets a glove on it and it bounces out.
+    const brain = (room as unknown as { bot: { update: (...a: unknown[]) => unknown } }).bot;
+    const real = brain.update.bind(brain);
+    let done = false;
+    brain.update = (...a: unknown[]) => {
+      real(...a);
+      if (!done && clock.now() >= t0 + T * 1000 - 20 && room.ball.phase === 'flight') { done = true; return { kind: 'catch', tid: room.ball.tid, tSec: T, q: 'deflect', g: 0 }; }
+      return null;
+    };
+    for (let i = 0; i < 900 && room.ball.phase !== 'held'; i++) { clock.advance(33); room.tick(); }
+    const evs = conns[0].events().slice(n0).map((e) => e.k);
+    expect(evs).toContain('deflect');
+    expect(evs).not.toContain('drop');
+    expect(room.misses).toBe(before.misses + 1);
+    expect(room.steps).toBe(before.steps - 1);
+  });
+
+  it('a long throw arrives fast, and a catch off the edge of the glove still holds', () => {
+    // From 100 m the ball comes in around 28 m/s. That is not a peg; it is just far.
+    const p0: Vec3 = [0, 1.8, 0], target: Vec3 = [0, 1.2, -100];
+    const a = solveArc(p0, target, throwElevation(100));
+    const arrive = len(velocityAt(simulateFlight(p0, a.v0), a.T));
+    expect(arrive).toBeGreaterThan(22);
+    expect(classifyCatch(0.18, arrive)).toBe('bobble');
+    expect(classifyCatch(0.18, 40)).toBe('deflect');
   });
 });

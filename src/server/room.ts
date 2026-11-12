@@ -485,8 +485,10 @@ export class Room {
 
   tick() {
     const t = this.now();
-    const b = this.ball;
     if (this.bot) this.botTick(t);
+    // (Read the ball after Coach has acted: a ball that just came off Coach's
+    // glove is already dead, and must not also be called a drop.)
+    const b = this.ball;
 
     if (b.phase === 'flight' && b.live && this.traj && t >= b.t0 + this.traj.groundT * 1000 + CATCH_GRACE_MS) {
       this.resolveDrop();
