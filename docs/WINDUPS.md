@@ -121,9 +121,10 @@ them to it:
   the player lets go of the aim, for every preset. `tempo` only changes how
   long the windup takes to reach the top, and the player can let go before then.
 - **Same throw for the same aim.** The throw is solved from the preset's
-  release point to the aim ring, at a pace measured from one shared reference
-  point. So the ball arrives at the same spot at the same moment whichever
-  windup threw it; only the first part of its path differs with the arm slot.
+  release point to the aim ring, on an arc set by the distance and the pull
+  and nothing else. So the ball arrives at the same spot whichever windup
+  threw it; the arm slot only changes where the path starts (and the time in
+  the air by a few hundredths of a second).
 - **Same aim steadiness.** The sway of the aim ring depends on how hard and
   how long you pull, never on the windup.
 - **Server limits.** The server accepts a throw from within `RELEASE_REACH` of

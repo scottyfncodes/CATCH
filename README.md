@@ -9,6 +9,12 @@ person**, through your own eyes, with the ball coming at you. Two to five
 friends can share a room and keep one streak of consecutive catches alive;
 alone, Coach keeps you company.
 
+**It's long-distance catch.** You start 46 feet apart. Every catch takes you
+both a step further back, and the throws get longer, higher and harder to
+match: at 394 feet (as far as anyone can throw a baseball) it is a 107 mph
+throw that hangs for five seconds. A miss brings you a step back in; three
+misses in a row and you start again from the beginning. Nobody is ever out.
+
 No accounts, no installs: open the link, pick a name and a throwing hand, play.
 
 ## How to play
@@ -51,7 +57,8 @@ One thumb, no buttons on screen:
   came to the centre of your pocket, and everyone hears that grade: a perfect
   catch cracks and rings off the houses, an off-centre one thwaps, a bobble
   squeezes twice. Perfect catches are counted in the pause sheet.
-- Every caught throw adds one to the room's streak; a drop resets it.
+- Every caught throw adds one to the room's streak and a step to the distance;
+  a drop resets the streak and costs a step.
 
 ## Architecture
 
@@ -69,6 +76,13 @@ tests/visual/ authoring tool: a filmstrip of any windup, frame by frame
 - **Deterministic flight.** A throw is `(p0, v0, t0)`; everyone simulates the
   same fixed-step (240 Hz) flight with gravity, quadratic drag, grass bounces and
   rolling, so the ball never teleports and the network carries about one message per throw.
+- **Distance.** The room carries how many steps back it is (`steps`); the seat
+  layout is computed from it, so the server, Coach and every client agree where
+  everyone stands. A throw is solved as an arc (`solveArc`): the launch angle
+  comes from the distance (flat across the road, 38° for the longest) and the
+  speed is whatever that takes, so the same pull is the same throw at any range.
+  Your own long throw is filmed by letting go of you and framing the ball and
+  your friend: wide on the arc, closing in like a long lens as it comes down.
 - **Bodies and reach.** A player is a body at (x, z) near their spot (they can
   run up to 4.5 m from it), facing a direction, with the glove anywhere inside a
   shared reach envelope (an ellipsoid: crouch to the grass, stretch overhead, a

@@ -21,13 +21,14 @@ function rand(seed: number) {
   return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
 }
 
-/** Where the old barn stands, beside the bend. */
-const BARN = { x: -10, z: 36 };
+/** Where the old barn stands: set back from the road, clear of the players as they back up past it. */
+const BARN = { x: -25, z: 46 };
 
 /** The road's centreline: straight where you play, bending away at both ends. */
 export function roadX(z: number): number {
-  if (z < -22) return -0.012 * (z + 22) * (z + 22);
-  if (z > 20) return 0.016 * (z - 20) * (z - 20);
+  // (Straight for as far as two people can throw, and a little more.)
+  if (z < -86) return -0.012 * (z + 86) * (z + 86);
+  if (z > 84) return 0.016 * (z - 84) * (z - 84);
   return 0;
 }
 
@@ -155,11 +156,13 @@ export interface World {
   scene: THREE.Scene;
   sun: THREE.DirectionalLight;
   update(dt: number, t: number): void;
+  /** Keep the sun's shadows around this spot (the play can be a long way from the middle of the road). */
+  focus(x: number, z: number): void;
 }
 
 export function buildWorld(lowSpec: boolean): World {
   const scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(PALETTE.fog, 60, 210);
+  scene.fog = new THREE.Fog(PALETTE.fog, 80, 280);
 
   // Sky dome.
   const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), skyMaterial());
@@ -465,6 +468,14 @@ export function buildWorld(lowSpec: boolean): World {
   return {
     scene,
     sun,
+    focus(x, z) {
+      // In steps, so shadow edges don't swim as you walk.
+      const qx = Math.round(x / 3) * 3, qz = Math.round(z / 3) * 3;
+      if (sun.target.position.x === qx && sun.target.position.z === qz) return;
+      sun.target.position.set(qx, 0, qz);
+      sun.position.copy(SUN_DIR).multiplyScalar(40).add(sun.target.position);
+      sun.target.updateMatrixWorld();
+    },
     update(dt) {
       for (const c of clouds) {
         const a = Math.atan2(c.position.x, c.position.z) + dt * 0.002;

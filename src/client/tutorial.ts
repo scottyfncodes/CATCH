@@ -83,12 +83,12 @@ export class Tutorial {
       return;
     }
     if (!this.holding && !this.done.has('catch') && !this.done.has('move')) {
-      this.show('move', 'Drag to move your glove<small>Get it to the ring. Off target? Drag that way to run, flick to dive or jump.</small>', 'move');
+      this.show('move', 'Drag your glove to the ring<small>Off target? Drag that way to run, flick to dive or jump.</small>', 'move');
       return;
     }
     if (this.done.has('throw') && this.done.has('catch')) {
       if (!this.finale) this.finale = performance.now();
-      this.show('streak', 'That’s it. Every catch adds to the streak', null);
+      this.show('streak', 'That’s it. Every catch is a step further apart', null);
       if (performance.now() - this.finale > 4200) this.finish();
       return;
     }

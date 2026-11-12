@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { CATCH_GRACE_MS, EYE_HEIGHT, LEAP_HEIGHT, MAX_PLAYERS, RECOVER_DELAY_MS } from '../../src/shared/constants';
-import { positionAt, simulateFlight, solveElevation, solveThrowTo, velocityAt } from '../../src/shared/physics';
-import { type Pose, bodyToWorld, clampReach, eyePosition, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, seatLayout } from '../../src/shared/pose';
+import { CATCH_GRACE_MS, DIST_MAX, EYE_HEIGHT, LEAP_HEIGHT, MAX_PLAYERS, RECOVER_DELAY_MS, THROW_SPEED_LIMIT } from '../../src/shared/constants';
+import { positionAt, simulateFlight, solveArc, solveElevation, solveThrowTo, throwElevation, velocityAt } from '../../src/shared/physics';
+import { type Pose, bodyToWorld, clampReach, eyePosition, gloveReady, gloveWorld, interceptPlan, lookAngles, maxSteps, reachNorm, ringSpread, seatLayout } from '../../src/shared/pose';
 import { Arm, type ServerMsg, catchGrade, catchStyle, classifyCatch, groupKeyFor, isGreatCatch } from '../../src/shared/protocol';
 import { type Vec3, dist, len } from '../../src/shared/vec';
 import { DEFAULT_WINDUP, HOUSE_WINDUP, RELEASE_TIME, WINDUP_IDS, getWindup, releasePointFor } from '../../src/shared/windups';
@@ -56,8 +56,10 @@ function throwAt(room: Room, fromId: string, toId: string, t: number, pace = 15,
   const target: Vec3 = [glove[0] + offset[0], glove[1] + offset[1], glove[2] + offset[2]];
   const yaw = lookAngles(from.pos, target).yaw;
   const p = releasePoint(from.pos, yaw, 'R');
-  const T = dist(p, target) / pace;
-  const v = solveThrowTo(p, target, T);
+  // Across the road: a throw at a set pace. A long way off: as hard as the distance takes.
+  const long = dist(p, target) > 40 ? solveArc(p, target, throwElevation(dist(p, target))) : null;
+  const T = long ? long.T : dist(p, target) / pace;
+  const v = long ? long.v0 : solveThrowTo(p, target, T);
   room.handle(fromId, { t: 'throw', rt: t, p, v, tid: room.ball.tid + 1 });
   return { pose, T, glove };
 }
@@ -679,5 +681,140 @@ describe('room', () => {
     expect(go.by).toBe('coach');
     expect(room.ball.t0 - go.at).toBeGreaterThanOrEqual(RELEASE_TIME * 1000);
     expect(room.ball.t0 - go.at).toBeLessThan(RELEASE_TIME * 1000 + 40);
+  });
+
+  // ---------------------------------------------------------------- long-distance catch
+
+  /** One clean exchange: the holder throws to the other player's glove and they catch it. */
+  function exchange(room: Room, clock: { now: () => number; advance: (ms: number) => void }, ids: string[]) {
+    const from = room.ball.holder!, to = ids.find((x) => x !== from)!;
+    const t0 = clock.now();
+    const { pose, T } = throwAt(room, from, to, t0);
+    clock.advance(T * 1000);
+    room.handle(to, { t: 'catch', tid: room.ball.tid, at: t0 + T * 1000, pose: wire(pose) });
+    expect(room.ball.holder).toBe(to);
+  }
+  /** The holder throws it away; nobody catches it; it is recovered. */
+  function miss(room: Room, clock: { now: () => number; advance: (ms: number) => void }, ids: string[]) {
+    const from = room.ball.holder!, to = ids.find((x) => x !== from)!;
+    throwAt(room, from, to, clock.now(), 14, [0, 6, 0]);
+    for (let i = 0; i < 600 && room.ball.phase !== 'held'; i++) { clock.advance(33); room.tick(); }
+    expect(room.ball.phase).toBe('held');
+  }
+  const apart = (room: Room, ids: string[]) => dist(room.members.get(ids[0])!.pos, room.members.get(ids[1])!.pos);
+
+  it('every catch takes both players a step further apart', () => {
+    const { room, ids, clock, conns } = setup(2);
+    expect(apart(room, ids)).toBeCloseTo(14, 6);
+    expect(room.score().dist).toBe(14);
+    for (let i = 1; i <= 5; i++) {
+      exchange(room, clock, ids);
+      expect(apart(room, ids)).toBeCloseTo(14 + i, 6);
+    }
+    // Everyone is told the distance and where their spot now is, with the catch.
+    const last = conns[0].last('ball')!;
+    expect(last.score.dist).toBe(19);
+    expect(dist(last.players![0].pos, last.players![1].pos)).toBeCloseTo(19, 6);
+    // They still face each other down the same line.
+    const [a, b] = ids.map((id) => room.members.get(id)!);
+    expect(lookAngles(a.pos, b.pos).yaw).toBeCloseTo(a.facing, 6);
+  });
+
+  it('a miss is a step back in, and a catch after it steps out again', () => {
+    const { room, ids, clock } = setup(2);
+    for (let i = 0; i < 4; i++) exchange(room, clock, ids);
+    expect(room.score().dist).toBe(18);
+    miss(room, clock, ids);
+    expect(room.score().dist).toBe(17);
+    expect(room.score().misses).toBe(1);
+    expect(apart(room, ids)).toBeCloseTo(17, 6);
+    exchange(room, clock, ids);
+    expect(room.score().dist).toBe(18);
+    expect(room.score().misses).toBe(0);
+  });
+
+  it('three misses in a row and the distance starts again; two do not', () => {
+    const { room, ids, clock } = setup(2);
+    for (let i = 0; i < 10; i++) exchange(room, clock, ids);
+    expect(room.score().dist).toBe(24);
+    miss(room, clock, ids); miss(room, clock, ids);
+    expect(room.score().dist).toBe(22);
+    exchange(room, clock, ids);
+    miss(room, clock, ids); miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 21, misses: 2 });
+    miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 14, misses: 0 });
+    expect(apart(room, ids)).toBeCloseTo(14, 6);
+  });
+
+  it('a miss at the starting distance does not bring you closer than the start', () => {
+    const { room, ids, clock } = setup(2);
+    miss(room, clock, ids);
+    expect(room.score().dist).toBe(14);
+  });
+
+  it('a throw voided by a disconnect costs no distance', () => {
+    const { room, ids, conns, clock } = setup(2);
+    for (let i = 0; i < 3; i++) exchange(room, clock, ids);
+    const from = room.ball.holder!, to = ids.find((x) => x !== from)!;
+    throwAt(room, from, to, clock.now(), 14, [0, 6, 0]);
+    room.disconnect(to, conns[ids.indexOf(to)]);
+    for (let i = 0; i < 300 && room.ball.phase === 'flight'; i++) { clock.advance(33); room.tick(); }
+    expect(room.score()).toMatchObject({ dist: 17, misses: 0, streak: 3 });
+  });
+
+  it('the distance stops at the longest throw there is, and catches there still count', () => {
+    const { room, ids, clock } = setup(2);
+    room.steps = maxSteps(2) - 1;
+    exchange(room, clock, ids);
+    expect(room.score().dist).toBe(DIST_MAX);
+    exchange(room, clock, ids);
+    expect(room.score().dist).toBe(DIST_MAX);
+    expect(room.streak).toBe(2);
+    expect(ringSpread(2, 1e6)).toBe(DIST_MAX);
+    expect(ringSpread(5, 1e6)).toBeLessThanOrEqual(DIST_MAX);
+  });
+
+  it('a ring of five widens together', () => {
+    const { room, ids, clock } = setup(5);
+    const r0 = Math.hypot(...room.members.get(ids[0])!.pos);
+    exchange(room, clock, [ids.find((x) => x === room.ball.holder)!, ids.find((x) => x !== room.ball.holder)!]);
+    for (const id of ids) expect(Math.hypot(...room.members.get(id)!.pos) - r0).toBeGreaterThan(0.1);
+    expect(room.score().dist).toBeGreaterThan(17);
+  });
+
+  it('a throw is as hard as the distance takes: the arc reaches the glove from 14 m to 120 m', () => {
+    let last = 0;
+    for (const d of [8, 14, 30, 60, 90, DIST_MAX]) {
+      const p0: Vec3 = [0.3, 1.8, 0], target: Vec3 = [0.4, 1.2, -d];
+      const a = solveArc(p0, target, throwElevation(d));
+      const tr = simulateFlight(p0, a.v0);
+      expect(dist(positionAt(tr, a.T), target), `${d} m`).toBeLessThan(0.03);
+      expect(tr.groundT).toBeGreaterThan(a.T);
+      expect(a.speed).toBeGreaterThan(last);
+      expect(a.speed).toBeLessThan(THROW_SPEED_LIMIT - 8);
+      last = a.speed;
+    }
+    // A hard, flat pull at the longest distance is still inside what the server accepts.
+    expect(solveArc([0, 1.8, 0], [0, 2.7, -DIST_MAX], throwElevation(DIST_MAX) * 0.75).speed).toBeLessThan(THROW_SPEED_LIMIT);
+    // Further is steeper and hangs longer.
+    expect(throwElevation(100)).toBeGreaterThan(throwElevation(14) * 2);
+    expect(solveArc([0, 1.8, 0], [0, 1.2, -100], throwElevation(100)).T).toBeGreaterThan(4);
+  });
+
+  it('accepts the longest throw, and Coach makes it', () => {
+    const { room, ids, clock } = setup(1, true);
+    room.steps = maxSteps(2);
+    exchange(room, clock, [ids[0], 'coach']);
+    const coach = room.members.get('coach')!, me = room.members.get(ids[0])!;
+    expect(dist(coach.pos, me.pos)).toBeCloseTo(DIST_MAX, 6);
+    for (let i = 0; i < 4000 && room.ball.phase === 'held'; i++) { clock.advance(10); room.tick(); stream(room, ids[0], { x: me.pos[0], z: me.pos[2], yaw: me.facing, g: gloveReady(me.facing, 'R') }); }
+    expect(room.ball.thrower).toBe('coach');
+    const tr = room.traj!;
+    let best = Infinity;
+    for (let t = 0; t < tr.groundT; t += 0.01) best = Math.min(best, dist(positionAt(tr, t), [me.pos[0], 1.2, me.pos[2]]));
+    // From 120 m: within a few steps of you.
+    expect(best).toBeLessThan(6);
+    expect(len(room.ball.v0)).toBeGreaterThan(40);
   });
 });

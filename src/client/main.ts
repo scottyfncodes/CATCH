@@ -566,20 +566,33 @@ function onScore(s: ScoreState, ev?: BallEvent) {
     void el.offsetWidth;
     el.classList.add(s.streak > lastStreak ? 'bump' : 'reset');
   }
+  // How far apart you are, in feet (it's baseball), beside the streak.
+  if (!el.classList.contains('milestone')) label.textContent = distLabel(s);
+  if (s.dist !== lastDist) {
+    label.classList.remove('step'); void label.offsetWidth; label.classList.add('step');
+    lastDist = s.dist;
+  }
+  if ((ev?.k === 'drop' && !ev.void) || ev?.k === 'deflect') {
+    // A miss is a step in; three in a row and you start again.
+    const reset = s.misses === 0;
+    toast(`${lastStreak >= 5 ? `Dropped at ${lastStreak}. ` : ''}${reset ? 'Three misses: back to the start' : `A step in (miss ${s.misses} of 3)`}`);
+  }
   if (ev?.k === 'catch') showGrade(ev.q, ev.st);
   if (ev?.k === 'drop' && !ev.void) showGrade(ev.by && ev.by === game?.ball.thrower ? 'wild' : 'miss');
   if (ev?.k === 'deflect') showGrade('miss');
   if (ev?.k === 'catch' && ev.milestone) {
     el.classList.add('milestone');
     label.textContent = `${ev.milestone} in a row`;
-    setTimeout(() => { el.classList.remove('milestone'); label.textContent = 'in a row'; }, 3200);
+    setTimeout(() => { el.classList.remove('milestone'); label.textContent = distLabel(game?.score ?? s); }, 3200);
   }
   if (ev?.k === 'drop' && ev.void) toast('Connection hiccup — streak kept');
-  if (ev?.k === 'drop' && !ev.void && lastStreak >= 5) toast(`Dropped at ${lastStreak}`);
-  if (ev?.k === 'deflect' && lastStreak >= 5) toast(`Off the glove at ${lastStreak}`);
   lastStreak = s.streak;
   updateCompany();
 }
+
+let lastDist = 0;
+const feet = (m: number) => Math.round(m * 3.28084);
+function distLabel(s: ScoreState) { return `in a row · ${feet(s.dist)} ft`; }
 
 const GRADE_WORDS: Record<string, string> = { perfect: 'Perfect pop', pocket: 'Pocket', web: 'Off the web', bobble: 'Bobbled', miss: 'Dropped', wild: 'Wild throw' };
 const STYLE_WORDS: Record<string, string> = { dive: 'Diving catch', leap: 'Leaping grab', run: 'On the run', high: 'High snag', scoop: 'Scooped', backhand: 'Backhand', reach: 'Reaching grab' };
@@ -615,6 +628,7 @@ function pauseSheet(code: string) {
     <section>
       <h3>Streaks</h3>
       <div class="stats">
+        <div class="stat"><b>${s ? feet(s.dist) : 0}<small> ft</small></b><span>Apart right now</span></div>
         <div class="stat"><b>${s?.streak ?? 0}</b><span>Current</span></div>
         <div class="stat"><b>${s?.sessionBest ?? 0}</b><span>Best this session</span></div>
         <div class="stat"><b>${s?.groupBest ?? 0}</b><span>Best with this group</span></div>

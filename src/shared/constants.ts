@@ -21,13 +21,23 @@ export const ROLL_DECEL = 2.6;
 /** Ball considered at rest below this speed. */
 export const REST_SPEED = 0.08;
 /** Hard cap on simulated ball life (seconds). */
-export const MAX_SIM_TIME = 9;
+export const MAX_SIM_TIME = 12;
 
-/** Throw speed envelope (m/s). ~17 mph soft toss to ~67 mph strong throw. */
-export const THROW_MIN_SPEED = 7.5;
-export const THROW_MAX_SPEED = 30;
-/** Server-side sanity cap (a little headroom over MAX for flick bonus). */
-export const THROW_SPEED_LIMIT = 33;
+/**
+ * Server-side sanity cap on throw speed (m/s). The longest catch (DIST_MAX)
+ * takes about 48 m/s, 107 mph, on a rising arc; a hard, flat one a little more.
+ */
+export const THROW_SPEED_LIMIT = 64;
+
+/**
+ * Long-distance catch: the room starts at arm's-length-of-the-road apart and
+ * every catch takes everyone a step further back. A miss brings you a step
+ * in; three misses in a row and you start again from the beginning.
+ */
+export const DIST_STEP = 1;
+/** As far apart as two people get (m): about as far as anyone can throw a baseball. */
+export const DIST_MAX = 120;
+export const MISSES_TO_RESET = 3;
 
 export const EYE_HEIGHT = 1.62;
 export const CHEST_HEIGHT = 1.3;

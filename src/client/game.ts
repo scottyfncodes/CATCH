@@ -9,7 +9,7 @@ import {
   MOVE_RADIUS, RUN_ACCEL, RUN_SPEED, SIM_DT, WALK_SPEED,
 } from '../shared/constants';
 import {
-  type Trajectory, closestApproach, positionAt, simulateFlight, solveThrowTo, sweptMinDistance, velocityAt,
+  type Trajectory, closestApproach, positionAt, simulateFlight, solveArc, sweptMinDistance, throwElevation, velocityAt,
 } from '../shared/physics';
 import {
   type Hand, type Pose, bodyToWorld, clampReach, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, worldToBody,
@@ -18,7 +18,7 @@ import {
   Arm, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, catchStyle, classifyCatch,
 } from '../shared/protocol';
 import { type Vec3, clamp, dist, lerp, wrapAngle } from '../shared/vec';
-import { RELEASE_TIME, getWindup, pitchToWorld, releasePointFor, windupId } from '../shared/windups';
+import { RELEASE_TIME, getWindup, releasePointFor, windupId } from '../shared/windups';
 import { audio } from './audio';
 import { haptic } from './haptics';
 import { type Aim, Controls, DEAD, FULL_PULL } from './input';
@@ -67,8 +67,6 @@ const AIM_H_SPAN = 2.55;
 const LUNGE_REACH = 0.42;
 /** The ball leaves the hand this long after you let go of the aim (ms). The same for every windup. */
 const RELEASE_MS = RELEASE_TIME * 1000;
-/** A reference release point (pitch frame) that sets the pace of every throw, whatever the arm slot. */
-const PACE_FROM: Vec3 = [0.3, 1.74, 0.38];
 /** A flick: this much thumb travel (CSS px) inside this window (ms). */
 const FLICK_PX = 40;
 const FLICK_MS = 90;
@@ -100,7 +98,7 @@ export class Game {
   players = new Map<string, Remote>();
   ball: BallState = { phase: 'held', holder: null, tid: 0, thrower: null, t0: 0, p0: [0, 0, 0], v0: [0, 0, 0], live: false };
   traj: Trajectory | null = null;
-  score: ScoreState = { streak: 0, sessionBest: 0, groupBest: 0, groupKey: '' };
+  score: ScoreState = { streak: 0, sessionBest: 0, groupBest: 0, groupKey: '', dist: 14, misses: 0 };
 
   // Local player: a body on the grass.
   hand: Hand;
@@ -158,6 +156,7 @@ export class Game {
   private lastSent = 0;
   private partnerId: string | null = null;
   private home: Vec3 = [0, 0, 6];
+  private homeMovedAt = 0;
 
   // Prediction / presentation state.
   private predThrowAt = 0;
@@ -423,6 +422,7 @@ export class Game {
   }
 
   private placeAtHome(info: PlayerInfo, snap: boolean) {
+    if (info.pos[0] !== this.home[0] || info.pos[2] !== this.home[2]) this.homeMovedAt = performance.now();
     this.home = [info.pos[0], 0, info.pos[2]];
     const far = Math.hypot(this.pos[0] - this.home[0], this.pos[2] - this.home[2]) > MOVE_RADIUS;
     if (snap || far) {
@@ -644,22 +644,20 @@ export class Game {
     if (!this.steadyAim) {
       // A breathing hand: steadier for soft throws, shakier for hard ones and long holds.
       const held = (performance.now() - this.aimStartAt) / 1000;
-      const amp = 0.012 + 0.038 * a.power + clamp((held - 1.4) * 0.05, 0, 0.07);
+      // (And a long throw is harder to hold steady than a short one.)
+      const amp = (0.012 + 0.038 * a.power + clamp((held - 1.4) * 0.05, 0, 0.07)) * Math.sqrt(Math.max(1, depth / 14));
       const t = performance.now() / 1000;
       wl = amp * (Math.sin(t * 2.1) + 0.5 * Math.sin(t * 4.7 + 1)) / 1.5;
       h += amp * (Math.sin(t * 1.6 + 2) + 0.5 * Math.sin(t * 3.9)) / 1.5;
     }
     const target: Vec3 = [me[0] + ux * depth + rx * (lat + wl), h, me[2] + uz * depth + rz * (lat + wl)];
     const yawTo = lookAngles(me, target).yaw;
-    // The ball leaves from wherever your windup's arm slot puts the hand. The
-    // throw is solved to the same spot in the same time whichever windup it is,
-    // so the ring is the truth and no delivery is an advantage.
+    // The ball leaves from wherever your windup's arm slot puts the hand, and
+    // is thrown as hard as the distance takes: a flat peg across the road, a
+    // high arc for a long one. Pull harder and it goes flatter and quicker.
+    // The arc depends on the distance and your pull, never on the windup.
     const p0 = releasePointFor(this.windup, me, yawTo, this.hand);
-    const ref = pitchToWorld(yawTo, this.hand, PACE_FROM);
-    // Pace: pull harder, throw harder (and it carries higher).
-    const speed = lerp(11.5, 20.5, a.power) * clamp(depth / 11, 0.75, 1.5);
-    const T = Math.max(0.35, dist([me[0] + ref[0], ref[1], me[2] + ref[2]], target) / speed);
-    const v0 = solveThrowTo(p0, target, T);
+    const { v0, T } = solveArc(p0, target, throwElevation(depth) * lerp(1.3, 0.75, a.power));
     return { p0, v0, speed: Math.hypot(...v0), ring: target, T };
   }
 
@@ -841,8 +839,8 @@ export class Game {
         const sp = hustle ? Math.min(RUN_SPEED * 1.2, d * 11) : Math.min(RUN_SPEED, d * 7);
         tvx = (dx / d) * sp; tvz = (dz / d) * sp;
       }
-    } else if (!incoming && !this.gloveDragging && (holding || b.phase !== 'held') && now - this.lastInputAt > 900) {
-      // Nothing to do: wander back to your spot.
+    } else if (!incoming && !this.gloveDragging && (holding || b.phase !== 'held' || this.homeMovedAt > this.lastInputAt) && now - Math.max(this.lastInputAt, this.homeMovedAt - 600) > 900) {
+      // Nothing to do: wander back to your spot (a step back after a catch, a step in after a miss).
       const dx = this.home[0] - this.pos[0], dz = this.home[2] - this.pos[2];
       const d = Math.hypot(dx, dz);
       top = WALK_SPEED;
@@ -1334,7 +1332,7 @@ export class Game {
       const pav = this.avatarOf(pid);
       let far: Vec3 = pav ? [pav.chestPos.x, pav.chestPos.y + 0.1, pav.chestPos.z] : [partner[0], 1.3, partner[2]];
       // Waiting: your friend up top, your glove along the bottom of the view.
-      let near = g, pitchK = this.rig.aspect < 1 ? 0.3 : 0.22, yawK = 0.25, wide = 0;
+      let near = g, pitchK = this.rig.aspect < 1 ? 0.3 : 0.22, yawK = 0.25, wide = 0, landing = 0;
       if (this.localCatch || (this.catchShow?.by === this.me && now < this.eyesUntil)) {
         // Caught it: your eyes stay up, and the glove comes up into them with the ball.
         pitchK = 0.6; yawK = 0.5; wide = 0.3;
@@ -1343,11 +1341,20 @@ export class Game {
         // lower part; they become the same place as it arrives.
         far = this.lastBallPos;
         if (this.cross) near = this.cross.at;
-        pitchK = 0.5; yawK = 0.5; wide = 1;
+        // A long throw comes down steeply: as it arrives, your eyes go to where it is landing.
+        const tta = this.cross ? this.cross.t - (this.net.now() - this.ball.t0) / 1000 : 1;
+        landing = smooth01(1 - tta / 0.7);
+        // One dropping out of the sky needs a wider look: the ball overhead and the glove below.
+        const up = Math.atan2(far[1] - av.eye.y, Math.hypot(far[0] - av.eye.x, far[2] - av.eye.z));
+        pitchK = 0.5 + 0.4 * landing; yawK = 0.5; wide = 1 + 0.5 * smooth01((up - 0.25) / 0.4);
       }
-      eyes = { eye: [av.eye.x, av.eye.y, av.eye.z], yaw: this.yaw, far, near, pitchK, yawK, wide, lean: av.sideLean };
+      eyes = { eye: [av.eye.x, av.eye.y, av.eye.z], yaw: this.yaw, far, near, pitchK, yawK, wide, landing, lean: av.sideLean };
     }
-    this.rig.update(dt, { me, partner, ball, side: this.hand === 'R' ? -1 : 1, aim: winding ? this.aimRing : null, windup: winding ? 1 : 0 }, eyes, first);
+    // A long throw of yours in the air: the shot lets go of you and goes with the ball.
+    const mine = this.ball.phase === 'flight' && this.ball.live && this.ball.thrower === this.me;
+    const flight = mine ? smooth01((Math.hypot(partner[0] - me[0], partner[2] - me[2]) - 22) / 20) : 0;
+    this.rig.update(dt, { me, partner, ball, side: this.hand === 'R' ? -1 : 1, aim: winding ? this.aimRing : null, windup: winding ? 1 : 0, flight }, eyes, first);
+    this.world.focus(me[0], me[2]);
     // In your own eyes your head and chest are out of the way (they still cast
     // your shadow). They fade by how close the camera is, so the move in and
     // out never passes through a solid head.

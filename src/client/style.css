@@ -123,7 +123,8 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .invite-code b { font-size: 30px; letter-spacing: 0.22em; font-weight: 800; }
 .invite-code small { display: block; font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 2px; }
 
-.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.stat b small { font-size: 14px; font-weight: 700; letter-spacing: 0; }
 .stat { background: var(--cream-2); border-radius: 14px; padding: 12px; }
 .stat b { display: block; font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
 .stat span { font-size: 12px; color: var(--muted); font-weight: 600; line-height: 1.25; display: block; }
@@ -175,6 +176,7 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .streak.bump b { animation: bump 380ms cubic-bezier(0.2, 1.4, 0.4, 1); }
 .streak.reset b { animation: reset 520ms ease; }
 .streak.milestone span { color: #ffe1a8; }
+.streak span.step { animation: bump 420ms cubic-bezier(0.2, 1.4, 0.4, 1); }
 .streak .grade {
   display: block; margin-top: 6px; font-style: normal; font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
   opacity: 0; transform: translateY(-3px); transition: opacity 260ms ease, transform 260ms ease; min-height: 15px;
@@ -247,6 +249,9 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   font-size: 15px; line-height: 1.38; font-weight: 600; animation: fade 260ms ease both;
 }
+/* In your own eyes the view is busy (your friend, the ball, your glove, the ring): the tip is one line. */
+#app.eyes .coach { padding: 9px 16px; }
+#app.eyes .coach small, #app.eyes .coach .skip { display: none; }
 .coach small { display: block; font-weight: 500; opacity: 0.78; margin-top: 3px; font-size: 13px; }
 .coach .skip { pointer-events: auto; display: block; margin: 2px auto -4px; height: 28px; padding: 0 12px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(255, 246, 230, 0.6); }
 .ghost {
