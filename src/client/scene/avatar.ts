@@ -151,7 +151,7 @@ export class Avatar {
   constructor(home: Vec3, facing: number, public hand: Hand, look: number, windup = 0) {
     const L = LOOKS[look % LOOKS.length];
     const m = (c: string, r = 0.8) => { const x = new THREE.MeshStandardMaterial({ color: c, roughness: r }); this.mats.push(x); return x; };
-    const shirt = m(L.shirt), pants = m(L.pants), skin = m(L.skin, 0.6), shoe = m('#efeae0', 0.7);
+    const pants = m(L.pants), skin = m(L.skin, 0.6), shoe = m('#efeae0', 0.7);
     // The head and chest get their own materials: in first person they fade
     // out of the way (and keep casting your shadow on the grass).
     const core = (c: string, r = 0.8) => { const x = m(c, r); this.coreMats.push(x); return x; };
@@ -218,7 +218,9 @@ export class Avatar {
     this.head.add(crown, brim);
 
     // Arms live in world space (IK each frame).
-    this.armSegs = [seg(shirt, 0.046, 0.04), seg(skin, 0.038, 0.032), seg(shirt, 0.046, 0.04), seg(skin, 0.038, 0.032)];
+    // (The sleeves fade with the head and chest in first person: the shoulders sit right
+    // under the camera, and what you see of your own arms is from the elbow down.)
+    this.armSegs = [seg(shirtC, 0.046, 0.04), seg(skin, 0.038, 0.032), seg(shirtC, 0.046, 0.04), seg(skin, 0.038, 0.032)];
     this.elbows = [joint(skin, 0.038), joint(skin, 0.038)];
     this.glove = buildGlove();
     this.glove.scale.setScalar(1.25);
@@ -380,7 +382,8 @@ export class Avatar {
     this.crouch += (wantCrouch - this.crouch) * (1 - Math.exp(-dt / 0.09));
     const reachOut = Math.hypot(gl[0], gl[2]);
     const wantLeanF = clamp((gl[2] - 0.45) * 0.35, -0.1, 0.32) + clamp((0.9 - gl[1]) * 0.35, 0, 0.35) + clamp(speed * 0.02, 0, 0.08);
-    const wantLeanS = clamp(gl[0] * 0.5 * clamp(reachOut - 0.45, 0, 1) * 2, -0.38, 0.38) + dive * 0.8;
+    // A long reach to the side comes from the whole body going with it, not from the arm growing.
+    const wantLeanS = clamp(gl[0] * 0.75 * clamp(reachOut - 0.4, 0, 1) * 2, -0.62, 0.62) + dive * 0.8;
     this.leanF += (wantLeanF - this.leanF) * (1 - Math.exp(-dt / 0.1));
     this.leanS += (wantLeanS - this.leanS) * (1 - Math.exp(-dt / 0.1));
 
@@ -509,6 +512,9 @@ export class Avatar {
     const elbow = new THREE.Vector3(), wrist = new THREE.Vector3();
     const poleG = new THREE.Vector3(0, -1, 0).addScaledVector(right, -side * 0.9).addScaledVector(fwd, -0.3);
     solve2(sG, wristT, UPPER, FORE, poleG, elbow, wrist);
+    // The glove is where the pose says it is. If that is past the end of the arm,
+    // the whole arm goes out straight to it (never a forearm on its own).
+    if (dw <= 0.5 && sG.distanceTo(wristT) > UPPER + FORE - 0.002) elbow.copy(sG).lerp(wristT, UPPER / (UPPER + FORE));
     placeSeg(this.armSegs[0], sG, elbow);
     // The glove is where the pose says it is (that's what the server checks and
     // what your friend aims at); if the arm is a touch short, the forearm stretches.

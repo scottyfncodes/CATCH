@@ -55,6 +55,8 @@ export interface EyeShot {
 const TO_FIRST = 0.75;
 const TO_THIRD = 0.65;
 const EYE_BACK = 0.24;
+/** The furthest the first-person view turns from straight ahead (rad). */
+const EYE_TURN = 0.42;
 
 const damp = (cur: number, want: number, tau: number, dt: number) => cur + (want - cur) * (1 - Math.exp(-dt / tau));
 
@@ -219,8 +221,11 @@ export class CameraRig {
     // watching leaves the frame: the ball always stays in view.
     const vHalf = ((this.eInit ? this.eFov : wantFov) * Math.PI) / 360;
     const hHalf = Math.atan(Math.tan(vHalf) * this.aspect);
+    // The head turns a little; it does not swing. A throw that is going wide is
+    // followed by moving your feet (the whole view slides over), with the road
+    // and the thrower still in the picture to stand on.
     const dy = wrapAngle(near.yaw - far.yaw) * s.yawK;
-    const wantYaw = s.yaw + clamp(far.yaw + clamp(dy, -0.6 * hHalf, 0.6 * hHalf), -1.1, 1.1);
+    const wantYaw = s.yaw + clamp(clamp(far.yaw, -EYE_TURN, EYE_TURN) + clamp(dy, -0.5 * hHalf, 0.5 * hHalf), -EYE_TURN, EYE_TURN);
     const dp = (near.pitch - far.pitch) * s.pitchK;
     const wantPitch = clamp(far.pitch + clamp(dp, -0.62 * vHalf, 0.5 * vHalf), -1.2, 0.9);
     const wantRoll = clamp(-s.lean * 0.3, -0.13, 0.13);
@@ -228,7 +233,7 @@ export class CameraRig {
       this.eInit = true;
       this.ePos.copy(eye); this.eYaw = wantYaw; this.ePitch = wantPitch; this.eFov = wantFov; this.eRoll = wantRoll;
     }
-    const kp = 1 - Math.exp(-dt / 0.05), ky = 1 - Math.exp(-dt / 0.11);
+    const kp = 1 - Math.exp(-dt / 0.05), ky = 1 - Math.exp(-dt / 0.16);
     this.ePos.x += (eye.x - this.ePos.x) * kp;
     this.ePos.z += (eye.z - this.ePos.z) * kp;
     this.ePos.y = damp(this.ePos.y, eye.y, 0.09, dt);
