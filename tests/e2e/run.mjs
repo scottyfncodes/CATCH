@@ -49,13 +49,13 @@ await waitFor(async () => { try { return (await fetch(BASE)).ok; } catch { retur
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required'] });
 let guestN = 0;
 
-async function player(room, name, hand = 'R', guest, expect = 'open') {
+async function player(room, name, hand = 'R', guest, expect = 'open', windup = 34) {
   const ctx = await browser.newContext({ ...devices['iPhone 13'], deviceScaleFactor: 1 });
   const page = await ctx.newPage();
   const g = guest ?? `e2e-${Date.now()}-${guestN++}`;
-  await page.addInitScript(([g, name, hand]) => {
-    if (!localStorage.getItem('catch.prefs.v1')) localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: g, name, hand, profiled: true, tutorialDone: true }));
-  }, [g, name, hand]);
+  await page.addInitScript(([g, name, hand, windup]) => {
+    if (!localStorage.getItem('catch.prefs.v1')) localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: g, name, hand, profiled: true, tutorialDone: true, windup }));
+  }, [g, name, hand, windup]);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(`${BASE}/r/${room}?server=${encodeURIComponent(WS)}`);
@@ -68,6 +68,18 @@ async function player(room, name, hand = 'R', guest, expect = 'open') {
   p.state = () => page.evaluate(() => window.__catch.game.debugState());
   p.touch = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((q) => ({ x: q[0], y: q[1], id: q[2] ?? 0 })) });
   return p;
+}
+
+/** A browser on the home screen (no room). */
+async function ctxHome() {
+  const ctx = await browser.newContext({ ...devices['iPhone 13'], deviceScaleFactor: 1 });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.addInitScript(() => { if (!localStorage.getItem('catch.prefs.v1')) localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: 'home-' + Math.random(), name: 'Sam', hand: 'R', profiled: true, tutorialDone: true })); });
+  await page.goto(`${BASE}/?server=${encodeURIComponent(WS)}`);
+  await page.locator('[data-act=play]').waitFor();
+  return { ctx, page, errors };
 }
 
 /** Real gesture: touch, pull back `pull` px (and `side` px sideways), let go. */
@@ -331,8 +343,192 @@ try {
   });
   check('audio resumes after a browser interruption', interrupted === 'running', interrupted);
 
+  // ------------------------------------------------------------------
+  console.log('\nTWO VIEWS (throwing = third person, catching = first person)');
+  const room3 = code();
+  const X = await player(room3, 'Xan', 'R', undefined, 'open', 34);
+  const Y = await player(room3, 'Yui', 'L', undefined, 'open', 51);
+  await waitFor(async () => (await X.state()).players.length === 2 && (await Y.state()).players.length === 2);
+  const xId = await idOf(X), yId = await idOf(Y);
+  const who = async () => ((await X.state()).ball.holder === xId ? [X, Y, xId, yId] : [Y, X, yId, xId]);
+  let [T1, R1, t1Id, r1Id] = await who();
+  for (const p of [X, Y]) await p.page.evaluate(() => { window.__catch.game.steadyAim = true; });
+  const views = await waitFor(async () => { const [t, r] = [await T1.state(), await R1.state()]; return r.view >= 1 && t.view <= 0 ? [t, r] : null; }, 5000);
+  check('whoever has the ball is in third person, and the one waiting for it is in first person, at the same moment', !!views && views[0].first === false && views[1].first === true, `thrower view=${views?.[0].view} receiver view=${views?.[1].view}`);
+
+  console.log('\nSIGNATURE WINDUPS');
+  const wx = (await Y.state()).windups.find((p) => p.id === xId)?.windup, wy = (await X.state()).windups.find((p) => p.id === yId)?.windup;
+  check('each player throws with their own windup, and the other client knows which', wx === 34 && wy === 51, `Xan=#${wx} Yui=#${wy}`);
+  const remoteAv = (await R1.state()).remotes.find((r) => r.id === t1Id);
+  check('…and animates the other player with it', remoteAv?.windup === (T1 === X ? 34 : 51), `remote avatar windup=#${remoteAv?.windup}`);
+
+  // Hold the aim: the windup runs to the top at its own tempo and rests there; the receiver sees it.
+  await setAutoMove(R1, true);
+  await waitCanThrow(T1);
+  const aim = await T1.page.evaluate((id) => window.__catch.game.pullFor(id), r1Id);
+  const ax = 195 - aim.side / 2;
+  await T1.touch('touchStart', [[ax, 330]]);
+  for (let i = 1; i <= 8; i++) { await T1.touch('touchMove', [[ax + (aim.side * i) / 8, 330 + (aim.pull * i) / 8]]); await sleep(16); }
+  const keep = setInterval(() => T1.touch('touchMove', [[ax + aim.side, 330 + aim.pull]]).catch(() => {}), 60);
+  const atTop = await waitFor(async () => { const s = await T1.state(); return s.windU >= 1 ? s : null; }, 4000, 30);
+  check('holding the aim runs the windup up to the top, where it waits for you', !!atTop && atTop.ball.phase === 'held', `windU=${atTop?.windU}`);
+  const seenTop = await waitFor(async () => { const r = (await R1.state()).remotes.find((q) => q.id === t1Id); return r && r.arm === 2 && r.charge > 0.9 ? r : null; }, 3000, 30);
+  check('the receiver watches the same windup reach the top', !!seenTop, `remote phase=${seenTop?.charge}`);
+  const tCam = await T1.state();
+  check('while you wind up the camera keeps all of you (head to toe) and your friend in the shot', (() => {
+    return !!tCam && tCam.view === 0;
+  })() && (await T1.page.evaluate(() => { const g = window.__catch.game; const s = g.debugState(); const feet = g.screenOf([s.pos[0], 0.05, s.pos[2]]), head = g.screenOf([s.pos[0], 1.95, s.pos[2]]), pal = g.screenOf([s.partnerPos[0], 1.2, s.partnerPos[2]]); return feet.on && head.on && pal.on && pal.y < head.y; })));
+  clearInterval(keep);
+  // Let go: the ball stays in the hand through the stride, and leaves it at the release.
+  const tUp = Date.now();
+  await T1.touch('touchEnd', []);
+  await sleep(120);
+  const mid = await T1.state();
+  check('letting go starts the delivery; the ball is still in the hand a moment later', mid.ball.phase === 'held' && mid.pending === true && mid.delivery > 0 && mid.delivery < 0.3, `phase=${mid.ball.phase} clip=${mid.delivery?.toFixed(2)}`);
+  const seenFlight = await waitFor(async () => { const r = await R1.state(); return r.ball.phase === 'flight' ? r : null; }, 3000, 8);
+  const gone = await waitFor(async () => { const s = await T1.state(); return s.ball.phase !== 'held' || s.ball.holder !== t1Id ? s : null; }, 3000, 10);
+  check('the ball leaves the hand at the release point of the animation', !!gone && Math.abs(gone.releaseClip - 0.3) < 0.04 && gone.releaseGap < 0.2, `clip t=${gone?.releaseClip?.toFixed(3)} s, hand-to-ball gap=${gone?.releaseGap?.toFixed(3)} m`);
+  check('…a fixed beat after you let go (the same for every windup)', Date.now() - tUp < 900);
+  const rAv = seenFlight?.remotes.find((r) => r.id === t1Id);
+  check('on the other phone the throw lines up with the delivery it is watching', !!rAv && rAv.delivery >= 0.22 && rAv.delivery < 0.42, `remote clip t=${rAv?.delivery?.toFixed(2)} s when the flight arrived (release is at 0.30)`);
+  const caught1 = await waitFor(async () => { const s = await R1.state(); return s.ball.phase === 'held' && s.ball.holder === r1Id ? s : null; }, 6000, 30);
+  check('the catcher catches it in first person', !!caught1 && caught1.view > 0.9, `view=${caught1?.view?.toFixed(2)}`);
+  const swapped = await waitFor(async () => { const [t, r] = [await T1.state(), await R1.state()]; return t.view >= 1 && r.view <= 0 ? [t, r] : null; }, 5000);
+  check('roles reverse and so do the views: each player moves to the view for their own role', !!swapped && swapped[0].first === true && swapped[1].first === false, `old thrower view=${swapped?.[0].view} new thrower view=${swapped?.[1].view}`);
+
+  // Change windup mid-game: everyone sees it.
+  await R1.page.evaluate(() => window.__catch.game.setWindup(16));
+  const changed = await waitFor(async () => { const s = await T1.state(); return s.windups.find((p) => p.id !== s.me)?.windup === 16 && s.remotes[0]?.windup === 16; }, 3000);
+  check('changing your windup mid-game reaches the other player', !!changed);
+
+  console.log('\nBAD THROWS, GREAT CATCHES');
+  // (R1 has the ball now; T1 is the catcher, on their own, no auto-move.)
+  [T1, R1, t1Id, r1Id] = [R1, T1, r1Id, t1Id];
+  await setAutoMove(R1, false); await setAutoMove(T1, false);
+  await sleep(1700);
+  const flick = async (p, dx, dy) => {
+    await p.touch('touchStart', [[195, 480]]);
+    for (let i = 1; i <= 4; i++) { await p.touch('touchMove', [[195 + (dx * i) / 4, 480 + (dy * i) / 4]]); await sleep(9); }
+    await sleep(300);
+    await p.touch('touchEnd', []);
+  };
+  const crossOf = (p) => p.page.evaluate(() => { const s = window.__catch.game.debugState(); if (!s.cross || s.ball.phase !== 'flight') return null; const dx = s.cross.at[0] - s.pos[0], dz = s.cross.at[2] - s.pos[2]; return { right: Math.cos(s.yaw) * dx - Math.sin(s.yaw) * dz, up: s.cross.at[1], tier: s.tier, first: s.first, tta: s.tta }; });
+  /** Wait (in the page, frame by frame) until the ball is `secs` from the glove plane. */
+  const untilTta = (p, secs) => p.page.evaluate((secs) => new Promise((res) => { const g = window.__catch.game; const t0 = performance.now(); const f = () => { const s = g.debugState(); if ((s.tta !== null && s.tta <= secs) || s.ball.phase !== 'flight' || performance.now() - t0 > 4000) res(s.tta); else requestAnimationFrame(f); }; f(); }), secs);
+  const gradeText = (p) => p.page.locator('#grade').textContent();
+
+  // 1. Wide: ~1.9 m off the glove. Out of reach from where the catcher stands.
+  await waitCanThrow(T1);
+  await aimAt(T1, r1Id);
+  const stoodAt = (await R1.state()).pos.slice();
+  await throwGesture(T1, { pull: 90, side: 160 });
+  const wide = await waitFor(() => crossOf(R1), 3000, 8);
+  check('a wide throw shows up as one that needs something special (not an automatic miss)', !!wide && Math.abs(wide.right) > 1.2 && wide.tier >= 1 && wide.tier <= 2 && wide.first, `off by ${wide?.right?.toFixed(2)} m, tier=${wide?.tier}`);
+  await untilTta(R1, 0.42);
+  await flick(R1, Math.sign(wide.right) * 150, 0);
+  const dove = await waitFor(async () => { const s = await R1.state(); return s.ball.phase === 'held' && s.ball.holder === r1Id ? s : s.ball.phase === 'loose' ? { fail: s } : null; }, 5000, 20);
+  await sleep(250);
+  const dv = await T1.state();
+  check('flick toward it: a diving catch, and the streak lives', !!dove && !dove.fail && dove.lastStyle === 'dive' && dv.lastCatch?.st === 'dive', `mine=${dove?.lastStyle ?? dove?.fail?.lastStyle} server=${dv.lastCatch?.st} q=${dv.lastCatch?.q}`);
+  const went = (await R1.state()).pos;
+  check('…the body really went and got it', Math.hypot(went[0] - stoodAt[0], went[2] - stoodAt[2]) > 0.7, `moved ${Math.hypot(went[0] - stoodAt[0], went[2] - stoodAt[2]).toFixed(2)} m`);
+  check('…and both players are told what kind of catch it was', /Diving catch/i.test(await gradeText(T1)) && /Diving catch/i.test(await gradeText(R1)), `"${await gradeText(T1)}"`);
+  const saves = (await T1.state()).windups.find((p) => p.id === r1Id)?.saves;
+  check('…and it is counted as a great catch', saves === 1, `great catches=${saves}`);
+
+  // 1b. A dive is a commitment: go far too early and you're on the grass when the ball arrives.
+  [T1, R1, t1Id, r1Id] = [R1, T1, r1Id, t1Id];
+  await sleep(1900);
+  await waitCanThrow(T1);
+  await aimAt(T1, r1Id);
+  const before1b = (await T1.state()).score.streak;
+  await throwGesture(T1, { pull: 60, side: 160 });
+  const wide2 = await waitFor(() => crossOf(R1), 3000, 8);
+  await flick(R1, Math.sign(wide2.right) * 150, 0);
+  const early = await waitFor(async () => { const s = await T1.state(); return s.ball.phase !== 'flight' ? s : null; }, 6000, 20);
+  check('diving far too early misses: timing matters', before1b >= 1 && !!early && early.ball.phase === 'loose' && early.score.streak === 0, `dove with ${wide2?.tta?.toFixed(2)} s to go → ${early?.ball.phase}, streak ${before1b} → ${early?.score.streak}`);
+  await waitFor(async () => { const s = await T1.state(); return s.ball.phase === 'held' && s.ball.holder ? s : null; }, 9000);
+  if ((await T1.state()).ball.holder !== t1Id) [T1, R1, t1Id, r1Id] = [R1, T1, r1Id, t1Id];
+  // Build the streak back up for what follows.
+  for (let i = 0; i < 3; i++) {
+    await setAutoMove(R1, true);
+    await sleep(1700);
+    await waitCanThrow(T1);
+    await aimAt(T1, r1Id);
+    await aimedThrow(T1, r1Id);
+    await waitFor(async () => { const s = await R1.state(); return s.ball.phase === 'held' && s.ball.holder === r1Id; }, 6000);
+    await setAutoMove(R1, false);
+    [T1, R1, t1Id, r1Id] = [R1, T1, r1Id, t1Id];
+  }
+  [T1, R1, t1Id, r1Id] = [R1, T1, r1Id, t1Id];
+
+  // 2. High: over the catcher's head. Flick up to leave the ground.
+  [T1, R1, t1Id, r1Id] = [R1, T1, r1Id, t1Id];
+  await sleep(1900);
+  await waitCanThrow(T1);
+  await aimAt(T1, r1Id);
+  const H2 = 664;
+  const a2 = await T1.page.evaluate((id) => window.__catch.game.pullFor(id), r1Id);
+  await throwGesture(T1, { pull: 14 + ((2.52 - 0.15) / 2.55) * 0.27 * H2, side: a2.side, x: 195 - a2.side / 2, y: 300 });
+  const hi = await waitFor(() => crossOf(R1), 3000, 8);
+  check('a throw over your head is out of a standing reach', !!hi && hi.up > 2.34, `crossing at ${hi?.up?.toFixed(2)} m`);
+  await untilTta(R1, 0.36);
+  await flick(R1, 0, -150);
+  const leapt = await waitFor(async () => { const s = await R1.state(); return s.ball.phase === 'held' && s.ball.holder === r1Id ? s : s.ball.phase === 'loose' ? { fail: s } : null; }, 5000, 20);
+  await sleep(250);
+  check('flick up: a leaping grab', !!leapt && !leapt.fail && leapt.lastStyle === 'leap' && (await T1.state()).lastCatch?.st === 'leap', `mine=${leapt?.lastStyle} server=${(await T1.state()).lastCatch?.st}`);
+
+  // 3. In the dirt: a scoop (the glove gets down to it).
+  [T1, R1, t1Id, r1Id] = [R1, T1, r1Id, t1Id];
+  await setAutoMove(R1, true);
+  await sleep(1900);
+  await waitCanThrow(T1);
+  await aimAt(T1, r1Id);
+  const a3 = await T1.page.evaluate((id) => window.__catch.game.pullFor(id), r1Id);
+  await throwGesture(T1, { pull: 14 + ((0.36 - 0.15) / 2.55) * 0.27 * H2, side: a3.side, x: 195 - a3.side / 2, y: 300 });
+  const scooped = await waitFor(async () => { const s = await T1.state(); return s.ball.phase === 'held' && s.ball.holder === r1Id ? s : null; }, 6000, 20);
+  check('a low throw is scooped out of the dirt', scooped?.lastCatch?.st === 'scoop', `server=${scooped?.lastCatch?.st}`);
+
+  // 4. Truly uncatchable: way over everything. The guide says so, and it is a miss.
+  [T1, R1, t1Id, r1Id] = [R1, T1, r1Id, t1Id];
+  await setAutoMove(R1, false);
+  await sleep(1900);
+  await waitCanThrow(T1);
+  await aimAt(T1, r1Id);
+  const streakBefore = (await T1.state()).score.streak;
+  await throwGesture(T1, { pull: 150, side: -330 });
+  const goneTier = await waitFor(async () => { const c = await crossOf(R1); return c && c.tier === 3 ? c : null; }, 2500, 8);
+  const missed = await waitFor(async () => (await T1.state()).score.streak === 0, 6000);
+  check('a throw nobody could get to reads as gone, and is a miss', !!missed && streakBefore >= 3, `streak before=${streakBefore}${goneTier ? ', guide said gone' : ''}`);
+  const missWord = await gradeText(R1);
+  check('…called what it was', /Wild throw|Dropped/i.test(missWord), `"${missWord}"`);
+  const backOut = await waitFor(async () => (await R1.state()).view <= 0, 4000);
+  check('after a miss the catcher\'s view steps back out to watch the ball', !!backOut);
+
+  console.log('\nWINDUP SELECTOR');
+  const S1 = await ctxHome();
+  await S1.page.locator('[data-act=windup]').tap();
+  const tilesN = await S1.page.locator('.jersey').count();
+  check('the selector lists every windup by number', tilesN === 7, `${tilesN} tiles`);
+  // Everything on the sheet is a number, a plain description of the motion, or chrome: nothing else.
+  const words = (await S1.page.locator('.sheet').innerText()).split('\n').map((x) => x.trim()).filter(Boolean);
+  const blurbs = await S1.page.locator('.jersey').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label').replace(/^Number \d+: /, '')));
+  const stray = words.filter((x) => !/^(Windup|Done|#?\d\d)$/.test(x) && !blurbs.includes(x));
+  check('numbers and plain descriptions of the motion only', stray.length === 0 && blurbs.length === 7, stray.join(' | ') || words.slice(0, 3).join(' · '));
+  await S1.page.locator('.jersey[data-id="55"]').tap();
+  await sleep(200);
+  const picked = await S1.page.evaluate(() => JSON.parse(localStorage.getItem('catch.prefs.v1')).windup);
+  check('tapping a number selects it, previews it and saves it at once', picked === 55 && (await S1.page.locator('#wunum').textContent()) === '#55' && (await S1.page.locator('.jersey[aria-checked=true]').getAttribute('data-id')) === '55', `saved=${picked}`);
+  const big = await S1.page.locator('.jersey[data-id="55"]').boundingBox();
+  check('the numbers are comfortable touch targets', big.width >= 64 && big.height >= 64, `${Math.round(big.width)}×${Math.round(big.height)} px`);
+  await S1.page.locator('#done').tap();
+  await sleep(200);
+  check('…and it is what the home screen shows next', /#55/.test(await S1.page.locator('[data-act=windup]').innerText()));
+  await S1.page.reload();
+  check('…and what you have after a reload', /#55/.test(await S1.page.locator('[data-act=windup]').innerText()));
+
   console.log('\nPERFORMANCE / STABILITY');
-  const errs = [A, B, C, D, L].flatMap((x) => x.errors);
+  const errs = [A, B, C, D, L, X, Y, S1].flatMap((x) => x.errors);
   check('no page errors in any client', errs.length === 0, errs.slice(0, 3).join(' | '));
   const loops = await A.page.evaluate(async () => {
     let n = 0; const t0 = performance.now();

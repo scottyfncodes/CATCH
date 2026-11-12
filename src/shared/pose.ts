@@ -68,19 +68,23 @@ export function gloveReady(yaw: number, hand: Hand): Vec3 {
   return bodyToWorld(yaw, [GLOVE_READY[0] + side * 0.2, GLOVE_READY[1], GLOVE_READY[2]]);
 }
 
-/** How far into the reach envelope an offset (from the feet) is: ≤1 is reachable. */
-export function reachNorm(g: Vec3): number {
+/**
+ * How far into the reach envelope an offset (from the feet) is: ≤1 is
+ * reachable. A leap carries the whole envelope up by `lift`.
+ */
+export function reachNorm(g: Vec3, lift = 0): number {
   const h = (g[0] * g[0] + g[2] * g[2]) / (REACH_H * REACH_H);
-  const v = (g[1] - REACH_CENTER_Y) / REACH_V;
+  const v = (g[1] - lift - REACH_CENTER_Y) / REACH_V;
   return Math.sqrt(h + v * v);
 }
 
 /** Pull an offset back inside the envelope (to `limit` of its size). */
-export function clampReach(g: Vec3, limit = 1): Vec3 {
-  const n = reachNorm(g);
+export function clampReach(g: Vec3, limit = 1, lift = 0): Vec3 {
+  const n = reachNorm(g, lift);
   if (n <= limit) return [g[0], g[1], g[2]];
   const k = limit / n;
-  return [g[0] * k, REACH_CENTER_Y + (g[1] - REACH_CENTER_Y) * k, g[2] * k];
+  const c = REACH_CENTER_Y + lift;
+  return [g[0] * k, c + (g[1] - c) * k, g[2] * k];
 }
 
 /** World-space glove pocket centre. */
@@ -103,18 +107,6 @@ export function interceptPlan(tr: Trajectory, tFrom: number, x: number, z: numbe
   }
   const t = bi * SIM_DT;
   return { t, point: positionAt(tr, t), norm: best };
-}
-
-/** Where the ball leaves the throwing hand (world space). */
-export function releasePoint(seat: Vec3, yaw: number, hand: Hand): Vec3 {
-  const e = eyePosition(seat);
-  const { f, r } = viewBasis(yaw, 0);
-  const side = hand === 'R' ? 1 : -1;
-  return [
-    e[0] + r[0] * 0.3 * side + f[0] * 0.38,
-    e[1] + 0.12,
-    e[2] + r[2] * 0.3 * side + f[2] * 0.38,
-  ];
 }
 
 /** Ring radius used for a given number of players. */

@@ -48,6 +48,13 @@ export const WALK_SPEED = 1.35;
 export const REACH_CENTER_Y = 1.22;
 export const REACH_H = 1.02;
 export const REACH_V = 1.12;
+/** A leap for a high throw: how far off the grass it takes you (m) and how long you're up (s). */
+export const LEAP_HEIGHT = 0.5;
+export const LEAP_TIME = 0.62;
+/** A dive for a wide one: a burst along the grass (m/s) that lasts this long (s), then you get up. */
+export const DIVE_SPEED = 8.2;
+export const DIVE_TIME = 0.34;
+export const DIVE_RECOVER = 0.5;
 /** Ready position: glove out in front, a bit below the chest. */
 export const GLOVE_READY: [number, number, number] = [0, 1.18, 0.42];
 

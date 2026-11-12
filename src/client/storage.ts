@@ -2,11 +2,14 @@
 // Clearing site data or switching devices creates a new guest identity.
 
 import type { Hand } from '../shared/pose';
+import { windupId } from '../shared/windups';
 
 export interface Prefs {
   guest: string;
   name: string;
   hand: Hand;
+  /** The windup you throw with (a number from the library). */
+  windup: number;
   /** Whether the player has completed the profile step. */
   profiled: boolean;
   tutorialDone: boolean;
@@ -36,6 +39,7 @@ export function prefs(): Prefs {
     guest: typeof s.guest === 'string' && s.guest ? s.guest : uuid(),
     name: typeof s.name === 'string' ? s.name : '',
     hand: s.hand === 'L' ? 'L' : 'R',
+    windup: windupId(s.windup),
     profiled: !!s.profiled,
     tutorialDone: !!s.tutorialDone,
     volume: typeof s.volume === 'number' ? s.volume : 0.9,

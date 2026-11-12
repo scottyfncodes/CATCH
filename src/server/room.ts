@@ -8,10 +8,12 @@ import {
   CATCH_GRACE_MS,
   CATCH_VALIDATION_SLACK,
   EYE_HEIGHT,
+  LEAP_HEIGHT,
   MAX_PLAYERS,
   MOVE_RADIUS,
   RECONNECT_GRACE_MS,
   RECOVER_DELAY_MS,
+  SERVER_TICK_HZ,
   STREAK_MILESTONES,
   THROW_SPEED_LIMIT,
 } from '../shared/constants.js';
@@ -23,7 +25,7 @@ import {
   sweptMinDistance,
   velocityAt,
 } from '../shared/physics.js';
-import { type Hand, type Pose, clampReach, eyePosition, gloveReady, gloveWorld, reachNorm, seatLayout } from '../shared/pose.js';
+import { type Hand, type Pose, clampReach, eyePosition, gloveReady, gloveWorld, reachNorm, seatLayout, worldToBody } from '../shared/pose.js';
 import {
   Arm,
   type BallEvent,
@@ -33,12 +35,16 @@ import {
   type ScoreState,
   type ServerMsg,
   type SnapEntry,
+  type CatchStyle,
   catchGrade,
+  catchStyle,
   classifyCatch,
   groupKeyFor,
+  isGreatCatch,
   sanitizeName,
 } from '../shared/protocol.js';
 import { type Vec3, dist, len, wrapAngle } from '../shared/vec.js';
+import { HOUSE_WINDUP, RELEASE_REACH, WINDUP_IDS, windupId } from '../shared/windups.js';
 import { BotBrain } from './bot.js';
 
 export interface Conn {
@@ -76,10 +82,19 @@ export interface Member {
   pose: Pose;
   poseAt: number;
   arm: number;
+  /** How far through the windup (0..1). */
   charge: number;
+  /** A leap's height off the grass, and a dive (-1..1), as streamed. */
+  lift: number;
+  dive: number;
+  /** How fast the feet are moving (m/s), from the pose stream. */
+  speed: number;
+  /** Which windup they throw with. */
+  windup: number;
   catches: number;
   drops: number;
   perfects: number;
+  saves: number;
   seat: number;
   pos: Vec3;
   facing: number;
@@ -137,7 +152,7 @@ export class Room {
   playerInfo(m: Member): PlayerInfo {
     return {
       id: m.id, name: m.name, hand: m.hand, seat: m.seat, pos: m.pos, facing: m.facing,
-      connected: m.connected, bot: m.bot, catches: m.catches, drops: m.drops, perfects: m.perfects, look: m.look,
+      connected: m.connected, bot: m.bot, catches: m.catches, drops: m.drops, perfects: m.perfects, saves: m.saves, windup: m.windup, look: m.look,
     };
   }
 
@@ -148,7 +163,7 @@ export class Room {
   snapEntries(): SnapEntry[] {
     const r = (x: number, k = 1000) => Math.round(x * k) / k;
     return [...this.members.values()].map((m) => [
-      m.id, r(m.pose.x), r(m.pose.z), r(m.pose.yaw), r(m.pose.g[0]), r(m.pose.g[1]), r(m.pose.g[2]), m.arm, r(m.charge, 100),
+      m.id, r(m.pose.x), r(m.pose.z), r(m.pose.yaw), r(m.pose.g[0]), r(m.pose.g[1]), r(m.pose.g[2]), m.arm, r(m.charge, 100), r(m.lift, 100), r(m.dive, 100),
     ]);
   }
 
@@ -167,6 +182,7 @@ export class Room {
       existing.connected = true;
       existing.name = sanitizeName(msg.name);
       existing.hand = msg.hand === 'L' ? 'L' : 'R';
+      existing.windup = windupId(msg.w, existing.windup);
       this.sendWelcome(existing);
       this.broadcastRoster();
       return existing;
@@ -175,7 +191,7 @@ export class Room {
       conn.send({ t: 'full', room: this.code, max: MAX_PLAYERS });
       return null;
     }
-    const m = this.addMember({ guest, name: sanitizeName(msg.name), hand: msg.hand === 'L' ? 'L' : 'R', bot: false, conn });
+    const m = this.addMember({ guest, name: sanitizeName(msg.name), hand: msg.hand === 'L' ? 'L' : 'R', bot: false, conn, windup: windupId(msg.w) });
     this.syncBot();
     if (!this.ball.holder && this.ball.phase === 'held') this.giveBall(m.id);
     this.relayout();
@@ -184,7 +200,7 @@ export class Room {
     return m;
   }
 
-  private addMember(o: { guest: string; name: string; hand: Hand; bot: boolean; conn: Conn | null }): Member {
+  private addMember(o: { guest: string; name: string; hand: Hand; bot: boolean; conn: Conn | null; windup: number }): Member {
     const used = new Set([...this.members.values()].map((m) => m.look));
     let look = 0;
     while (used.has(look)) look++;
@@ -192,7 +208,7 @@ export class Room {
       id: o.bot ? 'coach' : newId(), guest: o.guest, name: o.name, hand: o.hand, bot: o.bot,
       joinOrder: this.joinCounter++, look, conn: o.conn, connected: true, disconnectedAt: 0,
       pose: { x: 0, z: 0, yaw: 0, g: gloveReady(0, o.hand) }, poseAt: this.now(),
-      arm: Arm.Idle, charge: 0, catches: 0, drops: 0, perfects: 0, seat: 0, pos: [0, 0, 0], facing: 0,
+      arm: Arm.Idle, charge: 0, lift: 0, dive: 0, speed: 0, windup: o.windup, catches: 0, drops: 0, perfects: 0, saves: 0, seat: 0, pos: [0, 0, 0], facing: 0,
     };
     this.members.set(m.id, m);
     return m;
@@ -231,7 +247,10 @@ export class Room {
     const humans = this.humans().length;
     const botMember = this.members.get('coach');
     if (humans === 1 && !botMember) {
-      this.addMember({ guest: 'coach', name: 'Coach', hand: 'R', bot: true, conn: null });
+      // Coach throws with a windup from the library: a different one in every room.
+      const pick = WINDUP_IDS.filter((id) => id !== HOUSE_WINDUP);
+      const n = [...this.code].reduce((a, c) => a + c.charCodeAt(0), 0);
+      this.addMember({ guest: 'coach', name: 'Coach', hand: 'R', bot: true, conn: null, windup: pick.length ? pick[n % pick.length] : HOUSE_WINDUP });
       this.bot = new BotBrain();
     } else if (humans !== 1 && botMember) {
       this.members.delete('coach');
@@ -315,18 +334,29 @@ export class Room {
         const dx = pose.x - m.pos[0], dz = pose.z - m.pos[2];
         const d = Math.hypot(dx, dz);
         if (d > MOVE_RADIUS) { pose.x = m.pos[0] + (dx / d) * MOVE_RADIUS; pose.z = m.pos[2] + (dz / d) * MOVE_RADIUS; }
-        pose.g = clampReach(pose.g, 1.02);
+        m.lift = finite(p[8], 0, LEAP_HEIGHT + 0.05);
+        m.dive = finite(p[9], -1, 1);
+        pose.g = clampReach(pose.g, 1.02, m.lift);
+        const t = this.now();
+        const dtp = (t - m.poseAt) / 1000;
+        if (dtp > 0.01 && dtp < 0.5) m.speed = Math.hypot(pose.x - m.pose.x, pose.z - m.pose.z) / dtp;
         m.pose = pose;
         m.arm = finite(p[6], 0, 3) | 0;
         m.charge = finite(p[7], 0, 1);
-        m.poseAt = this.now();
+        m.poseAt = t;
         return;
       }
+      case 'go':
+        // The holder's delivery has started: tell everyone else now, so the animation
+        // they watch is in step with the throw that follows (pose streams lag).
+        if (this.ball.phase === 'held' && this.ball.holder === m.id) this.broadcast({ t: 'go', by: m.id, at: this.now() }, m.id);
+        return;
       case 'throw': return this.onThrow(m, msg);
       case 'catch': return this.onCatch(m, msg);
       case 'prof':
         m.name = sanitizeName(msg.name);
         m.hand = msg.hand === 'L' ? 'L' : 'R';
+        m.windup = windupId(msg.w, m.windup);
         this.broadcastRoster();
         return;
       case 'rec': {
@@ -347,7 +377,7 @@ export class Room {
       x: finite(p[0], -60, 60, m.pos[0]),
       z: finite(p[1], -60, 60, m.pos[2]),
       yaw: wrapAngle(finite(p[2], -10, 10, m.facing)),
-      g: [finite(p[3], -2, 2), finite(p[4], 0, 2.6, 1.2), finite(p[5], -2, 2)],
+      g: [finite(p[3], -2, 2), finite(p[4], 0, 3.2, 1.2), finite(p[5], -2, 2)],
     };
   }
 
@@ -360,7 +390,7 @@ export class Room {
     const speed = len(v);
     if (speed > THROW_SPEED_LIMIT || speed < 1) return;
     // The ball leaves from the thrower's hand (pose streams lag a little: allow for it).
-    if (dist(p, eyePosition([m.pose.x, 0, m.pose.z])) > 1.4 && dist(p, eyePosition(m.pos)) > MOVE_RADIUS + 1) return;
+    if (dist(p, eyePosition([m.pose.x, 0, m.pose.z])) > RELEASE_REACH && dist(p, eyePosition(m.pos)) > MOVE_RADIUS + 1) return;
     const t = this.now();
     const rt = finite(msg.rt, t - 300, t, t);
     this.launch(m.id, p, v, rt, true);
@@ -392,7 +422,10 @@ export class Room {
     // The body has to be near their spot, the glove within reach of the body,
     // and (loosely: a friends game, not esports) near the streamed pose.
     if (Math.hypot(pose.x - m.pos[0], pose.z - m.pos[2]) > MOVE_RADIUS + 0.4) return;
-    if (reachNorm(pose.g) > 1.06) return;
+    // A leap carries the reach up with it; a dive is a burst of the feet (the reach is the same).
+    const lift = finite(msg.pose[6], 0, LEAP_HEIGHT + 0.05);
+    const dive = finite(msg.pose[7], -1, 1);
+    if (reachNorm(pose.g, lift) > 1.06) return;
     if (this.now() - m.poseAt < 600 && Math.hypot(pose.x - m.pose.x, pose.z - m.pose.z) > 1.8) return;
     const g = gloveWorld(pose);
     const near = sweptMinDistance(tr, Math.max(0, tSec - 0.03), Math.min(tr.groundT, tSec + 0.03), g, g);
@@ -402,10 +435,12 @@ export class Room {
     let q = classifyCatch(near.dist, speed);
     if (q === null) q = 'bobble';
     const pos = positionAt(tr, near.t);
-    this.resolveCatch(m, q, catchGrade(near.dist), speed, b.t0 + near.t * 1000, pos, vel, self);
+    const feet = this.now() - m.poseAt < 600 ? m.speed : 0;
+    const st = catchStyle(worldToBody(pose.yaw, [pose.g[0], pose.g[1] - lift, pose.g[2]]), m.hand, lift, dive, feet);
+    this.resolveCatch(m, q, catchGrade(near.dist), speed, b.t0 + near.t * 1000, pos, vel, self, st);
   }
 
-  private resolveCatch(m: Member, q: ReturnType<typeof classifyCatch>, g: number, speed: number, at: number, pos: Vec3, vel: Vec3, self: boolean) {
+  private resolveCatch(m: Member, q: ReturnType<typeof classifyCatch>, g: number, speed: number, at: number, pos: Vec3, vel: Vec3, self: boolean, st: CatchStyle = null) {
     if (q === null) return;
     if (q === 'deflect') {
       // Off the heel of the glove and out: the throw is dead.
@@ -424,12 +459,13 @@ export class Room {
       this.streak++;
       m.catches++;
       if (q === 'perfect') m.perfects++;
+      if (isGreatCatch(st)) m.saves++;
       if (STREAK_MILESTONES.includes(this.streak)) milestone = this.streak;
       this.sessionBest = Math.max(this.sessionBest, this.streak);
       this.records.raise(this.groupKey(), this.streak);
     }
     if (this.layoutDirty) this.relayout();
-    this.broadcastBall({ k: 'catch', by: m.id, q, g, speed, at, pos, self, milestone }, true);
+    this.broadcastBall({ k: 'catch', by: m.id, q, g, speed, at, pos, self, milestone, st: st ?? undefined }, true);
     if (m.bot) this.bot?.onGotBall(this.now());
   }
 
@@ -527,7 +563,11 @@ export class Room {
     const coach = this.members.get('coach');
     const human = this.humans()[0];
     if (!coach || !this.bot) return;
+    const px = coach.pose.x, pz = coach.pose.z;
+    const was = coach.arm;
     const act = this.bot.update(t, coach, human ?? null, this.ball, this.traj, this.streak);
+    if (coach.arm === Arm.Release && was !== Arm.Release && this.ball.holder === coach.id) this.broadcast({ t: 'go', by: coach.id, at: t });
+    coach.speed = Math.hypot(coach.pose.x - px, coach.pose.z - pz) * SERVER_TICK_HZ;
     if (!act) return;
     if (act.kind === 'throw') {
       if (this.ball.phase !== 'held' || this.ball.holder !== coach.id) return;
@@ -538,7 +578,8 @@ export class Room {
       if (b.phase !== 'flight' || !b.live || !this.traj || b.tid !== act.tid) return;
       const vel = velocityAt(this.traj, act.tSec);
       const pos = positionAt(this.traj, act.tSec);
-      this.resolveCatch(coach, act.q, act.g, len(vel), b.t0 + act.tSec * 1000, pos, vel, false);
+      const st = catchStyle(worldToBody(coach.pose.yaw, coach.pose.g), coach.hand, 0, 0, coach.speed);
+      this.resolveCatch(coach, act.q, act.g, len(vel), b.t0 + act.tSec * 1000, pos, vel, false, st);
     }
   }
 }

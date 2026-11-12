@@ -1,6 +1,6 @@
 // First-session hints. They never block play: each one reads what you're
 // doing and shows the single line that matters right now, then gets out of
-// the way.  throw (when you have the ball) → move (when it's coming) → streak.
+// the way.  throw (when you have the ball) → glove (when it's coming) → streak.
 
 import { prefs, save } from './storage';
 
@@ -35,7 +35,7 @@ export class Tutorial {
     if (kind === 'throw') this.done.add('throw');
     if (kind === 'move') this.done.add('move');
     if (kind === 'catch') this.done.add('catch');
-    if (kind === 'drop' && !this.done.has('catch')) this.flash('So close. Get the glove to the ball a little sooner.');
+    if (kind === 'drop' && !this.done.has('catch')) this.flash('So close. Get your glove to the ring a little sooner.');
     this.render();
   }
 
@@ -76,11 +76,11 @@ export class Tutorial {
     if (performance.now() < this.flashUntil) { this.show('flash' + this.flashText, this.flashText, null); return; }
     if (this.holding && !this.done.has('throw')) {
       if (!this.canThrow()) { this.hide(); return; }
-      this.show('throw', 'Pull back to aim, let go to throw<small>Put the ring on their glove. Pull to one side to move it across; pull further to throw higher and harder.</small>', 'throw');
+      this.show('throw', 'Pull back to aim, let go to throw<small>Put the ring on their glove: sideways moves it across, further throws higher and harder. Hold it and you wind up.</small>', 'throw');
       return;
     }
     if (!this.holding && !this.done.has('catch') && !this.done.has('move')) {
-      this.show('move', 'Drag to hold your glove up<small>That’s their target. Keep it still, and move it to the ball if the throw is off.</small>', 'move');
+      this.show('move', 'Drag to move your glove<small>Where you hold it is their target. When the throw comes, get your glove to the ring. Flick to dive or jump for a wild one.</small>', 'move');
       return;
     }
     if (this.done.has('throw') && this.done.has('catch')) {
