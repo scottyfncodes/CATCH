@@ -11,7 +11,7 @@ import { type Vec3, clamp, wrapAngle } from '../../shared/vec';
 import { buildGlove, buildHand, setGloveClosure } from './gear';
 
 export const LOOKS = [
-  { shirt: '#c8553d', cap: '#26374f', pants: '#3d4f6b', skin: '#e0ac69' },
+  { shirt: '#857f5a', cap: '#2d2f63', pants: '#93b1cf', skin: '#e3ad7c' },
   { shirt: '#3f7cac', cap: '#d4a72c', pants: '#c2b59b', skin: '#8d5524' },
   { shirt: '#e3b448', cap: '#2f4f3a', pants: '#4a4e57', skin: '#f1c27d' },
   { shirt: '#5f8d4e', cap: '#7b2d26', pants: '#2f3542', skin: '#c68642' },
@@ -101,6 +101,7 @@ export class Avatar {
   private bodyYaw: number;
   private crouch = 0;
   private tiptoe = 0;
+  private kneeLift = 0;
   private leanF = 0;
   private leanS = 0;
   private twist = 0;
@@ -290,7 +291,7 @@ export class Avatar {
       const settle = clamp((rk - 0.3) / 0.45, 0, 1);
       // ...then unwind hard through the release and finish facing past the target.
       wantTwist = (-0.6 + 1.15 * smooth(k)) * side * (1 - settle);
-      wantLeanF += 0.3 * Math.sin(Math.PI * clamp(rk / 0.5, 0, 1));
+      wantLeanF += 0.42 * Math.sin(Math.PI * clamp(rk / 0.55, 0, 1));
       stride = 0.32 * (1 - settle);
     }
     this.twist += (wantTwist - this.twist) * (1 - Math.exp(-dt / (rk >= 0 ? 0.04 : 0.1)));
@@ -323,6 +324,33 @@ export class Avatar {
           ft.stepping = true; ft.t = 0; ft.from.copy(ft.pos); ft.to.copy(want);
         }
       }
+    }
+
+    // ---- the throw's footwork (as in a real long toss): lift the glove-side
+    // knee as you load, stride long toward the target, and let the back leg
+    // kick up behind you as you finish.
+    const throwFoot = 1 - gloveFoot;
+    const lift = arm === Arm.Windup ? smooth(clamp((charge - 0.2) / 0.6, 0, 1)) : 0;
+    this.kneeLift += (lift - this.kneeLift) * (1 - Math.exp(-dt / 0.08));
+    if (this.kneeLift > 0.01 && rk < 0) {
+      const ft = this.feet[gloveFoot];
+      const base = this.stance(gloveFoot, yaw);
+      ft.stepping = false;
+      ft.pos.lerp(base.clone().addScaledVector(fwd, 0.04).addScaledVector(right, side * 0.06), 0.3);
+      ft.pos.y = 0.36 * this.kneeLift;
+    }
+    if (rk >= 0 && rk < 0.75) {
+      const plant = this.stance(gloveFoot, yaw).addScaledVector(fwd, 0.55).addScaledVector(right, side * 0.08);
+      const g = this.feet[gloveFoot];
+      g.stepping = false;
+      g.pos.lerp(plant, rk < 0.12 ? 0.55 : 0.2);
+      g.pos.y = rk < 0.1 ? 0.12 * (1 - rk / 0.1) : 0;
+      const kick = clamp((rk - 0.1) / 0.5, 0, 1);
+      const b = this.feet[throwFoot];
+      b.stepping = false;
+      const behind = this.stance(throwFoot, yaw).addScaledVector(fwd, -0.12 + 0.35 * smooth(kick));
+      b.pos.lerp(behind, 0.25);
+      b.pos.y = 0.42 * Math.sin(Math.PI * kick);
     }
 
     // ---- pelvis: between the feet, dropped by the crouch, bobbing with steps

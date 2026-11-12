@@ -119,7 +119,7 @@ export function releasePoint(seat: Vec3, yaw: number, hand: Hand): Vec3 {
 
 /** Ring radius used for a given number of players. */
 export function ringRadius(n: number): number {
-  return n <= 2 ? 5.6 : n === 3 ? 7.6 : n === 4 ? 8.1 : 8.6;
+  return n <= 2 ? 7 : n === 3 ? 7.6 : n === 4 ? 8.1 : 8.6;
 }
 
 /** Positions for n players around a loose circle, each facing the centre. */

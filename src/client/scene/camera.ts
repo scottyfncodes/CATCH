@@ -1,8 +1,8 @@
-// The camera is a person standing a few steps behind you and off to one side,
-// watching you and your friend play. One continuous shot: it never cuts, it
-// only drifts, pans and breathes its framing so both of you and the ball stay
-// in view. Portrait phones get a tall frame with the sky above the far player
-// (and room for the streak at the top); landscape gets a wider, lower one.
+// The camera is a friend filming on their phone from a couple of steps behind
+// your shoulder, on your glove side: you big in the foreground, your partner
+// small and far down the road. One continuous shot: it never cuts, it only
+// drifts, pans and breathes its framing so both of you and the ball stay in
+// view, and eases in on your partner while you aim.
 
 import * as THREE from 'three';
 import { type Vec3, clamp, wrapAngle } from '../../shared/vec';
@@ -45,7 +45,6 @@ export class CameraRig {
     this.t += dt;
     const portrait = this.aspect < 1;
     const ax = s.partner[0] - s.me[0], az = s.partner[2] - s.me[2];
-    const D = Math.max(3, Math.hypot(ax, az));
     const wantAxis = Math.atan2(-ax, -az);
     if (!this.init) { this.axis = wantAxis; this.me.set(s.me[0], 0, s.me[2]); }
     this.axis += wrapAngle(wantAxis - this.axis) * (this.init ? 1 - Math.exp(-dt / 1.4) : 1);
@@ -56,9 +55,12 @@ export class CameraRig {
 
     const f = new THREE.Vector3(-Math.sin(this.axis), 0, -Math.cos(this.axis));
     const r = new THREE.Vector3(Math.cos(this.axis), 0, -Math.sin(this.axis));
-    const back = portrait ? 5.0 + D * 0.06 : 5.2 + D * 0.08;
-    const sideOff = (portrait ? 1.85 : 4.6) * s.side;
-    const height = portrait ? 2.4 : 1.95;
+    // A couple of steps behind your shoulder, at head height: like a friend
+    // filming on their phone. You're big in the frame; your partner is small
+    // and far, framed by the road.
+    const back = portrait ? 2.5 : 3.1;
+    const sideOff = (portrait ? 0.95 : 1.5) * s.side;
+    const height = portrait ? 1.74 : 1.72;
     // A hand-held camera: tiny, slow drift (no shake).
     const hx = Math.sin(this.t * 0.31) * 0.05 + Math.sin(this.t * 0.73) * 0.02;
     const hy = Math.sin(this.t * 0.47 + 1.3) * 0.03;
@@ -67,18 +69,19 @@ export class CameraRig {
       .addScaledVector(r, sideOff + hx);
     this.camera.position.copy(pos);
 
-    // Frame what matters: both people head to toe, and the ball in flight.
+    // Frame what matters: you from the hips up, your partner head to toe with
+    // a little road under them, and the ball in flight.
     const pts: Vec3[] = [
-      [s.me[0], 0, s.me[2]], [s.me[0], 1.95, s.me[2]],
-      [s.partner[0], 0, s.partner[2]], [s.partner[0], 2.0, s.partner[2]],
+      [s.me[0], 0.75, s.me[2]], [s.me[0], 2.0, s.me[2]],
+      [s.partner[0], -0.6, s.partner[2]], [s.partner[0], 2.3, s.partner[2]],
     ];
     // Room for your glove and throwing arm either side of you.
-    pts.push([s.me[0] + r.x * 0.45, 1.2, s.me[2] + r.z * 0.45], [s.me[0] - r.x * 0.45, 1.2, s.me[2] - r.z * 0.45]);
+    pts.push([s.me[0] + r.x * 0.5, 1.25, s.me[2] + r.z * 0.5], [s.me[0] - r.x * 0.5, 1.25, s.me[2] - r.z * 0.5]);
     if (s.ball) pts.push([s.ball[0], Math.min(s.ball[1], 7), s.ball[2]]);
     const yawOf = (p: Vec3) => wrapAngle(Math.atan2(-(p[0] - pos.x), -(p[2] - pos.z)) - this.axis);
     const pitchOf = (p: Vec3) => Math.atan2(p[1] - pos.y, Math.hypot(p[0] - pos.x, p[2] - pos.z));
-    // Centre the two people (not the extremes) so neither sits on the edge.
-    const centreYaw = (yawOf([s.me[0], 0, s.me[2]]) + yawOf([s.partner[0], 0, s.partner[2]])) / 2;
+    // Your partner sits near the middle of the frame, you off to one side.
+    const centreYaw = yawOf([s.me[0], 0, s.me[2]]) * 0.42 + yawOf([s.partner[0], 0, s.partner[2]]) * 0.58;
     let ySpan = 0, pLo = Infinity, pHi = -Infinity;
     for (const p of pts) {
       ySpan = Math.max(ySpan, Math.abs(yawOf(p) - centreYaw));
@@ -86,10 +89,10 @@ export class CameraRig {
       pLo = Math.min(pLo, pt); pHi = Math.max(pHi, pt);
     }
     // Screen budget (NDC): portrait keeps the top clear for the streak and the sky.
-    const top = portrait ? 0.4 : 0.6, bottom = portrait ? -0.7 : -0.8, sideB = portrait ? 0.8 : 0.8;
+    const top = portrait ? 0.42 : 0.6, bottom = portrait ? -0.98 : -0.98, sideB = portrait ? 0.84 : 0.8;
     const hV = (pHi - pLo) / (top - bottom);
     const hH = Math.atan(Math.tan(ySpan / sideB) / this.aspect);
-    let half = clamp(Math.max(hV * 1.02, hH), portrait ? 0.36 : 0.3, portrait ? 0.7 : 0.6);
+    let half = clamp(Math.max(hV * 1.02, hH), portrait ? 0.34 : 0.28, portrait ? 0.7 : 0.6);
     const midP = (pHi + pLo) / 2;
     let wantPitch = midP - ((top + bottom) / 2) * half;
     let wantYaw = this.axis + centreYaw;

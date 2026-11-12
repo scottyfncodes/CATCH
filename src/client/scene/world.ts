@@ -1,5 +1,5 @@
-// The park: late-afternoon light, a mown lawn, trees, a few houses past the
-// tree line, a backstop in the distance. Built from a handful of merged and
+// A back road at golden hour: it runs out of the redwoods at one end and
+// bends past an old red barn at the other, with a meadow either side. Built from a handful of merged and
 // instanced meshes so it stays cheap on phones.
 
 import * as THREE from 'three';
@@ -19,6 +19,45 @@ export const PALETTE = {
 function rand(seed: number) {
   let s = seed;
   return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+}
+
+/** Where the old barn stands, beside the bend. */
+const BARN = { x: -10, z: 36 };
+
+/** The road's centreline: straight where you play, bending away at both ends. */
+export function roadX(z: number): number {
+  if (z < -22) return -0.012 * (z + 22) * (z + 22);
+  if (z > 20) return 0.016 * (z - 20) * (z - 20);
+  return 0;
+}
+
+function asphaltTexture(): THREE.CanvasTexture {
+  const S = 256;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const g = cv.getContext('2d')!;
+  g.fillStyle = '#56575a';
+  g.fillRect(0, 0, S, S);
+  const r = rand(19);
+  // Aggregate speckle and a few darker, damp patches.
+  for (let i = 0; i < 9000; i++) {
+    const l = 26 + r() * 30;
+    g.fillStyle = `hsla(${200 + r() * 40}, 4%, ${l}%, ${0.25 + r() * 0.35})`;
+    g.fillRect(r() * S, r() * S, 1 + r(), 1 + r());
+  }
+  for (let i = 0; i < 18; i++) {
+    const x = r() * S, y = r() * S, rad = 10 + r() * 40;
+    const gr = g.createRadialGradient(x, y, 0, x, y, rad);
+    gr.addColorStop(0, 'rgba(30,32,36,0.28)');
+    gr.addColorStop(1, 'rgba(30,32,36,0)');
+    g.fillStyle = gr;
+    g.fillRect(0, 0, S, S);
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
 }
 
 function colorize(geo: THREE.BufferGeometry, color: THREE.Color, vary = 0, r = Math.random) {
@@ -138,7 +177,7 @@ export function buildWorld(lowSpec: boolean): World {
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
     const s = sun.shadow.camera;
-    s.left = -14; s.right = 14; s.top = 14; s.bottom = -14; s.near = 5; s.far = 90;
+    s.left = -18; s.right = 18; s.top = 18; s.bottom = -18; s.near = 5; s.far = 90;
     sun.shadow.bias = -0.0006;
     sun.shadow.normalBias = 0.03;
   }
@@ -155,14 +194,48 @@ export function buildWorld(lowSpec: boolean): World {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  // A worn patch where people stand to play catch most evenings.
-  const worn = new THREE.Mesh(
-    new THREE.CircleGeometry(11, 40),
-    new THREE.MeshBasicMaterial({ color: '#c9b27a', transparent: true, opacity: 0.09, depthWrite: false }),
-  );
-  worn.rotation.x = -Math.PI / 2;
-  worn.position.y = 0.005;
-  scene.add(worn);
+  // The road: you play catch down the middle of a quiet back road that runs
+  // out of the redwoods at one end and bends past an old barn at the other.
+  {
+    const W = 5.6, SH = 1.7;
+    const zs: number[] = [];
+    for (let z = -200; z <= 200; z += 2) zs.push(z);
+    const ribbon = (inner: number, outer: number, y: number) => {
+      const pos: number[] = [], uv: number[] = [], idx: number[] = [];
+      zs.forEach((z, k) => {
+        const x = roadX(z);
+        const d = roadX(z + 0.5) - roadX(z - 0.5);
+        const nl = Math.hypot(1, d);
+        const nx = 1 / nl, nz = -d / nl;
+        for (const o of [inner, outer]) pos.push(x + nx * o, y, z + nz * o);
+        uv.push(0, z / 6, 1, z / 6);
+        if (k) { const a = (k - 1) * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+      });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+      g.setIndex(idx);
+      g.computeVertexNormals();
+      if (g.attributes.normal.getY(0) < 0) { for (let i = 0; i < idx.length; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; } g.setIndex(idx); g.computeVertexNormals(); }
+      return g;
+    };
+    const road = new THREE.Mesh(ribbon(-W / 2, W / 2, 0.012), new THREE.MeshStandardMaterial({ map: asphaltTexture(), roughness: 0.62, metalness: 0.0, color: '#ffffff' }));
+    road.receiveShadow = true;
+    // Soft shoulders of red-brown redwood duff.
+    const duff = new THREE.MeshLambertMaterial({ color: '#6f4430' });
+    const shL = new THREE.Mesh(ribbon(-W / 2 - SH, -W / 2, 0.008), duff);
+    const shR = new THREE.Mesh(ribbon(W / 2, W / 2 + SH, 0.008), duff);
+    shL.receiveShadow = shR.receiveShadow = true;
+    scene.add(road, shL, shR);
+    // A dry, golden clearing around the barn.
+    const field = new THREE.Mesh(
+      new THREE.CircleGeometry(30, 40),
+      new THREE.MeshBasicMaterial({ color: '#b39758', transparent: true, opacity: 0.55, depthWrite: false }),
+    );
+    field.rotation.x = -Math.PI / 2;
+    field.position.set(BARN.x, 0.004, BARN.z);
+    scene.add(field);
+  }
 
   // Grass tufts: one instanced draw call of tiny three-blade clumps.
   {
@@ -186,6 +259,7 @@ export function buildWorld(lowSpec: boolean): World {
     for (let i = 0; i < count; i++) {
       const a = r() * Math.PI * 2;
       const d = 2 + Math.pow(r(), 0.7) * 24;
+      if (Math.abs(Math.sin(a) * d - roadX(Math.cos(a) * d)) < 3.6) { m.makeScale(0, 0, 0); tufts.setMatrixAt(i, m); continue; }
       q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), r() * 6.28);
       const s = 0.35 + r() * 0.45;
       m.compose(new THREE.Vector3(Math.sin(a) * d, 0, Math.cos(a) * d), q, new THREE.Vector3(s, s * (0.8 + r() * 0.5), s));
@@ -195,7 +269,7 @@ export function buildWorld(lowSpec: boolean): World {
     scene.add(tufts);
   }
 
-  // Trees: clumps around the lawn, instanced trunks and canopies.
+  // Broadleaf trees out in the meadow, instanced trunks and canopies.
   {
     const r = rand(42);
     const spots: { x: number; z: number; s: number }[] = [];
@@ -204,7 +278,12 @@ export function buildWorld(lowSpec: boolean): World {
       // Leave the sun side more open so the sky glows through.
       const open = Math.abs(Math.atan2(Math.sin(a - Math.atan2(SUN_DIR.x, SUN_DIR.z)), Math.cos(a - Math.atan2(SUN_DIR.x, SUN_DIR.z)))) < 0.5;
       const d = (open ? 52 : 30) + r() * 22;
-      spots.push({ x: Math.sin(a) * d, z: Math.cos(a) * d, s: 0.8 + r() * 0.7 });
+      const x = Math.sin(a) * d, z = Math.cos(a) * d;
+      // The redwoods own the road corridor; broadleaf trees stay out in the meadow.
+      if (Math.abs(x - roadX(z)) < 24 && z < 18) continue;
+      // Keep the view down the road to the barn clear.
+      if (Math.hypot(x - BARN.x, z - BARN.z) < 30 || (z > 0 && Math.abs(x - roadX(z)) < 16)) continue;
+      spots.push({ x, z, s: 0.8 + r() * 0.7 });
     }
     const trunkGeo = new THREE.CylinderGeometry(0.16, 0.26, 3.2, 6);
     trunkGeo.translate(0, 1.6, 0);
@@ -230,30 +309,10 @@ export function buildWorld(lowSpec: boolean): World {
     scene.add(trunks, canopies);
   }
 
-  // Houses past the trees and a distant ridge.
+  // A distant ridge: hills all round, a mountain backdrop through the trees.
   {
     const r = rand(99);
     const parts: THREE.BufferGeometry[] = [];
-    const sidings = ['#e9dcc4', '#c7d3d8', '#d9c09a', '#b8c9a8', '#e6cfc0', '#cfc4b0'];
-    const roofs = ['#6b4f45', '#4e5459', '#7a5a43', '#5d4a3e'];
-    for (let i = 0; i < 14; i++) {
-      const a = Math.PI * 0.15 + (i / 14) * Math.PI * 1.4 + (r() - 0.5) * 0.1;
-      const d = 82 + r() * 18;
-      const w = 7 + r() * 4, h = 3.2 + r() * 2.6, dpt = 6 + r() * 3;
-      const body = new THREE.BoxGeometry(w, h, dpt);
-      body.translate(0, h / 2, 0);
-      colorize(body, new THREE.Color(sidings[i % sidings.length]), 1, r);
-      const roof = new THREE.CylinderGeometry(0.01, w * 0.62, 2 + r() * 1.2, 4, 1);
-      roof.rotateY(Math.PI / 4);
-      roof.scale(1, 1, dpt / w);
-      roof.translate(0, h + 1, 0);
-      colorize(roof, new THREE.Color(roofs[i % roofs.length]), 1, r);
-      for (const g of [body, roof]) {
-        g.rotateY(a + Math.PI);
-        g.translate(Math.sin(a) * d, 0, Math.cos(a) * d);
-        parts.push(g.toNonIndexed());
-      }
-    }
     // Ridge.
     for (let i = 0; i < 18; i++) {
       const a = (i / 18) * Math.PI * 2;
@@ -268,31 +327,123 @@ export function buildWorld(lowSpec: boolean): World {
     scene.add(new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true })));
   }
 
-  // A backstop and a bench: just enough to say "park".
+  // The redwoods: tall red trunks crowding both sides of the road, dark
+  // conifer crowns far overhead, bright undergrowth at their feet.
+  {
+    const r = rand(77);
+    const trees: { x: number; z: number; rad: number; h: number }[] = [];
+    for (const side of [-1, 1]) {
+      for (let z = -190; z < 22; z += 4 + r() * 6) {
+        const n = 1 + Math.floor(r() * 2);
+        for (let k = 0; k < n; k++) {
+          const off = 6.4 + Math.pow(r(), 1.4) * 22;
+          trees.push({ x: roadX(z) + side * off, z: z + (r() - 0.5) * 3, rad: 0.55 + r() * 0.85, h: 34 + r() * 22 });
+        }
+      }
+    }
+    // A few stand around the barn clearing, further back.
+    for (let i = 0; i < 26; i++) {
+      const a = r() * Math.PI * 2, d = 34 + r() * 30;
+      const x = BARN.x + Math.sin(a) * d, z = BARN.z + Math.cos(a) * d;
+      if (Math.abs(x - roadX(z)) < 7) continue;
+      trees.push({ x, z, rad: 0.4 + r() * 0.5, h: 24 + r() * 16 });
+    }
+    const trunkGeo = new THREE.CylinderGeometry(0.62, 1, 1, 9, 1, true);
+    trunkGeo.translate(0, 0.5, 0);
+    const trunks = new THREE.InstancedMesh(trunkGeo, new THREE.MeshLambertMaterial({ color: '#ffffff' }), trees.length);
+    const crownGeo = new THREE.ConeGeometry(1, 1, 7);
+    crownGeo.translate(0, 0.5, 0);
+    const LAYERS = 4;
+    const crowns = new THREE.InstancedMesh(crownGeo, new THREE.MeshLambertMaterial({ flatShading: true }), trees.length * LAYERS);
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), c = new THREE.Color();
+    trees.forEach((t, i) => {
+      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), r() * 6.28);
+      m.compose(new THREE.Vector3(t.x, 0, t.z), q, new THREE.Vector3(t.rad, t.h, t.rad));
+      trunks.setMatrixAt(i, m);
+      trunks.setColorAt(i, c.setHSL(0.03 + r() * 0.025, 0.42 + r() * 0.15, 0.27 + r() * 0.08));
+      for (let k = 0; k < LAYERS; k++) {
+        const y = t.h * (0.42 + k * 0.15);
+        const w = t.rad * (5.2 - k * 0.9) * (0.85 + r() * 0.3);
+        m.compose(new THREE.Vector3(t.x + (r() - 0.5), y, t.z + (r() - 0.5)), q, new THREE.Vector3(w, t.h * 0.24, w));
+        crowns.setMatrixAt(i * LAYERS + k, m);
+        crowns.setColorAt(i * LAYERS + k, c.setHSL(0.3 + r() * 0.06, 0.32 + r() * 0.15, 0.17 + r() * 0.08));
+      }
+    });
+    trunks.castShadow = false; crowns.castShadow = false;
+    scene.add(trunks, crowns);
+
+    // Undergrowth: ferns and young growth along the shoulders, sunlit lime greens.
+    const bush = new THREE.IcosahedronGeometry(1, 0);
+    const count = lowSpec ? 360 : 900;
+    const bushes = new THREE.InstancedMesh(bush, new THREE.MeshLambertMaterial({ flatShading: true }), count);
+    for (let i = 0; i < count; i++) {
+      const z = -150 + r() * 170;
+      const side = r() < 0.5 ? -1 : 1;
+      const off = 5.4 + Math.pow(r(), 1.5) * 16;
+      const s2 = (0.22 + r() * 0.5) * (off < 8 ? 0.8 : 1.2);
+      q.setFromEuler(new THREE.Euler(r(), r() * 6, r()));
+      m.compose(new THREE.Vector3(roadX(z) + side * off, s2 * 0.3, z), q, new THREE.Vector3(s2 * 1.6, s2 * 0.7, s2 * 1.4));
+      bushes.setMatrixAt(i, m);
+      // Sunlit young growth, mostly muted with the odd bright fern.
+      const bright = r() < 0.18;
+      bushes.setColorAt(i, c.setHSL(0.21 + r() * 0.07, bright ? 0.55 : 0.38 + r() * 0.12, bright ? 0.36 : 0.2 + r() * 0.1));
+    }
+    scene.add(bushes);
+  }
+
+  // The old barn at the bend, weathered red boards and a dark open loft; a
+  // power pole and a short run of split-rail fence.
   {
     const parts: THREE.BufferGeometry[] = [];
-    const metal = new THREE.Color('#8a8f93');
-    const post = (x: number, z: number, h: number) => {
-      const g = new THREE.CylinderGeometry(0.05, 0.05, h, 6); g.translate(x, h / 2, z); parts.push(colorize(g, metal).toNonIndexed());
-    };
-    const cx = 18, cz = 34;
-    for (let i = 0; i < 5; i++) {
-      const a = -0.7 + i * 0.35;
-      post(cx + Math.sin(a) * 6, cz + Math.cos(a) * 6, 4.2);
+    const add = (g: THREE.BufferGeometry, col: string, vary = 0.6) => { parts.push(colorize(g, new THREE.Color(col), vary, rand(parts.length + 3)).toNonIndexed()); };
+    const bw = 12, bd = 14, bh = 6.5, rh = 5.2;
+    // Body: a house-shaped section (walls + gables) extruded along the ridge.
+    const shape = new THREE.Shape();
+    shape.moveTo(-bw / 2, 0); shape.lineTo(bw / 2, 0); shape.lineTo(bw / 2, bh); shape.lineTo(0, bh + rh); shape.lineTo(-bw / 2, bh); shape.closePath();
+    const body = new THREE.ExtrudeGeometry(shape, { depth: bd, bevelEnabled: false });
+    body.translate(0, 0, -bd / 2);
+    add(body, '#5b2a22');
+    // Roof: two slabs on the pitch, overhanging a little.
+    const hd = bd / 2 + 0.4;
+    const pitch = Math.atan2(rh, bw / 2);
+    const slab = Math.hypot(bw / 2, rh) + 0.6;
+    for (const sx of [-1, 1]) {
+      const r = new THREE.BoxGeometry(slab, 0.18, bd + 0.8);
+      r.rotateZ(-sx * pitch);
+      r.translate(sx * (bw / 4 + 0.12), bh + rh / 2 + 0.12, 0);
+      add(r, '#5d554c', 0.3);
     }
-    const mesh = new THREE.CylinderGeometry(6, 6, 3.8, 18, 1, true, -0.7, 1.4);
-    mesh.translate(cx, 2.2, cz);
-    parts.push(colorize(mesh, metal).toNonIndexed());
-    const wood = new THREE.Color('#7b5a3c');
-    const seat = new THREE.BoxGeometry(2, 0.06, 0.45); seat.translate(-13, 0.46, -12);
-    const back = new THREE.BoxGeometry(2, 0.4, 0.05); back.translate(-13, 0.8, -12.22);
-    const l1 = new THREE.BoxGeometry(0.08, 0.46, 0.4); l1.translate(-13.85, 0.23, -12);
-    const l2 = l1.clone(); l2.translate(1.7, 0, 0);
-    for (const g of [seat, back, l1, l2]) { g.rotateY(0.6); parts.push(colorize(g, wood).toNonIndexed()); }
-    const merged = mergeGeometries(parts.map((p) => { p.deleteAttribute('uv'); return p; }));
+    // Dark openings: the big door and the loft, on the side facing the road.
+    const door = new THREE.BoxGeometry(4.2, 4.2, 0.1); door.translate(0, 2.1, -bd / 2 - 0.02); add(door, '#1b1512', 0.1);
+    const loft = new THREE.BoxGeometry(2.4, 2.2, 0.1); loft.translate(0, bh + 1.1, -hd + 0.33); add(loft, '#1f1814', 0.1);
+    const lean = new THREE.BoxGeometry(4, 3.4, bd * 0.8); lean.translate(bw / 2 + 2, 1.7, 0); add(lean, '#6e3429');
+    const trim = new THREE.BoxGeometry(bw + 0.2, 0.25, 0.15); trim.translate(0, bh, -bd / 2 - 0.05); add(trim, '#7a6a55');
+    // Vertical board seams.
+    for (let i = -5; i <= 5; i++) {
+      if (Math.abs(i) <= 2) continue;
+      const seam = new THREE.BoxGeometry(0.05, bh, 0.06); seam.translate(i * 1.05, bh / 2, -bd / 2 - 0.04); add(seam, '#2c1612', 0.2);
+    }
+    const merged = mergeGeometries(parts.map((p) => { if (p.getAttribute('uv')) p.deleteAttribute('uv'); if (p.getAttribute('normal')) p.deleteAttribute('normal'); return p; }));
     merged.computeVertexNormals();
-    const m = new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: 0.95, side: THREE.DoubleSide }));
-    scene.add(m);
+    const barn = new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }));
+    // Facing the road (and the player at the near end), set back in its clearing.
+    barn.position.set(BARN.x, 0, BARN.z);
+    barn.rotation.y = -0.23; // gable end and big door square to the road
+    barn.scale.setScalar(1.15);
+    scene.add(barn);
+
+    const wood = new THREE.Color('#6d5843');
+    const extra: THREE.BufferGeometry[] = [];
+    const pole = new THREE.CylinderGeometry(0.13, 0.17, 10, 6); pole.translate(BARN.x - 9, 5, BARN.z - 8); extra.push(colorize(pole, wood).toNonIndexed());
+    const arm = new THREE.BoxGeometry(2.2, 0.14, 0.14); arm.translate(BARN.x - 9, 9.2, BARN.z - 8); extra.push(colorize(arm, wood).toNonIndexed());
+    for (let i = 0; i < 6; i++) {
+      const x = -5 - i * 2.6, z = 23 + i * 0.4;
+      const post = new THREE.BoxGeometry(0.14, 1.1, 0.14); post.translate(x, 0.55, z); extra.push(colorize(post, wood).toNonIndexed());
+      if (i) for (const y of [0.45, 0.9]) { const rail = new THREE.BoxGeometry(2.7, 0.09, 0.09); rail.translate(x + 1.3, y, z - 0.2); extra.push(colorize(rail, wood).toNonIndexed()); }
+    }
+    const em = mergeGeometries(extra.map((p) => { p.deleteAttribute('uv'); return p; }));
+    em.computeVertexNormals();
+    scene.add(new THREE.Mesh(em, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true })));
   }
 
   // Soft clouds drifting.
