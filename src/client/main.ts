@@ -203,7 +203,7 @@ class Backdrop {
     const ft = t - c * PERIOD;
     if (c !== this.cycle) {
       this.cycle = c;
-      this.from = c % 2;
+      this.from = ((c % 2) + 2) % 2; // (the clock can start a hair below zero)
       this.traj = null;
       this.caught = false;
       this.transferred = false;
