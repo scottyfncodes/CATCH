@@ -886,7 +886,9 @@ export class Game {
     let want: Vec3;
     if (holding || showingCatch) {
       want = gloveReady(this.yaw, this.hand);
-      if (showingCatch) want[1] += 0.05;
+      // Got it: the glove comes up in front of you with the ball in it (you
+      // look at your catch; you don't look down for it).
+      if (showingCatch) want = bodyToWorld(this.yaw, [this.hand === 'R' ? -0.1 : 0.1, 1.4, 0.5]);
       // After a catch, the next target starts from a relaxed ready spot.
       this.gloveSet = [this.hand === 'R' ? -0.2 : 0.2, 1.18, GLOVE_OUT];
     } else {
@@ -910,7 +912,7 @@ export class Game {
     this.gloveT = want;
     // Smooth in the world, not relative to the body: a hand holding a spot
     // doesn't trail behind when you step.
-    const tau = lunging ? 0.045 : this.gloveDragging || lift > 0 || diving ? 0.035 : holding ? 0.18 : 0.06;
+    const tau = lunging ? 0.045 : this.gloveDragging || lift > 0 || diving ? 0.035 : showingCatch ? 0.1 : holding ? 0.18 : 0.06;
     const gk = 1 - Math.exp(-dt / tau);
     const moved: Vec3 = [this.pos[0] - prevX, 0, this.pos[2] - prevZ];
     const g: Vec3 = [this.glove[0] - moved[0], this.glove[1], this.glove[2] - moved[2]];
@@ -1334,8 +1336,8 @@ export class Game {
       // Waiting: your friend up top, your glove along the bottom of the view.
       let near = g, pitchK = this.rig.aspect < 1 ? 0.3 : 0.22, yawK = 0.25, wide = 0;
       if (this.localCatch || (this.catchShow?.by === this.me && now < this.eyesUntil)) {
-        // Caught it: look at the ball in your glove.
-        far = g; wide = 0.5;
+        // Caught it: your eyes stay up, and the glove comes up into them with the ball.
+        pitchK = 0.6; yawK = 0.5; wide = 0.3;
       } else if (this.incoming() && this.forMe && this.lastBallPos) {
         // The ball in the upper part of the view, the spot it's coming to in the
         // lower part; they become the same place as it arrives.
@@ -1349,7 +1351,10 @@ export class Game {
     // In your own eyes your head and chest are out of the way (they still cast
     // your shadow). They fade by how close the camera is, so the move in and
     // out never passes through a solid head.
-    if (av) av.setCoreOpacity(this.rig.blend > 0 ? smooth01((this.rig.camera.position.distanceTo(av.eye) - 0.55) / 0.6) : 1);
+    if (av) {
+      av.setCoreOpacity(this.rig.blend > 0 ? smooth01((this.rig.camera.position.distanceTo(av.eye) - 0.55) / 0.6) : 1);
+      av.fadeSleeve(this.rig.blend > 0 ? this.rig.camera.position : null);
+    }
     if (first !== this.first) { this.first = first; this.ev.view(first); }
     const l = this.rig.listener(me);
     audio.setListener(l.pos, l.fwd, l.up);

@@ -240,14 +240,15 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 /* ------------------------------------------------------------ coach marks */
 
 .coach {
-  position: absolute; left: 50%; top: calc(var(--sa-t) + 112px); transform: translateX(-50%);
-  width: min(88%, 380px); text-align: center; padding: 13px 18px; border-radius: 18px;
+  /* Sits where the company chip does, and stays short: in first person your friend is just below it. */
+  position: absolute; left: 50%; top: calc(var(--sa-t) + 110px); transform: translateX(-50%);
+  width: min(88%, 380px); text-align: center; padding: 10px 16px 8px; border-radius: 18px;
   background: rgba(24, 19, 14, 0.58); border: 1px solid var(--glass-line); color: var(--cream);
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   font-size: 15px; line-height: 1.38; font-weight: 600; animation: fade 260ms ease both;
 }
 .coach small { display: block; font-weight: 500; opacity: 0.78; margin-top: 3px; font-size: 13px; }
-.coach .skip { pointer-events: auto; display: block; margin: 8px auto -4px; height: 30px; padding: 0 12px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(255, 246, 230, 0.6); }
+.coach .skip { pointer-events: auto; display: block; margin: 2px auto -4px; height: 28px; padding: 0 12px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(255, 246, 230, 0.6); }
 .ghost {
   position: absolute; width: 54px; height: 54px; margin: -27px 0 0 -27px; border-radius: 50%;
   background: radial-gradient(circle, rgba(255, 246, 230, 0.6) 0 38%, rgba(255, 246, 230, 0.12) 40% 100%);

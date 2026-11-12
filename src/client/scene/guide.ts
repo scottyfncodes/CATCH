@@ -81,7 +81,7 @@ export class CatchGuide {
   /** `view` fades the whole thing with the first-person view (0..1). */
   update(s: GuideState | null, view: number, camera: THREE.Camera, dt: number) {
     this.shown += ((s ? 1 : 0) - this.shown) * Math.min(1, dt * (s ? 16 : 10));
-    if (this.popT >= 0) { this.popT += dt; if (this.popT > 0.42) this.popT = -1; }
+    if (this.popT >= 0) { this.popT += dt; if (this.popT > 0.28) this.popT = -1; }
     const a = this.shown * view;
     this.group.visible = a > 0.01 || this.popT >= 0;
     if (!this.group.visible) return;
@@ -117,7 +117,7 @@ export class CatchGuide {
     this.pocket.mat.opacity = a * 0.95;
     this.pocketRing.mat.opacity = a * (0.5 + 0.4 * (s ? s.on : 0));
     if (this.popT >= 0) {
-      const k = this.popT / 0.42;
+      const k = this.popT / 0.28;
       this.pop.m.quaternion.copy(q);
       this.pop.m.scale.setScalar(0.07 + (0.09 + 0.13 * this.popGrade) * (1 - (1 - k) * (1 - k)));
       this.pop.mat.opacity = (1 - k) * (0.5 + 0.5 * this.popGrade);

@@ -129,6 +129,9 @@ export class Avatar {
   private feetOwned = false;
   private coreMats: THREE.MeshStandardMaterial[] = [];
   private coreAlpha = 1;
+  private sleeve!: THREE.MeshStandardMaterial;
+  private sleeveA = new THREE.Vector3();
+  private sleeveB = new THREE.Vector3();
   private diveK = 0;
   private debt = 0;
   private showK = 0;
@@ -218,9 +221,11 @@ export class Avatar {
     this.head.add(crown, brim);
 
     // Arms live in world space (IK each frame).
-    // (The sleeves fade with the head and chest in first person: the shoulders sit right
-    // under the camera, and what you see of your own arms is from the elbow down.)
-    this.armSegs = [seg(shirtC, 0.046, 0.04), seg(skin, 0.038, 0.032), seg(shirtC, 0.046, 0.04), seg(skin, 0.038, 0.032)];
+    // In first person the throwing arm's sleeve fades with the head and chest (its
+    // shoulder sits right under the camera). The glove arm keeps its sleeve, so the
+    // arm you watch is a whole arm; it only thins out if it swings in close to the lens.
+    this.sleeve = m(L.shirt);
+    this.armSegs = [seg(this.sleeve, 0.046, 0.04), seg(skin, 0.038, 0.032), seg(shirtC, 0.046, 0.04), seg(skin, 0.038, 0.032)];
     this.elbows = [joint(skin, 0.038), joint(skin, 0.038)];
     this.glove = buildGlove();
     this.glove.scale.setScalar(1.25);
@@ -280,6 +285,24 @@ export class Avatar {
       m.opacity = a;
       m.depthWrite = a > 0.6;
     }
+  }
+
+  /** First person: thin the glove arm's sleeve out when it comes in close to the camera (null = solid). */
+  fadeSleeve(cam: THREE.Vector3 | null) {
+    let a = 1;
+    if (cam) {
+      // Distance from the camera to the nearest point of the upper arm.
+      const ab = tmpA.subVectors(this.sleeveB, this.sleeveA);
+      const t = clamp(tmpB.subVectors(cam, this.sleeveA).dot(ab) / Math.max(1e-6, ab.lengthSq()), 0, 1);
+      const d = tmpB.copy(this.sleeveA).addScaledVector(ab, t).distanceTo(cam);
+      a = smooth(clamp((d - 0.24) / 0.16, 0, 1));
+    }
+    const m = this.sleeve;
+    if (m.opacity === a) return;
+    const t = a < 0.995;
+    if (m.transparent !== t) { m.transparent = t; m.needsUpdate = true; }
+    m.opacity = a;
+    m.depthWrite = a > 0.6;
   }
 
   /** Seconds into the delivery clip (-1 when not throwing). The ball leaves at RELEASE_TIME. */
@@ -516,6 +539,8 @@ export class Avatar {
     // the whole arm goes out straight to it (never a forearm on its own).
     if (dw <= 0.5 && sG.distanceTo(wristT) > UPPER + FORE - 0.002) elbow.copy(sG).lerp(wristT, UPPER / (UPPER + FORE));
     placeSeg(this.armSegs[0], sG, elbow);
+    this.sleeveA.copy(sG).setY(sG.y + lift);
+    this.sleeveB.copy(elbow).setY(elbow.y + lift);
     // The glove is where the pose says it is (that's what the server checks and
     // what your friend aims at); if the arm is a touch short, the forearm stretches.
     const gloveEnd = dw > 0.5 ? wrist : wristT;

@@ -79,16 +79,16 @@ export class Tutorial {
     if (performance.now() < this.flashUntil) { this.show('flash' + this.flashText, this.flashText, null); return; }
     if (this.holding && !this.done.has('throw')) {
       if (!this.canThrow()) { this.hide(); return; }
-      this.show('throw', 'Pull back to aim, let go to throw<small>Put the ring on their glove: sideways moves it across, further throws higher and harder. Hold it and you wind up.</small>', 'throw');
+      this.show('throw', 'Pull back to aim, let go to throw<small>Put the ring on their glove. Hold the aim and you wind up.</small>', 'throw');
       return;
     }
     if (!this.holding && !this.done.has('catch') && !this.done.has('move')) {
-      this.show('move', 'Drag to move your glove<small>Where you hold it is their target. When the throw comes, get your glove to the ring. Off target? Drag toward it and you run; flick and you dive or jump.</small>', 'move');
+      this.show('move', 'Drag to move your glove<small>Get it to the ring. Off target? Drag that way to run, flick to dive or jump.</small>', 'move');
       return;
     }
     if (this.done.has('throw') && this.done.has('catch')) {
       if (!this.finale) this.finale = performance.now();
-      this.show('streak', 'That’s it. Every catch adds to the streak<small>Chase the perfect POP: a throw that finds a glove held still.</small>', null);
+      this.show('streak', 'That’s it. Every catch adds to the streak', null);
       if (performance.now() - this.finale > 4200) this.finish();
       return;
     }
