@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { type Hand, type Pose, bodyToWorld, gloveWorld, worldToBody } from '../../shared/pose';
 import { Arm } from '../../shared/protocol';
 import { type Vec3, clamp, wrapAngle } from '../../shared/vec';
+import { DELIVERY_LENGTH, type DeliveryPose, RELEASE_TIME, type Windup, deliveryPose, getWindup, pelvisHeight, windupPose } from '../../shared/windups';
 import { buildGlove, buildHand, setGloveClosure } from './gear';
 
 export const LOOKS = [
@@ -76,7 +77,16 @@ export interface AvatarFrame {
   gloved?: boolean;
   /** A throw is coming: knees bent, on the balls of the feet. */
   ready?: boolean;
+  /** Height off the grass (a leap for a high one), metres. */
+  lift?: number;
+  /** A dive: -1..1, toward the body's left/right. */
+  dive?: number;
+  /** How far behind real time this pose is (seconds): a remote player's delivery makes it up. */
+  lag?: number;
 }
+
+/** When the delivery hands the feet back to the step planner (they walk back to the spot). */
+const FEET_BACK = 0.8;
 
 export class Avatar {
   root = new THREE.Group();
@@ -101,14 +111,29 @@ export class Avatar {
   private bodyYaw: number;
   private crouch = 0;
   private tiptoe = 0;
-  private kneeLift = 0;
   private leanF = 0;
   private leanS = 0;
-  private twist = 0;
   private throwTarget = new THREE.Vector3();
   private throwInit = false;
-  private releaseT = -1;
   private lastArm = 0;
+  /** The delivery this player throws with. */
+  private windup: Windup;
+  /** How far through the windup (0..1). */
+  private wu = 0;
+  /** Seconds into the delivery clip, or -1. */
+  private deliveryT = -1;
+  private deliveryFrom = 1;
+  /** How much the delivery owns the body right now (0..1). */
+  private dw = 0;
+  private dpose: DeliveryPose | null = null;
+  private feetOwned = false;
+  private coreMats: THREE.MeshStandardMaterial[] = [];
+  private coreAlpha = 1;
+  private diveK = 0;
+  private debt = 0;
+  private showK = 0;
+  /** World position of the eyes (first-person camera). */
+  readonly eye = new THREE.Vector3();
   private recoil = 0;
   private recoilDir = new THREE.Vector3();
   private closure = 0;
@@ -123,11 +148,16 @@ export class Avatar {
   readonly headTop = new THREE.Vector3();
   readonly chestPos = new THREE.Vector3();
 
-  constructor(home: Vec3, facing: number, public hand: Hand, look: number) {
+  constructor(home: Vec3, facing: number, public hand: Hand, look: number, windup = 0) {
     const L = LOOKS[look % LOOKS.length];
     const m = (c: string, r = 0.8) => { const x = new THREE.MeshStandardMaterial({ color: c, roughness: r }); this.mats.push(x); return x; };
-    const shirt = m(L.shirt), pants = m(L.pants), skin = m(L.skin, 0.6), cap = m(L.cap, 0.7), shoe = m('#efeae0', 0.7);
+    const shirt = m(L.shirt), pants = m(L.pants), skin = m(L.skin, 0.6), shoe = m('#efeae0', 0.7);
+    // The head and chest get their own materials: in first person they fade
+    // out of the way (and keep casting your shadow on the grass).
+    const core = (c: string, r = 0.8) => { const x = m(c, r); this.coreMats.push(x); return x; };
+    const shirtC = core(L.shirt), skinC = core(L.skin, 0.6), capC = core(L.cap, 0.7);
     this.bodyYaw = facing;
+    this.windup = getWindup(windup);
 
     // Legs: thigh + shin per side, knees solved each frame.
     this.legSegs = [seg(pants, 0.085, 0.07), seg(pants, 0.068, 0.055), seg(pants, 0.085, 0.07), seg(pants, 0.068, 0.055)];
@@ -150,38 +180,38 @@ export class Avatar {
     this.torso.position.y = 0.04;
     this.torso.rotation.order = 'YXZ';
     this.pelvis.add(this.torso);
-    this.chest = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.32, 4, 10), shirt);
+    this.chest = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.32, 4, 10), shirtC);
     this.chest.scale.set(1.18, 1, 0.7);
     this.chest.position.y = 0.3;
     this.torso.add(this.chest);
     this.shoulderL.position.set(-0.215, 0.5, 0);
     this.shoulderR.position.set(0.215, 0.5, 0);
     this.torso.add(this.shoulderL, this.shoulderR);
-    for (const sh of [this.shoulderL, this.shoulderR]) sh.add(joint(shirt, 0.062));
-    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.056, 0.1, 8), skin);
+    for (const sh of [this.shoulderL, this.shoulderR]) sh.add(joint(shirtC, 0.062));
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.056, 0.1, 8), skinC);
     neck.position.y = 0.6;
     this.torso.add(neck);
     this.head.position.y = 0.7;
     this.head.rotation.order = 'YXZ';
     this.torso.add(this.head);
-    const skull = new THREE.Mesh(new THREE.SphereGeometry(0.112, 16, 12), skin);
+    const skull = new THREE.Mesh(new THREE.SphereGeometry(0.112, 16, 12), skinC);
     skull.scale.set(0.92, 1.05, 1);
     skull.position.y = 0.02;
     this.head.add(skull);
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.018, 0.04, 6), skin);
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.018, 0.04, 6), skinC);
     nose.rotation.x = -Math.PI / 2;
     nose.position.set(0, 0.0, -0.11);
     this.head.add(nose);
     for (const sx of [-1, 1]) {
-      const ear = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 6), skin);
+      const ear = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 6), skinC);
       ear.position.set(sx * 0.1, 0.0, 0.0);
       this.head.add(ear);
     }
     // Ball cap: crown + brim. The brim is the clearest "where are they looking" cue.
-    const crown = new THREE.Mesh(new THREE.SphereGeometry(0.118, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), cap);
+    const crown = new THREE.Mesh(new THREE.SphereGeometry(0.118, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), capC);
     crown.position.y = 0.045;
     crown.scale.set(0.95, 0.85, 1.02);
-    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.012, 16, 1, false, -Math.PI / 2, Math.PI), cap);
+    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.012, 16, 1, false, -Math.PI / 2, Math.PI), capC);
     brim.scale.set(1.05, 1, 1.25);
     brim.position.set(0, 0.05, -0.08);
     brim.rotation.x = 0.12;
@@ -231,7 +261,37 @@ export class Avatar {
   }
 
   setConnected(on: boolean) {
-    for (const m of this.mats) { m.transparent = !on; m.opacity = on ? 1 : 0.4; }
+    // (Three bakes "opaque" into the shader: flipping `transparent` needs a rebuild to show.)
+    for (const m of this.mats) { if (m.transparent === on) m.needsUpdate = true; m.transparent = !on; m.opacity = on ? 1 : 0.4; }
+  }
+
+  setWindup(id: number) { this.windup = getWindup(id); }
+  get windupId() { return this.windup.id; }
+
+  /** First person: fade the head and chest out of the camera's way (1 = solid). */
+  setCoreOpacity(a: number) {
+    if (a === this.coreAlpha || (Math.abs(a - this.coreAlpha) < 0.004 && a > 0 && a < 1)) return;
+    this.coreAlpha = a;
+    for (const m of this.coreMats) {
+      const t = a < 0.995;
+      if (m.transparent !== t) { m.transparent = t; m.needsUpdate = true; }
+      m.opacity = a;
+      m.depthWrite = a > 0.6;
+    }
+  }
+
+  /** Seconds into the delivery clip (-1 when not throwing). The ball leaves at RELEASE_TIME. */
+  get deliveryTime() { return this.deliveryT; }
+
+  /** Seconds until the ball leaves this player's hand (a delivery that hasn't started counts in full). */
+  get timeToRelease() { return this.deliveryT < 0 ? RELEASE_TIME : Math.max(0, RELEASE_TIME - this.deliveryT - this.debt); }
+  /** Sideways lean of the trunk (rad, + = to the body's right). */
+  get sideLean() { return this.leanS; }
+
+  /** Start the delivery. `behind` seconds of it have already happened for real: it plays quicker until it has caught up. */
+  startDelivery(behind = 0) {
+    if (this.deliveryT >= 0) return;
+    this.deliveryT = 0; this.deliveryFrom = this.wu; this.feetOwned = true; this.debt = behind;
   }
 
   /** Called when this player catches the ball (glove recoil + snap shut). */
@@ -245,8 +305,11 @@ export class Avatar {
 
   update(dt: number, f: AvatarFrame) {
     this.time += dt;
-    const { pose, arm, charge } = f;
+    const { pose, arm } = f;
     const side = this.hand === 'R' ? 1 : -1;
+    const lift = f.lift ?? 0;
+    this.diveK += ((f.dive ?? 0) - this.diveK) * (1 - Math.exp(-dt / 0.07));
+    const dive = this.diveK;
 
     // ---- body position and facing (smoothed toward the streamed pose)
     const target = tmpC.set(pose.x, 0, pose.z);
@@ -258,43 +321,66 @@ export class Avatar {
     this.bodyYaw += wrapAngle(pose.yaw - this.bodyYaw) * (1 - Math.exp(-dt / 0.12));
     const yaw = this.bodyYaw;
     const speed = Math.hypot(this.vel.x, this.vel.z);
+    // Everything below is laid out in the root's own space; a leap lifts the root.
     this.root.position.set(0, 0, 0);
     this.root.rotation.set(0, 0, 0);
 
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
     const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+    /** Pitch-frame point (x toward the throwing side, y up, z toward the target) → root space. */
+    const pitch = (p: Vec3, out = new THREE.Vector3()) => out.copy(this.pos).addScaledVector(right, side * p[0]).addScaledVector(fwd, p[2]).setY(p[1]);
+
+    // ---- the delivery: a windup scrubbed by the streamed phase, then a timed clip
+    // through the stride, the release and the follow-through.
+    if (arm === Arm.Windup) this.wu = clamp(f.charge, 0, 1);
+    if (arm !== this.lastArm && arm === Arm.Release) this.startDelivery(f.lag ?? 0);
+    this.lastArm = arm;
+    if (this.deliveryT >= 0) {
+      const extra = Math.min(this.debt, dt);
+      this.debt -= extra;
+      this.deliveryT += dt + extra;
+      if (this.deliveryT >= DELIVERY_LENGTH) { this.deliveryT = -1; this.wu = 0; this.dw = 0; }
+    }
+    const throwing = this.deliveryT >= 0;
+    let fade = 1;
+    if (throwing) {
+      this.dpose = deliveryPose(this.windup, this.deliveryT, this.deliveryFrom);
+      fade = 1 - smooth(clamp((this.deliveryT - 0.74) / (DELIVERY_LENGTH - 0.74), 0, 1));
+      this.dw += (1 - this.dw) * (1 - Math.exp(-dt / 0.045));
+    } else if (arm === Arm.Windup) {
+      this.dpose = windupPose(this.windup, this.wu);
+      if (this.wu > 0.98) {
+        // Balanced at the top: alive, not frozen.
+        this.dpose.lead[1] += Math.sin(this.time * 2.3) * 0.012;
+        this.dpose.tilt += Math.sin(this.time * 1.4) * 0.012;
+      }
+      this.dw += (1 - this.dw) * (1 - Math.exp(-dt / 0.07));
+    } else {
+      this.dw += (0 - this.dw) * (1 - Math.exp(-dt / 0.11));
+      if (this.dw < 0.004) { this.dw = 0; this.wu = 0; }
+    }
+    const P = this.dpose;
+    const dw = P ? this.dw * fade : 0;
+    // The feet belong to the clip until the follow-through lands; then they walk back.
+    if (throwing && this.feetOwned && this.deliveryT >= FEET_BACK && P) {
+      this.feetOwned = false;
+      const gf = this.hand === 'R' ? 0 : 1;
+      pitch(P.lead, this.feet[gf].pos).setY(0);
+      pitch(P.pivot, this.feet[1 - gf].pos).setY(0);
+      for (const ft of this.feet) { ft.stepping = false; ft.from.copy(ft.pos); ft.to.copy(ft.pos); ft.t = 1; }
+    }
+    if (!throwing) this.feetOwned = false;
+    const footW = throwing ? (this.feetOwned ? dw : 0) : dw;
 
     // ---- glove target in body space decides crouch and lean
     const gw = gloveWorld(pose);
+    gw[1] -= lift;
     const gl = worldToBody(yaw, [gw[0] - this.pos.x, gw[1], gw[2] - this.pos.z]);
-    const wantCrouch = (f.ready ? 0.1 : 0.025) + clamp((0.95 - gl[1]) / 0.75, 0, 1) * 0.3 + (arm === Arm.Windup ? 0.05 * charge : 0) + Math.min(0.06, speed * 0.012);
+    const wantCrouch = (f.ready ? 0.1 : 0.025) + clamp((0.95 - gl[1]) / 0.75, 0, 1) * 0.3 + Math.min(0.06, speed * 0.012) + Math.abs(dive) * 0.3;
     this.crouch += (wantCrouch - this.crouch) * (1 - Math.exp(-dt / 0.09));
     const reachOut = Math.hypot(gl[0], gl[2]);
-    let wantLeanF = clamp((gl[2] - 0.45) * 0.35, -0.1, 0.32) + clamp((0.9 - gl[1]) * 0.35, 0, 0.35) + clamp(speed * 0.02, 0, 0.08);
-    let wantLeanS = clamp(gl[0] * 0.5 * clamp(reachOut - 0.45, 0, 1) * 2, -0.38, 0.38);
-    // ---- throwing: weight back on the windup, stride and drive through the release
-    let stride = 0, wantTwist = 0;
-    if (arm !== this.lastArm && arm === Arm.Release) this.releaseT = 0;
-    this.lastArm = arm;
-    if (this.releaseT >= 0) {
-      this.releaseT += dt;
-      if (this.releaseT > 0.75) this.releaseT = -1;
-    }
-    const rk = this.releaseT >= 0 ? this.releaseT : -1;
-    if (arm === Arm.Windup) {
-      // Load the throwing shoulder back (a right-hander turns clockwise, i.e. negative yaw).
-      wantTwist = -0.75 * charge * side;
-      wantLeanF -= 0.1 * charge;
-      stride = 0.12 * charge;
-    } else if (rk >= 0) {
-      const k = clamp(rk / 0.22, 0, 1);
-      const settle = clamp((rk - 0.3) / 0.45, 0, 1);
-      // ...then unwind hard through the release and finish facing past the target.
-      wantTwist = (-0.6 + 1.15 * smooth(k)) * side * (1 - settle);
-      wantLeanF += 0.42 * Math.sin(Math.PI * clamp(rk / 0.55, 0, 1));
-      stride = 0.32 * (1 - settle);
-    }
-    this.twist += (wantTwist - this.twist) * (1 - Math.exp(-dt / (rk >= 0 ? 0.04 : 0.1)));
+    const wantLeanF = clamp((gl[2] - 0.45) * 0.35, -0.1, 0.32) + clamp((0.9 - gl[1]) * 0.35, 0, 0.35) + clamp(speed * 0.02, 0, 0.08);
+    const wantLeanS = clamp(gl[0] * 0.5 * clamp(reachOut - 0.45, 0, 1) * 2, -0.38, 0.38) + dive * 0.8;
     this.leanF += (wantLeanF - this.leanF) * (1 - Math.exp(-dt / 0.1));
     this.leanS += (wantLeanS - this.leanS) * (1 - Math.exp(-dt / 0.1));
 
@@ -302,13 +388,11 @@ export class Avatar {
     // leaves them behind, then a step arcs to the new stance.
     const gloveFoot = this.hand === 'R' ? 0 : 1;
     const stepDur = clamp(0.32 - speed * 0.03, 0.17, 0.32);
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 2 && footW < 0.02; i++) {
       const ft = this.feet[i];
       const want = this.stance(i, yaw);
       // Moving: plant ahead along the velocity.
       want.addScaledVector(this.vel, clamp(stepDur * 0.7, 0, 0.3));
-      if (i === gloveFoot && stride) want.addScaledVector(fwd, stride);
-      if (i !== gloveFoot && stride) want.addScaledVector(fwd, -stride * 0.25);
       const other = this.feet[1 - i];
       if (ft.stepping) {
         ft.t += dt / stepDur;
@@ -317,88 +401,87 @@ export class Avatar {
         ft.pos.lerpVectors(ft.from, ft.to, smooth(k));
         ft.pos.y = Math.sin(Math.PI * k) * (0.05 + Math.min(0.08, speed * 0.02));
         if (k >= 1) { ft.stepping = false; ft.pos.y = 0; }
-      } else if (!other.stepping && (ft.pos.distanceTo(want) > (stride ? 0.05 : 0.2) || (speed > 0.4 && ft.pos.distanceTo(want) > 0.12))) {
+      } else if (!other.stepping && (ft.pos.distanceTo(want) > 0.2 || (speed > 0.4 && ft.pos.distanceTo(want) > 0.12))) {
         // Only one foot in the air at a time; the further-behind foot goes first.
         const otherErr = other.pos.distanceTo(this.stance(1 - i, yaw));
-        if (ft.pos.distanceTo(want) >= otherErr - 0.02 || stride) {
+        if (ft.pos.distanceTo(want) >= otherErr - 0.02) {
           ft.stepping = true; ft.t = 0; ft.from.copy(ft.pos); ft.to.copy(want);
         }
       }
     }
-
-    // ---- the throw's footwork (as in a real long toss): lift the glove-side
-    // knee as you load, stride long toward the target, and let the back leg
-    // kick up behind you as you finish.
-    const throwFoot = 1 - gloveFoot;
-    const lift = arm === Arm.Windup ? smooth(clamp((charge - 0.2) / 0.6, 0, 1)) : 0;
-    this.kneeLift += (lift - this.kneeLift) * (1 - Math.exp(-dt / 0.08));
-    if (this.kneeLift > 0.01 && rk < 0) {
-      const ft = this.feet[gloveFoot];
-      const base = this.stance(gloveFoot, yaw);
-      ft.stepping = false;
-      ft.pos.lerp(base.clone().addScaledVector(fwd, 0.04).addScaledVector(right, side * 0.06), 0.3);
-      ft.pos.y = 0.36 * this.kneeLift;
+    // Where the feet are drawn: the planner's, or the delivery's.
+    const feet = [this.feet[0].pos.clone(), this.feet[1].pos.clone()];
+    if (P && footW > 0) {
+      feet[gloveFoot].lerp(pitch(P.lead), footW);
+      feet[1 - gloveFoot].lerp(pitch(P.pivot), footW);
     }
-    if (rk >= 0 && rk < 0.75) {
-      const plant = this.stance(gloveFoot, yaw).addScaledVector(fwd, 0.55).addScaledVector(right, side * 0.08);
-      const g = this.feet[gloveFoot];
-      g.stepping = false;
-      g.pos.lerp(plant, rk < 0.12 ? 0.55 : 0.2);
-      g.pos.y = rk < 0.1 ? 0.12 * (1 - rk / 0.1) : 0;
-      const kick = clamp((rk - 0.1) / 0.5, 0, 1);
-      const b = this.feet[throwFoot];
-      b.stepping = false;
-      const behind = this.stance(throwFoot, yaw).addScaledVector(fwd, -0.12 + 0.35 * smooth(kick));
-      b.pos.lerp(behind, 0.25);
-      b.pos.y = 0.42 * Math.sin(Math.PI * kick);
-    }
+    // Off the ground: knees tuck a little.
+    if (lift > 0) for (const ft of feet) ft.y += Math.min(0.14, lift * 0.4);
 
     // ---- pelvis: between the feet, dropped by the crouch, bobbing with steps
     const mid = tmpA.addVectors(this.feet[0].pos, this.feet[1].pos).multiplyScalar(0.5);
     const centre = new THREE.Vector3(this.pos.x, 0, this.pos.z).lerp(mid.setY(0), 0.35);
     const bob = Math.max(this.feet[0].pos.y, this.feet[1].pos.y) * 0.25;
     // Idle: slow weight shifts and breathing.
-    const idle = speed < 0.2 && arm !== Arm.Windup && rk < 0 ? 1 : 0;
+    const idle = speed < 0.2 && dw < 0.01 ? 1 : 0;
     const sway = Math.sin(this.time * 0.55) * 0.012 * idle;
-    centre.addScaledVector(right, sway);
+    centre.addScaledVector(right, sway + dive * 0.25);
     // High glove: up on the toes.
     this.tiptoe += (clamp((gl[1] - 1.75) * 0.32, 0, 0.13) - this.tiptoe) * (1 - Math.exp(-dt / 0.1));
-    const hipY = HIP_Y - this.crouch * 0.42 + this.tiptoe + bob - 0.01 * idle * (0.5 + 0.5 * Math.sin(this.time * 1.7));
+    let hipY = HIP_Y - this.crouch * 0.42 + this.tiptoe + bob - 0.01 * idle * (0.5 + 0.5 * Math.sin(this.time * 1.7));
+    let hipTurn = 0, coil = 0, lean = this.leanF, tilt = -this.leanS * 0.8;
+    if (P && dw > 0) {
+      const pc = pitch([P.pelvis[0], 0, P.pelvis[2]]);
+      centre.lerp(pc, dw);
+      hipY += (pelvisHeight(P) - hipY) * dw;
+      hipTurn = -side * P.hip * dw;
+      coil = -side * P.coil * dw;
+      lean += (P.lean - lean) * dw;
+      tilt += (side * P.tilt - tilt) * dw;
+    }
+    const pelvisYaw = yaw + hipTurn;
     this.pelvis.position.set(centre.x, hipY, centre.z);
-    this.pelvis.rotation.set(0, yaw, 0, 'YXZ');
-    this.pelvis.rotateY(this.twist * 0.35);
-    this.torso.rotation.set(-this.leanF, this.twist * 0.75, -this.leanS * 0.8);
+    this.pelvis.rotation.set(0, pelvisYaw, 0, 'YXZ');
+    this.torso.rotation.set(-lean, coil, tilt);
     this.chest.scale.y = 1 + Math.sin(this.time * 1.7) * 0.012;
 
     // ---- head: track the ball (or the friend)
     this.root.updateMatrixWorld(true);
     if (f.look) {
       const hw = this.head.getWorldPosition(tmpB);
-      const dx = f.look[0] - hw.x, dy = f.look[1] - hw.y, dz = f.look[2] - hw.z;
+      const dx = f.look[0] - hw.x, dy = f.look[1] - lift - hw.y, dz = f.look[2] - hw.z;
       const lookYaw = Math.atan2(-dx, -dz);
-      const torsoYaw = yaw + this.twist * 1.1;
-      const rel = clamp(wrapAngle(lookYaw - torsoYaw), -1.25, 1.25);
-      const pitch = clamp(Math.atan2(dy, Math.hypot(dx, dz)) + this.leanF * 0.8, -0.8, 0.7);
+      const torsoYaw = pelvisYaw + coil;
+      const rel = clamp(wrapAngle(lookYaw - torsoYaw), -1.35, 1.35);
+      const pitchA = clamp(Math.atan2(dy, Math.hypot(dx, dz)) + lean * 0.8, -0.8, 0.7);
       const k = 1 - Math.exp(-dt / 0.07);
       this.head.rotation.y += (rel - this.head.rotation.y) * k;
-      this.head.rotation.x += (pitch - this.head.rotation.x) * k;
+      this.head.rotation.x += (pitchA - this.head.rotation.x) * k;
+      // Keep the eyes level when the trunk bends sideways.
+      this.head.rotation.z += (-tilt * 0.6 - this.head.rotation.z) * k;
     }
     this.root.updateMatrixWorld(true);
 
-    // ---- legs (IK from hips to feet, knees forward)
+    // ---- legs (IK from hips to feet, knees ahead of the hips; a lifted foot brings the knee up)
+    const pFwd = new THREE.Vector3(-Math.sin(pelvisYaw), 0, -Math.cos(pelvisYaw));
+    const pRight = new THREE.Vector3(Math.cos(pelvisYaw), 0, -Math.sin(pelvisYaw));
     for (let i = 0; i < 2; i++) {
       const sx = i === 0 ? -1 : 1;
       const hip = tmpC.set(sx * HIP_W, -0.02, 0).applyMatrix4(this.pelvis.matrixWorld).clone();
-      const ankle = this.feet[i].pos.clone().add(new THREE.Vector3(0, 0.07, 0));
+      const fy = feet[i].y;
+      const ankle = feet[i].clone().add(new THREE.Vector3(0, 0.07, 0));
       const knee = new THREE.Vector3(), end = new THREE.Vector3();
-      const pole = fwd.clone().addScaledVector(right, sx * 0.12);
+      const pole = pFwd.clone().addScaledVector(pRight, sx * 0.12).addScaledVector(UP, clamp(fy / 0.3, 0, 2.5));
       solve2(hip, ankle, THIGH, SHIN, pole, knee, end);
       placeSeg(this.legSegs[i * 2], hip, knee);
       placeSeg(this.legSegs[i * 2 + 1], knee, end);
       this.knees[i].position.copy(knee);
       const shoe = this.shoes[i];
-      shoe.position.copy(this.feet[i].pos);
-      shoe.rotation.set(0, yaw + sx * 0.12 + (this.feet[i].stepping ? 0 : 0), 0);
+      shoe.position.copy(end).setY(end.y - 0.07);
+      // The pivot foot turns with the hips; the striding foot points where it's going once it's down.
+      let shoeYaw = yaw + sx * 0.12;
+      if (P && footW > 0) shoeYaw += -side * (i === gloveFoot ? P.hip * clamp(fy / 0.25, 0, 1) : clamp(P.hip, -0.3, 1.5)) * footW;
+      shoe.rotation.set(-clamp(fy * 0.9, 0, 0.7), shoeYaw, 0, 'YXZ');
     }
 
     // ---- glove arm: reach for the streamed glove point
@@ -407,21 +490,20 @@ export class Avatar {
     const sG = gloveShoulder.getWorldPosition(new THREE.Vector3());
     const sT = throwShoulder.getWorldPosition(new THREE.Vector3());
     const gp = new THREE.Vector3(gw[0], gw[1], gw[2]);
-    // While throwing, the glove arm pulls in to the chest (it drives the turn).
-    if (arm === Arm.Windup || rk >= 0) {
-      const tuck = arm === Arm.Windup ? 0.6 + 0.4 * charge : Math.max(0, 1 - rk / 0.6);
-      const tuckPos = sG.clone().addScaledVector(fwd, 0.36 - 0.12 * (rk >= 0 ? 1 : 0)).addScaledVector(UP, -0.12).addScaledVector(right, side * 0.12);
-      gp.lerp(tuckPos, clamp(tuck, 0, 1) * 0.85);
-    }
+    // While throwing, the glove belongs to the delivery (it leads the stride, then tucks).
+    if (P && dw > 0) gp.lerp(pitch(P.glove), dw);
     this.recoil = Math.max(0, this.recoil - dt * 4.2);
     if (this.recoil > 0) gp.addScaledVector(this.recoilDir, 0.09 * Math.sin(this.recoil * Math.PI) * this.recoil);
     this.closure = Math.max(0, this.closure - dt * 1.6);
     setGloveClosure(this.glove, Math.min(1, this.closure * 1.6 + (f.gloved ? 0.35 : 0)));
     // Pocket faces where the ball comes from (or out in front).
-    const faceDir = f.look ? tmpB.set(f.look[0] - gp.x, f.look[1] - gp.y, f.look[2] - gp.z).normalize() : fwd.clone();
+    const faceDir = f.look && dw < 0.5 ? tmpB.set(f.look[0] - gp.x, f.look[1] - lift - gp.y, f.look[2] - gp.z).normalize() : fwd.clone();
     if (faceDir.dot(fwd) < -0.2) faceDir.copy(fwd);
+    // Just caught: the pocket turns up toward you, and there's the ball in it.
+    this.showK += ((f.gloved && dw < 0.1 ? 1 : 0) - this.showK) * (1 - Math.exp(-dt / (f.gloved ? 0.12 : 0.08)));
+    if (this.showK > 0.01) faceDir.lerp(tmpA.copy(fwd).multiplyScalar(-0.55).addScaledVector(UP, 0.83), this.showK * 0.85).normalize();
     // Low catches: fingers down (backhand/scoop); high: fingers up.
-    const low = clamp((0.85 - gp.y) / 0.5, 0, 1);
+    const low = clamp((0.85 - gp.y) / 0.5, 0, 1) * (1 - dw);
     const wristBack = faceDir.clone().multiplyScalar(-0.07).add(new THREE.Vector3(0, -0.085 * (1 - 2 * low), 0));
     const wristT = gp.clone().add(wristBack);
     const elbow = new THREE.Vector3(), wrist = new THREE.Vector3();
@@ -430,40 +512,39 @@ export class Avatar {
     placeSeg(this.armSegs[0], sG, elbow);
     // The glove is where the pose says it is (that's what the server checks and
     // what your friend aims at); if the arm is a touch short, the forearm stretches.
-    placeSeg(this.armSegs[1], elbow, wristT);
+    const gloveEnd = dw > 0.5 ? wrist : wristT;
+    placeSeg(this.armSegs[1], elbow, gloveEnd);
     this.elbows[0].position.copy(elbow);
-    // If the arm couldn't quite reach, the glove stays on the hand.
+    if (dw > 0.5) gp.copy(wrist).sub(wristBack);
     this.glove.position.copy(gp);
     const upHint = low > 0.5 ? new THREE.Vector3(0, -1, 0) : new THREE.Vector3(0, 1, 0);
+    if (dw > 0.01) {
+      // In a delivery the glove is just the end of the arm: fingers along the
+      // forearm, pocket turned in toward the chest.
+      const fa = new THREE.Vector3().subVectors(gloveEnd, elbow).normalize();
+      const n = this.chest.getWorldPosition(new THREE.Vector3()).sub(gp);
+      n.addScaledVector(fa, -n.dot(fa));
+      if (n.lengthSq() < 1e-4) n.copy(fwd);
+      faceDir.lerp(n.normalize(), dw).normalize();
+      upHint.lerp(fa, dw).normalize();
+    }
     const lookM = new THREE.Matrix4().lookAt(gp, tmpA.copy(gp).sub(faceDir), upHint);
     this.glove.quaternion.setFromRotationMatrix(lookM);
     this.gloveWorldPos.copy(gp);
+    this.gloveWorldPos.y += lift;
 
-    // ---- throwing arm by state
+    // ---- throwing arm: idle, holding, taking the ball out of the glove; or the delivery
     let tgt: THREE.Vector3;
     const up = UP;
     if (this.transferT >= 0) { this.transferT += dt; if (this.transferT > 0.45) this.transferT = -1; }
     if (this.tapT >= 0) { this.tapT += dt; if (this.tapT > 0.5) this.tapT = -1; }
-    const holdIdle = arm === Arm.Holding && speed < 0.2 && rk < 0;
+    const holdIdle = arm === Arm.Holding && speed < 0.2 && dw < 0.01;
     this.idleT = holdIdle ? this.idleT + dt : 0;
     if (holdIdle && this.idleT > 2.6 && this.tapT < 0 && Math.sin(this.time * 0.9) > 0.6) { this.tapT = 0; this.idleT = 0; }
-    if (arm === Arm.Windup) {
-      // Ball taken down, back and up behind the throwing shoulder.
-      const c = charge;
-      tgt = sT.clone().addScaledVector(fwd, 0.06 - 0.4 * c).addScaledVector(up, -0.14 + 0.42 * c).addScaledVector(right, side * (0.12 + 0.03 * c));
-    } else if (rk >= 0) {
-      // Whip over the top, through, and across the body; then relax.
-      const k = clamp(rk / 0.3, 0, 1);
-      const a = smooth(k);
-      tgt = sT.clone()
-        .addScaledVector(fwd, 0.55 * Math.sin(a * Math.PI * 0.85))
-        .addScaledVector(up, 0.18 - 0.75 * a)
-        .addScaledVector(right, side * (0.15 - 0.5 * a));
-      if (rk > 0.4) tgt.lerp(sT.clone().addScaledVector(up, -0.5).addScaledVector(fwd, 0.1), clamp((rk - 0.4) / 0.35, 0, 1));
-    } else if (this.transferT >= 0 || (this.tapT >= 0 && this.tapT < 0.3)) {
+    if (this.transferT >= 0 || (this.tapT >= 0 && this.tapT < 0.3)) {
       // Reach over to the glove: take the ball out (or a little pound of the mitt).
-      tgt = this.gloveWorldPos.clone().addScaledVector(right, side * 0.06).addScaledVector(fwd, 0.04);
-    } else if (arm === Arm.Holding) {
+      tgt = gp.clone().addScaledVector(right, side * 0.06).addScaledVector(fwd, 0.04);
+    } else if (arm === Arm.Holding || arm === Arm.Windup) {
       tgt = sT.clone().addScaledVector(fwd, 0.26).addScaledVector(up, -0.32).addScaledVector(right, -side * 0.06);
     } else {
       // Arm hangs relaxed, swinging a little when moving.
@@ -471,11 +552,19 @@ export class Avatar {
       tgt = sT.clone().addScaledVector(up, -0.52).addScaledVector(fwd, 0.06 + swing).addScaledVector(right, side * 0.05);
     }
     if (!this.throwInit) { this.throwTarget.copy(tgt); this.throwInit = true; }
-    this.throwTarget.lerp(tgt, Math.min(1, dt * (rk >= 0 && rk < 0.3 ? 34 : 13)));
-    const poleT = arm === Arm.Windup || (rk >= 0 && rk < 0.15)
-      ? new THREE.Vector3().addScaledVector(right, side).addScaledVector(up, -0.3).addScaledVector(fwd, -0.2)
-      : new THREE.Vector3(0, -1, 0).addScaledVector(right, side * 0.7);
-    solve2(sT, this.throwTarget, UPPER, FORE, poleT, elbow, wrist);
+    if (dw < 0.98) this.throwTarget.lerp(tgt, Math.min(1, dt * 13));
+    const handT = this.throwTarget.clone();
+    const poleT = new THREE.Vector3(0, -1, 0).addScaledVector(right, side * 0.7);
+    if (P && dw > 0) {
+      handT.lerp(pitch(P.ball), dw);
+      // Above the shoulder the elbow leads out to the side (the "L"), not down.
+      const cy = pelvisYaw + coil;
+      const hi = smooth(clamp((handT.y - (sT.y - 0.2)) / 0.3, 0, 1)) * dw;
+      const out = new THREE.Vector3(Math.cos(cy) * side, -0.35, -Math.sin(cy) * side).addScaledVector(tmpA.set(-Math.sin(cy), 0, -Math.cos(cy)), -0.25);
+      poleT.lerp(out, hi);
+      if (dw >= 0.98) this.throwTarget.copy(handT);
+    }
+    solve2(sT, handT, UPPER, FORE, poleT, elbow, wrist);
     placeSeg(this.armSegs[2], sT, elbow);
     placeSeg(this.armSegs[3], elbow, wrist);
     this.elbows[1].position.copy(elbow);
@@ -483,7 +572,13 @@ export class Avatar {
     this.handBall.copy(wrist).addScaledVector(forearm, 0.075);
     this.handMesh.position.copy(this.handBall);
     this.handMesh.lookAt(tmpB.copy(this.handBall).addScaledVector(forearm, -1));
-    this.head.getWorldPosition(this.headTop).add(new THREE.Vector3(0, 0.3, 0));
+    this.handBall.y += lift;
+
+    this.root.position.y = lift;
+    this.root.updateMatrixWorld(true);
+    this.head.getWorldPosition(this.eye);
+    this.eye.y += 0.03;
+    this.headTop.copy(this.eye).add(new THREE.Vector3(0, 0.27, 0));
     this.chest.getWorldPosition(this.chestPos);
   }
 

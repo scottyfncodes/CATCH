@@ -58,6 +58,9 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .tagline { margin: 14px 0 0 4px; font-size: 17px; line-height: 1.35; color: rgba(255, 246, 230, 0.9); font-weight: 500; max-width: 18em; text-shadow: 0 1px 12px rgba(60, 30, 10, 0.35); }
 .home .spacer { flex: 1; }
 .stack { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 420px; align-self: center; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.num { font-variant-numeric: tabular-nums; font-weight: 800; letter-spacing: 0.01em; }
+.btn-text .num { color: var(--cream); margin-left: 2px; }
 .notice { position: absolute; left: 50%; top: calc(var(--sa-t) + 16px); transform: translateX(-50%); white-space: nowrap; font-size: 14px; letter-spacing: 0.01em; animation: fade 240ms ease both; }
 .credit { margin-top: 16px; text-align: center; font-size: 12px; letter-spacing: 0.02em; color: rgba(255, 246, 230, 0.48); }
 
@@ -132,6 +135,32 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .people .nm em { font-style: normal; color: var(--muted); font-weight: 500; font-size: 14px; }
 .people .num { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; min-width: 64px; text-align: right; }
 
+/* ------------------------------------------------------------ windup selector */
+
+/* The field stays in plain view behind this one: your player is the preview. */
+.clear .scrim { background: linear-gradient(180deg, rgba(15, 11, 7, 0) 40%, rgba(15, 11, 7, 0.3) 100%); }
+#app.choosing .hud { display: none; }
+.wu-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.wu-num { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--stitch); }
+.sheet .wu-head + .sub { margin-bottom: 16px; min-height: 21px; }
+.jerseys {
+  display: flex; gap: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity; touch-action: pan-x;
+  margin: 0 calc(-22px - var(--sa-r)) 14px calc(-22px - var(--sa-l)); padding: 2px calc(22px + var(--sa-r)) 4px calc(22px + var(--sa-l));
+  scrollbar-width: none;
+}
+.jerseys::-webkit-scrollbar { display: none; }
+/* A number on a shirt: big block numerals, a collar line across the top. */
+.jersey {
+  position: relative; flex: none; width: 76px; height: 88px; border-radius: 16px; scroll-snap-align: center;
+  background: var(--cream-2); color: var(--ink-2); display: flex; align-items: center; justify-content: center; padding-top: 6px;
+  transition: background-color 160ms ease, color 160ms ease, transform 120ms ease;
+}
+.jersey::before { content: ''; position: absolute; left: 26px; right: 26px; top: 10px; height: 3px; border-radius: 2px; background: currentColor; opacity: 0.16; }
+.jersey span { font-size: 36px; line-height: 1; font-weight: 900; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+.jersey:active { transform: scale(0.96); }
+.jersey[aria-checked='true'] { background: var(--ink); color: var(--cream); }
+.jersey[aria-checked='true']::before { background: var(--stitch); opacity: 1; }
+
 /* ------------------------------------------------------------ HUD */
 
 .hud { position: absolute; inset: 0; pointer-events: none; }
@@ -152,6 +181,8 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 }
 .streak .grade.show { opacity: 0.85; transform: none; }
 .streak .grade.perfect { color: #ffd27a; opacity: 1; }
+.streak .grade.great { color: #ffd27a; opacity: 1; font-size: 14px; letter-spacing: 0.14em; }
+.streak .grade.miss, .streak .grade.wild { color: #ffc2b4; }
 .corner { position: absolute; top: calc(var(--sa-t) + 12px); height: 44px; display: flex; align-items: center; }
 .corner.left { left: calc(12px + var(--sa-l)); }
 .corner.right { right: calc(12px + var(--sa-r)); }
@@ -185,6 +216,26 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 }
 .label.away { opacity: 0.55 !important; }
 .labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+/* Points at a throw coming in off the edge of your view (first person). */
+.catch-arrow {
+  position: absolute; left: 0; top: 0; width: 26px; height: 26px; margin: -13px 0 0 -13px; opacity: 0; will-change: transform, opacity;
+  color: #fff3df; filter: drop-shadow(0 1px 5px rgba(30, 18, 6, 0.5));
+}
+/* A chevron pointing along +x; the game rotates it toward the ball. */
+.catch-arrow::before {
+  content: ''; position: absolute; left: 2px; top: 5px; width: 16px; height: 16px;
+  border-top: 4px solid currentColor; border-right: 4px solid currentColor; border-radius: 2px; transform: rotate(45deg);
+}
+.catch-arrow[data-tier='1'] { color: #ffbf6b; }
+.catch-arrow[data-tier='2'] { color: #ff8f6b; }
+.catch-arrow[data-tier='3'] { color: #b9b2a6; }
+/* In your own eyes: the edges of the view fall away a little, so the ball has the middle. */
+#app::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity 700ms ease;
+  background: radial-gradient(ellipse at 50% 46%, rgba(20, 13, 6, 0) 52%, rgba(20, 13, 6, 0.34) 100%);
+}
+#app.eyes::after { opacity: 1; }
+#app.cut #gl { animation: cut 320ms ease both; }
 
 /* ------------------------------------------------------------ coach marks */
 
@@ -231,11 +282,13 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 @keyframes bump { 0% { transform: scale(1); } 35% { transform: scale(1.16); } 100% { transform: scale(1); } }
 @keyframes reset { 0% { opacity: 1; } 30% { opacity: 0.25; transform: translateY(3px); } 100% { opacity: 1; transform: none; } }
 @keyframes pulse { 50% { opacity: 0.3; } }
+@keyframes cut { 0% { opacity: 0.25; } 100% { opacity: 1; } }
 @keyframes toast { 0% { opacity: 0; transform: translate(-50%, -6px); } 10%, 82% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; } }
 @keyframes ghost-move { 0%, 100% { transform: translateX(0); opacity: 0.25; } 12% { opacity: 1; } 35% { transform: translateX(-46px); } 70% { transform: translateX(46px); } 88% { opacity: 1; } }
 @keyframes ghost-throw { 0% { transform: translateY(0); opacity: 0; } 12% { opacity: 1; transform: translateY(0); } 62% { transform: translateY(110px); opacity: 1; } 70% { transform: translateY(110px) scale(0.85); opacity: 0; } 100% { transform: translateY(110px); opacity: 0; } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition: none !important; }
+  #app.cut #gl { animation-duration: 320ms !important; }
 }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }

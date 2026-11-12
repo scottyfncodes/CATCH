@@ -53,6 +53,10 @@ try {
   check('streak synced on both phones', sa.score.streak === 1 && sb.score.streak === 1, `A=${sa.score.streak} B=${sb.score.streak}`);
   const pop = (await R.state()).audio.find((x) => x.k === 'pop');
   check('catch is graded and the POP plays that grade', typeof pop?.g === 'number', `q=${pop?.q} g=${pop?.g}`);
+  check('the catcher was in first person and the thrower in third', (await R.state()).lastCatch?.by === rId && sb.windups?.length === 2, `windups=${JSON.stringify(sa.windups?.map((w) => w.windup))}`);
+  // Roles reverse: the new thrower steps back out, the old one moves into their own eyes.
+  const views = await waitFor(async () => { const [h, r] = [await H.state(), await R.state()]; return h.first === true && r.first === false ? [h, r] : null; }, 6000);
+  check('views follow each player\'s own role', !!views);
   check('no page errors', A.errors.length + B.errors.length === 0, [...A.errors, ...B.errors].join(' | '));
   if (process.env.SHOT_DIR) { await R.page.evaluate(() => { window.__catch.game.renderEnabled = true; }); await sleep(800); await R.page.screenshot({ path: `${process.env.SHOT_DIR}/live-caught.png` }); }
 } catch (e) { console.error(e); failed++; }

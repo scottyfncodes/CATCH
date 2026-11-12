@@ -2,11 +2,13 @@ import './style.css';
 import * as THREE from 'three';
 import { CHEST_HEIGHT } from '../shared/constants';
 import { positionAt, simulateFlight, solveThrowTo, type Trajectory } from '../shared/physics';
-import { type Hand, clampReach, gloveReady, interceptPlan, lookAngles, releasePoint, seatLayout } from '../shared/pose';
-import { Arm, type BallEvent, type PlayerInfo, type ScoreState, isRoomCode, randomRoomCode, sanitizeName } from '../shared/protocol';
+import { type Hand, clampReach, gloveReady, interceptPlan, lookAngles, seatLayout } from '../shared/pose';
+import { Arm, type BallEvent, type PlayerInfo, type ScoreState, isGreatCatch, isRoomCode, randomRoomCode, sanitizeName } from '../shared/protocol';
 import type { Vec3 } from '../shared/vec';
+import { DEFAULT_WINDUP, HOUSE_WINDUP, RELEASE_TIME, WINDUPS, getWindup, releasePointFor } from '../shared/windups';
 import { audio } from './audio';
 import { Game } from './game';
+import { haptic } from './haptics';
 import type { NetStatus } from './net';
 import { serverHttpUrl } from './net';
 import { Avatar, LOOKS } from './scene/avatar';
@@ -56,10 +58,16 @@ class Backdrop {
   private raf = 0;
   private last = 0;
   private running = false;
+  private t = 0;
+  /** The windup selector's model: one player, throwing your delivery on a loop. */
+  private model: Avatar | null = null;
+  private show: { id: number; t: number } | null = null;
+  private cam = new THREE.PerspectiveCamera(40, 1, 0.1, 600);
 
   constructor() {
     this.seats.forEach((s, i) => {
-      const a = new Avatar(s.pos, s.yaw, i === 0 ? 'R' : 'L', i === 0 ? 0 : 2);
+      // Two friends, two deliveries.
+      const a = new Avatar(s.pos, s.yaw, i === 0 ? 'R' : 'L', i === 0 ? 0 : 2, i === 0 ? DEFAULT_WINDUP : HOUSE_WINDUP);
       this.world.scene.add(a.root);
       this.avatars.push(a);
     });
@@ -75,18 +83,86 @@ class Backdrop {
       this.raf = requestAnimationFrame(loop);
       const dt = Math.min(0.05, (now - this.last) / 1000);
       this.last = now;
-      this.frame(now / 1000, dt);
+      this.t += dt;
+      if (this.show) this.frameShowcase(dt); else this.frame(this.t, dt);
     };
     this.raf = requestAnimationFrame(loop);
   }
 
   stop() { this.running = false; cancelAnimationFrame(this.raf); }
 
+  /** Show one player throwing windup `id` (or go back to the two friends with null). */
+  showcase(id: number | null, hand: Hand = 'R', look = 0) {
+    if (id === null) {
+      this.show = null;
+      if (this.model) this.model.root.visible = false;
+      for (const a of this.avatars) a.root.visible = true;
+      this.rig.reset();
+      return;
+    }
+    const seat = this.seats[0];
+    if (!this.model || this.model.hand !== hand) {
+      this.model?.dispose();
+      this.model = new Avatar(seat.pos, seat.yaw, hand, look, id);
+      this.world.scene.add(this.model.root);
+    }
+    this.model.setWindup(id);
+    this.model.root.visible = true;
+    this.model.teleport(seat.pos, lookAngles(seat.pos, this.seats[1].pos).yaw);
+    for (const a of this.avatars) a.root.visible = false;
+    this.show = { id, t: 0 };
+  }
+
+  /** The selector's loop: set, wind up, hold the top for a beat, deliver, watch it go, again. */
+  private frameShowcase(dt: number) {
+    const s = this.show!, av = this.model!;
+    const w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h, false);
+    const seat = this.seats[0], other = this.seats[1];
+    const yaw = lookAngles(seat.pos, other.pos).yaw;
+    const wu = getWindup(s.id);
+    const SET = 0.55, top = SET + wu.params.tempo, go = top + 0.3, rel = go + RELEASE_TIME, end = go + 1.9;
+    s.t += dt;
+    if (s.t > end) { s.t = 0; this.traj = null; }
+    let arm: number = Arm.Holding, charge = 0;
+    if (s.t >= go && s.t < go + RELEASE_TIME + 0.45) arm = Arm.Release;
+    else if (s.t >= SET && s.t < go) { arm = Arm.Windup; charge = Math.min(1, (s.t - SET) / wu.params.tempo); }
+    else if (s.t >= go) arm = Arm.Idle;
+    av.update(dt, { pose: { x: seat.pos[0], z: seat.pos[2], yaw, g: gloveReady(yaw, av.hand) }, arm, charge, look: [other.pos[0], 1.5, other.pos[2]] });
+    if (s.t >= rel) {
+      if (!this.traj) {
+        const p = releasePointFor(s.id, seat.pos, yaw, av.hand);
+        this.traj = simulateFlight(p, solveThrowTo(p, [other.pos[0], CHEST_HEIGHT, other.pos[2]], 0.95));
+      }
+      const bp = positionAt(this.traj, s.t - rel);
+      this.ball.position.set(bp[0], bp[1], bp[2]);
+      this.ball.visible = s.t - rel < 0.95;
+    } else {
+      this.ball.position.copy(av.handBall);
+      this.ball.visible = true;
+    }
+    // A three-quarter view from the front, on the open side, with the player in
+    // the upper part of the screen (the sheet has the bottom).
+    const f = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)), r = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+    const side = av.hand === 'R' ? 1 : -1;
+    const portrait = w < h;
+    const dist = portrait ? 7.0 : 5.4;
+    const at = new THREE.Vector3(seat.pos[0], 0, seat.pos[2]).addScaledVector(f, 0.6);
+    this.cam.position.copy(at).addScaledVector(f, dist * 0.8).addScaledVector(r, side * dist * 0.6).setY(1.35);
+    this.cam.lookAt(at.x, portrait ? 0.15 : 1.0, at.z);
+    this.cam.fov = portrait ? 46 : 34;
+    this.cam.aspect = w / h;
+    this.cam.updateProjectionMatrix();
+    this.ball.scale.setScalar(1);
+    this.world.update(dt, this.t);
+    renderer.render(this.world.scene, this.cam);
+  }
+
   private frame(t: number, dt: number) {
     const w = window.innerWidth, h = window.innerHeight;
     renderer.setSize(w, h, false);
-    // A lazy rhythm: hold, wind up, toss, catch, take it out of the glove, swap.
-    const PERIOD = 3.4, WIND = 1.0, REL = 1.55;
+    // A lazy rhythm: hold, wind up, deliver, catch, take it out of the glove, swap.
+    const PERIOD = 4.3, WIND = 0.7, GO = 2.2, REL = GO + RELEASE_TIME;
     const c = Math.floor(t / PERIOD);
     const ft = t - c * PERIOD;
     if (c !== this.cycle) {
@@ -100,7 +176,7 @@ class Backdrop {
     const ts = this.seats[this.from], cs = this.seats[1 - this.from];
     if (!this.traj) {
       const yaw = lookAngles(ts.pos, cs.pos).yaw;
-      const p = releasePoint(ts.pos, yaw, th.hand);
+      const p = releasePointFor(th.windupId, ts.pos, yaw, th.hand);
       const wob = Math.sin(c * 2.3);
       const target: Vec3 = [cs.pos[0] + wob * 0.35, CHEST_HEIGHT - 0.1 + Math.cos(c * 1.7) * 0.2, cs.pos[2]];
       this.traj = simulateFlight(p, solveThrowTo(p, target, 1.15));
@@ -118,10 +194,10 @@ class Backdrop {
       let g = gloveReady(yaw, av.hand);
       let arm: number = Arm.Idle, charge = 0;
       if (av === th) {
-        if (fl < 0) {
+        if (ft < GO) {
           arm = ft > WIND ? Arm.Windup : Arm.Holding;
-          charge = ft > WIND ? Math.min(1, (ft - WIND) / (REL - WIND)) * 0.7 : 0;
-        } else if (fl < 0.42) arm = Arm.Release;
+          charge = ft > WIND ? Math.min(1, (ft - WIND) / getWindup(av.windupId).params.tempo) : 0;
+        } else if (ft < REL + 0.45) arm = Arm.Release;
       } else {
         if (fl > plan.t - 0.7) g = clampReach([plan.point[0] - seat.pos[0], plan.point[1], plan.point[2] - seat.pos[2]]);
         if (this.caught) arm = Arm.Holding;
@@ -129,6 +205,7 @@ class Backdrop {
       const look: Vec3 = flying ? ballPos : [other.pos[0], 1.5, other.pos[2]];
       av.update(dt, { pose: { x: seat.pos[0], z: seat.pos[2], yaw, g }, arm, charge, look, gloved: this.caught && !this.transferred });
     });
+    this.ball.visible = true;
     if (flying) this.ball.position.set(ballPos[0], ballPos[1], ballPos[2]);
     else if (fl < 0) this.ball.position.copy(th.handBall);
     else this.ball.position.copy(this.transferred ? ca.handBall : ca.gloveWorldPos);
@@ -159,7 +236,10 @@ function home(notice?: string) {
       <div class="stack">
         <button class="btn btn-primary" data-act="play">PLAY CATCH</button>
         <button class="btn btn-glass" data-act="join">JOIN FRIEND</button>
-        <button class="btn btn-text" data-act="settings">SETTINGS</button>
+        <div class="pair">
+          <button class="btn btn-text" data-act="windup" aria-label="Choose your windup. Current: number ${getWindup(prefs().windup).id}">WINDUP <b class="num">${getWindup(prefs().windup).label}</b></button>
+          <button class="btn btn-text" data-act="settings">SETTINGS</button>
+        </div>
       </div>
       <div class="credit">by HaveAnApp</div>
       ${notice ? `<div class="chip notice" role="alert">${esc(notice)}</div>` : ''}
@@ -170,6 +250,7 @@ function home(notice?: string) {
   });
   ui.querySelector('[data-act=join]')!.addEventListener('click', () => { audio.unlock(); joinSheet(); });
   ui.querySelector('[data-act=settings]')!.addEventListener('click', () => settingsSheet(() => home()));
+  ui.querySelector('[data-act=windup]')!.addEventListener('click', () => { audio.unlock(); windupSheet(() => home()); });
 }
 
 function sheet(html: string, onClose?: () => void): HTMLElement {
@@ -299,6 +380,56 @@ function bindSettings(el: HTMLElement) {
   });
 }
 
+/**
+ * The windup selector: your player throws the delivery on the field behind
+ * the sheet, on a loop; tap a number and that's how you throw. Saved at once.
+ */
+function windupSheet(onClose?: () => void) {
+  const inGame = !!game;
+  const mine = roster.find((p) => p.id === me);
+  const preview = (id: number) => backdrop.showcase(id, prefs().hand, mine?.look ?? 0);
+  ui.querySelector('.home')?.setAttribute('hidden', '');
+  app.classList.add('choosing');
+  if (game) game.renderEnabled = false;
+  preview(prefs().windup);
+  backdrop.start();
+  const tiles = WINDUPS.map((w) => `
+    <button type="button" class="jersey" role="radio" data-id="${w.id}" aria-checked="${w.id === prefs().windup}" aria-label="Number ${w.id}: ${esc(w.blurb)}">
+      <span>${String(w.id).padStart(2, '0')}</span>
+    </button>`).join('');
+  const el = sheet(`
+    <div class="wu-head"><h2>Windup</h2><b class="wu-num" id="wunum"></b></div>
+    <p class="sub" id="wublurb"></p>
+    <div class="jerseys" role="radiogroup" aria-label="Windup">${tiles}</div>
+    <div class="actions"><button class="btn btn-ink" id="done">Done</button></div>`, () => {
+    app.classList.remove('choosing');
+    backdrop.showcase(null);
+    if (inGame && game) { backdrop.stop(); game.renderEnabled = true; }
+    onClose?.();
+  });
+  el.classList.add('clear');
+  const sync = (smoothly: boolean) => {
+    const w = getWindup(prefs().windup);
+    el.querySelector('#wunum')!.textContent = w.label;
+    el.querySelector('#wublurb')!.textContent = w.blurb;
+    el.querySelectorAll<HTMLButtonElement>('.jersey').forEach((b) => {
+      const on = Number(b.dataset.id) === w.id;
+      b.setAttribute('aria-checked', String(on));
+      if (on) b.scrollIntoView({ block: 'nearest', inline: 'center', behavior: smoothly ? 'smooth' : 'auto' });
+    });
+  };
+  el.querySelectorAll<HTMLButtonElement>('.jersey').forEach((b) => b.addEventListener('click', () => {
+    const id = Number(b.dataset.id);
+    save({ windup: id });
+    game?.setWindup(id);
+    preview(id);
+    haptic('light');
+    sync(true);
+  }));
+  el.querySelector('#done')!.addEventListener('click', () => closeSheet(el));
+  sync(false);
+}
+
 function settingsSheet(onClose?: () => void) {
   const el = sheet(`<h2>Settings</h2><p class="sub">Saved on this device.</p>${settingsBody()}
     <div class="actions"><button class="btn btn-ink" id="done">Done</button></div>`, onClose);
@@ -366,6 +497,13 @@ function enterRoom(code: string) {
     score: onScore,
     moment: (k) => tutorial?.moment(k),
     toast,
+    view: (first) => {
+      app.classList.toggle('eyes', first);
+      // Reduced motion: the view changes at once, under a quick dip instead of a move.
+      if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+        app.classList.remove('cut'); void app.offsetWidth; app.classList.add('cut');
+      }
+    },
   });
   (window as unknown as { __catch: unknown }).__catch = { game, tutorial: () => tutorial };
   game.start();
@@ -428,7 +566,9 @@ function onScore(s: ScoreState, ev?: BallEvent) {
     void el.offsetWidth;
     el.classList.add(s.streak > lastStreak ? 'bump' : 'reset');
   }
-  if (ev?.k === 'catch') showGrade(ev.q);
+  if (ev?.k === 'catch') showGrade(ev.q, ev.st);
+  if (ev?.k === 'drop' && !ev.void) showGrade(ev.by && ev.by === game?.ball.thrower ? 'wild' : 'miss');
+  if (ev?.k === 'deflect') showGrade('miss');
   if (ev?.k === 'catch' && ev.milestone) {
     el.classList.add('milestone');
     label.textContent = `${ev.milestone} in a row`;
@@ -441,16 +581,22 @@ function onScore(s: ScoreState, ev?: BallEvent) {
   updateCompany();
 }
 
-const GRADE_WORDS: Record<string, string> = { perfect: 'Perfect pop', pocket: 'Pocket', web: 'Off the web', bobble: 'Bobbled' };
+const GRADE_WORDS: Record<string, string> = { perfect: 'Perfect pop', pocket: 'Pocket', web: 'Off the web', bobble: 'Bobbled', miss: 'Dropped', wild: 'Wild throw' };
+const STYLE_WORDS: Record<string, string> = { dive: 'Diving catch', leap: 'Leaping grab', run: 'On the run', high: 'High snag', scoop: 'Scooped', backhand: 'Backhand', reach: 'Reaching grab' };
 let gradeTimer = 0;
-/** One quiet word under the streak: how clean that catch was. */
-function showGrade(q: string) {
+/**
+ * A quiet line under the streak: how the catch was made (when the throw asked
+ * for something) and how clean it was. Everyone sees the same line.
+ */
+function showGrade(q: string, st?: string | null) {
   const el = ui.querySelector<HTMLElement>('#grade');
   if (!el) return;
-  el.textContent = GRADE_WORDS[q] ?? '';
-  el.className = 'grade show ' + q;
+  const how = st ? STYLE_WORDS[st] : '';
+  const great = isGreatCatch((st ?? null) as Parameters<typeof isGreatCatch>[0]);
+  el.textContent = how ? `${how} · ${GRADE_WORDS[q] ?? ''}` : GRADE_WORDS[q] ?? '';
+  el.className = `grade show ${q}${great ? ' great' : ''}`;
   clearTimeout(gradeTimer);
-  gradeTimer = window.setTimeout(() => { el.className = 'grade'; }, 1700);
+  gradeTimer = window.setTimeout(() => { el.className = 'grade'; }, great ? 2400 : 1700);
 }
 
 function pauseSheet(code: string) {
@@ -458,7 +604,7 @@ function pauseSheet(code: string) {
   const people = [...roster].sort((a, b) => a.seat - b.seat).map((p) => `
     <li><span class="dot" style="background:${LOOKS[p.look % LOOKS.length].shirt}"></span>
       <span class="nm">${esc(p.name)}${p.id === me ? ' <em>you</em>' : ''}${p.bot ? ' <em>practice</em>' : ''}${p.connected ? '' : ' <em>reconnecting</em>'}</span>
-      <span class="num">${p.catches} caught${p.perfects ? ` · ${p.perfects} perfect` : ''}</span><span class="num">${p.drops} dropped</span></li>`).join('');
+      <span class="num">${p.catches} caught${p.perfects ? ` · ${p.perfects} perfect` : ''}${p.saves ? ` · ${p.saves} great` : ''}</span><span class="num">${p.drops} dropped</span></li>`).join('');
   const el = sheet(`
     <h2>Paused</h2>
     <p class="sub">The game keeps going for everyone else.</p>
@@ -475,6 +621,9 @@ function pauseSheet(code: string) {
       </div>
       <ul class="people">${people}</ul>
     </section>
+    <section>
+      <div class="row"><label id="wul">Windup</label><button class="btn btn-quiet btn-sm" id="wu" aria-labelledby="wul wu"><b class="num">${getWindup(prefs().windup).label}</b>&nbsp;Change</button></div>
+    </section>
     ${settingsBody()}
     <div class="actions">
       <button class="btn btn-ink" id="resume">Resume</button>
@@ -482,6 +631,7 @@ function pauseSheet(code: string) {
     </div>`);
   bindSettings(el);
   el.querySelector('#share')!.addEventListener('click', () => invite(code));
+  el.querySelector('#wu')!.addEventListener('click', () => { el.remove(); windupSheet(); });
   el.querySelector('#resume')!.addEventListener('click', () => closeSheet(el));
   el.querySelector('#leave')!.addEventListener('click', () => { el.remove(); home(); });
 }

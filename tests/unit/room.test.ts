@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { CATCH_GRACE_MS, EYE_HEIGHT, MAX_PLAYERS, RECOVER_DELAY_MS } from '../../src/shared/constants';
+import { CATCH_GRACE_MS, EYE_HEIGHT, LEAP_HEIGHT, MAX_PLAYERS, RECOVER_DELAY_MS } from '../../src/shared/constants';
 import { positionAt, simulateFlight, solveElevation, solveThrowTo, velocityAt } from '../../src/shared/physics';
-import { type Pose, bodyToWorld, clampReach, eyePosition, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, releasePoint, seatLayout } from '../../src/shared/pose';
-import { type ServerMsg, catchGrade, classifyCatch, groupKeyFor } from '../../src/shared/protocol';
+import { type Pose, bodyToWorld, clampReach, eyePosition, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, seatLayout } from '../../src/shared/pose';
+import { Arm, type ServerMsg, catchGrade, catchStyle, classifyCatch, groupKeyFor, isGreatCatch } from '../../src/shared/protocol';
 import { type Vec3, dist, len } from '../../src/shared/vec';
+import { DEFAULT_WINDUP, HOUSE_WINDUP, RELEASE_TIME, WINDUP_IDS, getWindup, releasePointFor } from '../../src/shared/windups';
 import { type Conn, MemoryRecords, Room } from '../../src/server/room';
+
+/** Where a right-hander with the house delivery lets go of the ball. */
+const releasePoint = (feet: Vec3, yaw: number, hand: 'R' | 'L') => releasePointFor(HOUSE_WINDUP, feet, yaw, hand);
 
 class FakeConn implements Conn {
   msgs: ServerMsg[] = [];
@@ -23,7 +27,7 @@ function setup(n: number, practiceBot = false) {
   const ids: string[] = [];
   for (let i = 0; i < n; i++) {
     const c = new FakeConn();
-    const m = room.join(c, { t: 'hello', room: 'ABCD', guest: `g${i}`, name: `P${i}`, hand: 'R', v: 1 });
+    const m = room.join(c, { t: 'hello', room: 'ABCD', guest: `g${i}`, name: `P${i}`, hand: 'R', v: 1, w: HOUSE_WINDUP });
     conns.push(c);
     ids.push(m!.id);
   }
@@ -35,7 +39,7 @@ const wire = (p: Pose): Wire => [p.x, p.z, p.yaw, p.g[0], p.g[1], p.g[2]];
 
 /** Stream a pose for a member (as the client does at 20 Hz). */
 function stream(room: Room, id: string, p: Pose) {
-  room.handle(id, { t: 'st', p: [p.x, p.z, p.yaw, p.g[0], p.g[1], p.g[2], 0, 0] });
+  room.handle(id, { t: 'st', p: [p.x, p.z, p.yaw, p.g[0], p.g[1], p.g[2], 0, 0, 0, 0] });
 }
 
 /**
@@ -322,7 +326,7 @@ describe('room', () => {
     room.disconnect(ids[1], conns[1]);
     expect(conns[0].last('roster')!.players.find((p) => p.id === ids[1])!.connected).toBe(false);
     const again = new FakeConn();
-    const m = room.join(again, { t: 'hello', room: 'ABCD', guest: 'g1', name: 'P1', hand: 'R', v: 1 });
+    const m = room.join(again, { t: 'hello', room: 'ABCD', guest: 'g1', name: 'P1', hand: 'R', v: 1, w: HOUSE_WINDUP });
     expect(m!.id).toBe(ids[1]);
     const w = again.last('welcome')!;
     expect(w.ball.holder).toBe(ids[1]);
@@ -474,5 +478,206 @@ describe('room', () => {
     let best = Infinity;
     for (let t = 0; t < room.traj!.groundT; t += 0.005) best = Math.min(best, dist(positionAt(room.traj!, t), g));
     expect(best).toBeLessThan(0.15);
+  });
+
+  // ---------------------------------------------------------------- windups
+
+  it('players carry their windup; everyone is told, and a change is broadcast', () => {
+    const { room, conns, ids } = setup(1);
+    const c = new FakeConn();
+    const b = room.join(c, { t: 'hello', room: 'ABCD', guest: 'b', name: 'B', hand: 'L', v: 1, w: 51 })!;
+    const seen = conns[0].last('roster')!.players;
+    expect(seen.find((p) => p.id === b.id)!.windup).toBe(51);
+    expect(seen.find((p) => p.id === ids[0])!.windup).toBe(HOUSE_WINDUP);
+    room.handle(ids[0], { t: 'prof', name: 'P0', hand: 'R', w: 16 });
+    expect(c.last('roster')!.players.find((p) => p.id === ids[0])!.windup).toBe(16);
+    // A name change alone keeps the windup; nonsense is ignored.
+    room.handle(ids[0], { t: 'prof', name: 'P0', hand: 'R' });
+    room.handle(ids[0], { t: 'prof', name: 'P0', hand: 'R', w: 12345 });
+    expect(room.members.get(ids[0])!.windup).toBe(16);
+  });
+
+  it('an unknown or missing windup becomes the default', () => {
+    const { room } = setup(0);
+    const a = room.join(new FakeConn(), { t: 'hello', room: 'ABCD', guest: 'a', name: 'A', hand: 'R', v: 1, w: 7 })!;
+    const b = room.join(new FakeConn(), { t: 'hello', room: 'ABCD', guest: 'b', name: 'B', hand: 'R', v: 1 })!;
+    expect(a.windup).toBe(DEFAULT_WINDUP);
+    expect(b.windup).toBe(DEFAULT_WINDUP);
+  });
+
+  it('a throw is accepted from the release point of every windup', () => {
+    for (const id of WINDUP_IDS) {
+      const { room, ids, clock } = setup(2);
+      const from = room.members.get(ids[0])!, to = room.members.get(ids[1])!;
+      const yaw = lookAngles(from.pos, to.pos).yaw;
+      const p = releasePointFor(id, from.pos, yaw, 'R');
+      const target: Vec3 = [to.pos[0], 1.2, to.pos[2]];
+      room.handle(ids[0], { t: 'throw', rt: clock.now(), p, v: solveThrowTo(p, target, 0.9), tid: 1 });
+      expect(room.ball.phase, `#${id}`).toBe('flight');
+    }
+  });
+
+  it('Coach has a windup from the library, winds all the way up, and the ball leaves a beat after the arm starts', () => {
+    const { room, ids, clock } = setup(1, true);
+    const coach = room.members.get('coach')!;
+    expect(WINDUP_IDS).toContain(coach.windup);
+    expect(coach.windup).not.toBe(HOUSE_WINDUP);
+    throwAt(room, ids[0], 'coach', clock.now());
+    for (let i = 0; i < 80 && room.ball.phase === 'flight'; i++) { clock.advance(33); room.tick(); }
+    expect(room.ball.holder).toBe('coach');
+    let top = 0, armAt = 0, thrownAt = 0;
+    for (let i = 0; i < 2000 && !thrownAt; i++) {
+      clock.advance(5); room.tick();
+      if (coach.arm === Arm.Windup) top = Math.max(top, coach.charge);
+      if (coach.arm === Arm.Release && !armAt) armAt = clock.now();
+      if (room.ball.phase === 'flight') thrownAt = clock.now();
+    }
+    expect(top).toBe(1);
+    expect(armAt).toBeGreaterThan(0);
+    expect(thrownAt - armAt).toBeGreaterThanOrEqual(RELEASE_TIME * 1000);
+    expect(thrownAt - armAt).toBeLessThan(RELEASE_TIME * 1000 + 40);
+    // ...from where that windup's arm slot puts the hand.
+    const want = releasePointFor(coach.windup, [coach.pose.x, 0, coach.pose.z], lookAngles([coach.pose.x, 0, coach.pose.z], room.ball.p0).yaw, coach.hand);
+    expect(Math.abs(room.ball.p0[1] - want[1])).toBeLessThan(0.02);
+    expect(getWindup(coach.windup).release[1]).toBeCloseTo(room.ball.p0[1], 6);
+  });
+
+  // ---------------------------------------------------------------- great catches
+
+  it('names a catch from what the receiver had to do', () => {
+    expect(catchStyle([-0.2, 1.2, 0.5], 'R', 0, 0, 0)).toBe(null);
+    expect(catchStyle([-0.2, 2.1, 0.4], 'R', 0, 0, 0)).toBe('high');
+    expect(catchStyle([-0.2, 0.4, 0.6], 'R', 0, 0, 0)).toBe('scoop');
+    expect(catchStyle([0.5, 1.2, 0.5], 'R', 0, 0, 0)).toBe('backhand');
+    expect(catchStyle([-0.5, 1.2, 0.5], 'L', 0, 0, 0)).toBe('backhand');
+    expect(catchStyle([-0.75, 1.2, 0.5], 'R', 0, 0, 0)).toBe('reach');
+    expect(catchStyle([-0.2, 1.2, 0.5], 'R', 0, 0, 3.5)).toBe('run');
+    expect(catchStyle([-0.2, 2.3, 0.4], 'R', 0.35, 0, 0)).toBe('leap');
+    expect(catchStyle([-0.7, 0.8, 0.5], 'R', 0, -0.9, 4)).toBe('dive');
+    expect(isGreatCatch('dive') && isGreatCatch('leap') && isGreatCatch('run')).toBe(true);
+    expect(isGreatCatch('high') || isGreatCatch('scoop') || isGreatCatch(null)).toBe(false);
+  });
+
+  it('a throw over your head can only be caught by getting off the ground', () => {
+    const run = (lift: number) => {
+      const { room, ids, conns, clock } = setup(2);
+      const to = room.members.get(ids[1])!;
+      const from = room.members.get(ids[0])!;
+      const yawTo = lookAngles(to.pos, from.pos).yaw;
+      // 2.7 m up: over the top of a standing reach, inside a leap's.
+      const g = bodyToWorld(yawTo, [0, 2.7, 0.3]);
+      const pose: Pose = { x: to.pos[0], z: to.pos[2], yaw: yawTo, g };
+      expect(reachNorm(g)).toBeGreaterThan(1.06);
+      expect(reachNorm(g, LEAP_HEIGHT)).toBeLessThan(1);
+      const target = gloveWorld(pose);
+      const p = releasePoint(from.pos, lookAngles(from.pos, target).yaw, 'R');
+      const t0 = clock.now();
+      const T = 0.9;
+      room.handle(ids[0], { t: 'throw', rt: t0, p, v: solveThrowTo(p, target, T), tid: 1 });
+      clock.advance(T * 1000);
+      room.handle(ids[1], { t: 'catch', tid: 1, at: t0 + T * 1000, pose: [...wire(pose), lift, 0] });
+      const ev = conns[0].events().find((e) => e.k === 'catch');
+      return { held: room.ball.holder === ids[1], ev: ev && ev.k === 'catch' ? ev : null, saves: room.members.get(ids[1])!.saves };
+    };
+    expect(run(0).held).toBe(false);
+    const up = run(LEAP_HEIGHT - 0.05);
+    expect(up.held).toBe(true);
+    expect(up.ev!.st).toBe('leap');
+    expect(up.saves).toBe(1);
+    // You can't claim more air than a leap has.
+    expect(run(5).held).toBe(true);
+    const far = (() => {
+      const { room, ids, clock } = setup(2);
+      const to = room.members.get(ids[1])!, from = room.members.get(ids[0])!;
+      const yawTo = lookAngles(to.pos, from.pos).yaw;
+      const pose: Pose = { x: to.pos[0], z: to.pos[2], yaw: yawTo, g: bodyToWorld(yawTo, [0, 3.15, 0.3]) };
+      const target = gloveWorld(pose);
+      const p = releasePoint(from.pos, lookAngles(from.pos, target).yaw, 'R');
+      const t0 = clock.now();
+      room.handle(ids[0], { t: 'throw', rt: t0, p, v: solveThrowTo(p, target, 0.9), tid: 1 });
+      clock.advance(900);
+      room.handle(ids[1], { t: 'catch', tid: 1, at: t0 + 900, pose: [...wire(pose), 5, 0] });
+      return room.ball.holder === ids[1];
+    })();
+    expect(far).toBe(false);
+  });
+
+  it('a diving catch is a catch like any other, and it is counted as a great one for everyone to see', () => {
+    const { room, ids, conns, clock } = setup(2);
+    const t0 = clock.now();
+    const to = room.members.get(ids[1])!;
+    const side: Vec3 = [1.6 * Math.cos(to.facing), 0, -1.6 * Math.sin(to.facing)];
+    // The receiver ends up 1.6 m to the side, laid out.
+    const at: Vec3 = [to.pos[0] + side[0], 0, to.pos[2] + side[2]];
+    const { pose, T } = throwAt(room, ids[0], ids[1], t0, 14, [0, 0, 0], at);
+    for (let k = 1; k <= 8; k++) {
+      clock.advance((T * 1000) / 8);
+      stream(room, ids[1], { ...pose, x: to.pos[0] + (side[0] * k) / 8, z: to.pos[2] + (side[2] * k) / 8 });
+    }
+    room.handle(ids[1], { t: 'catch', tid: 1, at: t0 + T * 1000, pose: [...wire(pose), 0, 0.9] });
+    const ev = conns[0].events().find((e) => e.k === 'catch');
+    expect(ev && ev.k === 'catch' && ev.st).toBe('dive');
+    expect(room.streak).toBe(1);
+    expect(room.members.get(ids[1])!.saves).toBe(1);
+    expect(conns[0].last('ball')!.players!.find((p) => p.id === ids[1])!.saves).toBe(1);
+  });
+
+  it('a routine catch is not a great one, and a catch made on the run is', () => {
+    const { room, ids, conns, clock } = setup(2);
+    const t0 = clock.now();
+    const { pose, T } = throwAt(room, ids[0], ids[1], t0);
+    clock.advance(T * 1000);
+    room.handle(ids[1], { t: 'catch', tid: 1, at: t0 + T * 1000, pose: wire(pose) });
+    const ev = conns[0].events().find((e) => e.k === 'catch');
+    expect(ev && ev.k === 'catch' && ev.st).toBeUndefined();
+    expect(room.members.get(ids[1])!.saves).toBe(0);
+    // Now the other way, with the receiver running under it (the server sees the feet move).
+    const t1 = clock.now();
+    const back = room.members.get(ids[0])!;
+    const side: Vec3 = [3.6 * Math.cos(back.facing), 0, -3.6 * Math.sin(back.facing)];
+    const at: Vec3 = [back.pos[0] + side[0], 0, back.pos[2] + side[2]];
+    const r = throwAt(room, ids[1], ids[0], t1, 12, [0, 0, 0], at);
+    for (let k = 1; k <= 20; k++) {
+      clock.advance((r.T * 1000) / 20);
+      stream(room, ids[0], { ...r.pose, x: back.pos[0] + (side[0] * k) / 20, z: back.pos[2] + (side[2] * k) / 20 });
+    }
+    room.handle(ids[0], { t: 'catch', tid: 2, at: t1 + r.T * 1000, pose: wire(r.pose) });
+    const ev2 = conns[1].events().filter((e) => e.k === 'catch')[1];
+    expect(ev2 && ev2.k === 'catch' && ev2.st).toBe('run');
+    expect(room.members.get(ids[0])!.saves).toBe(1);
+  });
+
+  it('streams a leap and a dive to everyone, clamped to what a body can do', () => {
+    const { room, ids, conns } = setup(2);
+    const m = room.members.get(ids[0])!;
+    room.handle(ids[0], { t: 'st', p: [m.pos[0], m.pos[2], m.facing, 0, 9, 0, 0, 0, 9, -9] });
+    room.snapshot();
+    const e = conns[1].last('snap')!.e.find((x) => x[0] === ids[0])!;
+    expect(e[9]).toBeLessThanOrEqual(LEAP_HEIGHT + 0.05);
+    expect(e[10]).toBe(-1);
+    // The glove is pulled back inside the (lifted) reach.
+    expect(reachNorm([e[4], e[5], e[6]], e[9])).toBeLessThanOrEqual(1.03);
+  });
+
+  it('"here it comes": the holder starting a delivery is relayed at once, so everyone animates in step', () => {
+    const { room, ids, conns, clock } = setup(2);
+    room.handle(ids[1], { t: 'go' });
+    expect(conns[0].last('go')).toBeUndefined();
+    clock.advance(40);
+    room.handle(ids[0], { t: 'go' });
+    expect(conns[1].last('go')).toEqual({ t: 'go', by: ids[0], at: clock.now() });
+    // The thrower already knows.
+    expect(conns[0].last('go')).toBeUndefined();
+  });
+
+  it('Coach announces its delivery too, exactly a release-time before the ball leaves', () => {
+    const { room, ids, conns, clock } = setup(1, true);
+    throwAt(room, ids[0], 'coach', clock.now());
+    for (let i = 0; i < 80 && room.ball.phase === 'flight'; i++) { clock.advance(33); room.tick(); }
+    for (let i = 0; i < 2000 && room.ball.phase === 'held'; i++) { clock.advance(5); room.tick(); }
+    const go = conns[0].last('go')!;
+    expect(go.by).toBe('coach');
+    expect(room.ball.t0 - go.at).toBeGreaterThanOrEqual(RELEASE_TIME * 1000);
+    expect(room.ball.t0 - go.at).toBeLessThan(RELEASE_TIME * 1000 + 40);
   });
 });

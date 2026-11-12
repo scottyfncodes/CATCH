@@ -13,6 +13,34 @@ import type { Vec3 } from './vec.js';
 
 export type CatchQuality = 'perfect' | 'pocket' | 'web' | 'bobble';
 
+/**
+ * How a catch was made, beyond how cleanly: what the receiver had to do to get
+ * there. `null` is a routine catch. A bad throw is a chance at one of these.
+ */
+export type CatchStyle = 'dive' | 'leap' | 'run' | 'high' | 'scoop' | 'backhand' | 'reach' | null;
+
+/** The ones worth a cheer (and a tally). */
+export function isGreatCatch(s: CatchStyle | undefined): boolean {
+  return s === 'dive' || s === 'leap' || s === 'run';
+}
+
+/**
+ * Name a catch from where the glove was. `g` is the glove in body space
+ * (right, up, forward) with any leap taken out; `speed` is how fast the feet
+ * were moving. Client and server run the same code.
+ */
+export function catchStyle(g: Vec3, hand: Hand, lift: number, dive: number, speed: number): CatchStyle {
+  if (Math.abs(dive) > 0.3) return 'dive';
+  if (lift > 0.1) return 'leap';
+  if (speed > 2.4) return 'run';
+  if (g[1] > 1.95) return 'high';
+  if (g[1] < 0.52) return 'scoop';
+  const across = g[0] * (hand === 'R' ? 1 : -1);
+  if (across > 0.3) return 'backhand';
+  if (Math.hypot(g[0], g[2]) > 0.82) return 'reach';
+  return null;
+}
+
 /** Classify a glove/ball encounter. `null` = clean miss, 'deflect' = off the glove and out. */
 export function classifyCatch(distance: number, relSpeed: number): CatchQuality | 'deflect' | null {
   if (distance <= CATCH_PERFECT) return 'perfect';
@@ -50,6 +78,10 @@ export interface PlayerInfo {
   drops: number;
   /** Catches graded perfect. */
   perfects: number;
+  /** Dives, leaps and running grabs: bad throws rescued. */
+  saves: number;
+  /** Which windup they throw with (a number from the library). */
+  windup: number;
   /** Shirt/cap colour index. */
   look: number;
 }
@@ -82,7 +114,7 @@ export interface ScoreState {
 
 export type BallEvent =
   | { k: 'throw'; by: string; speed: number }
-  | { k: 'catch'; by: string; q: CatchQuality; g: number; speed: number; at: number; pos: Vec3; self: boolean; milestone?: number }
+  | { k: 'catch'; by: string; q: CatchQuality; g: number; speed: number; at: number; pos: Vec3; self: boolean; milestone?: number; st?: CatchStyle }
   | { k: 'deflect'; by: string; speed: number; at: number; pos: Vec3 }
   | { k: 'drop'; by: string | null; void: boolean; at: number }
   | { k: 'recover'; by: string; from: Vec3 };
@@ -90,14 +122,16 @@ export type BallEvent =
 // ---- client -> server ------------------------------------------------------
 
 export type ClientMsg =
-  | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number }
+  | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number; w?: number }
   | { t: 'ping'; c: number }
-  /** x, z, yaw, gx, gy, gz, arm, charge — rounded. */
+  /** x, z, yaw, gx, gy, gz, arm, windup phase, lift, dive — rounded. */
   | { t: 'st'; p: PoseWire }
+  /** "Here it comes": the holder has let go of the aim and the delivery has started (the throw follows RELEASE_TIME later). */
+  | { t: 'go' }
   | { t: 'throw'; rt: number; p: Vec3; v: Vec3; tid: number }
-  /** Pose (x, z, yaw, gx, gy, gz) at the moment of contact. */
-  | { t: 'catch'; tid: number; at: number; pose: [number, number, number, number, number, number] }
-  | { t: 'prof'; name: string; hand: Hand }
+  /** Pose (x, z, yaw, gx, gy, gz, lift, dive) at the moment of contact. */
+  | { t: 'catch'; tid: number; at: number; pose: number[] }
+  | { t: 'prof'; name: string; hand: Hand; w?: number }
   | { t: 'rec'; key: string; best: number }
   | { t: 'leave' };
 
@@ -109,18 +143,28 @@ export type ServerMsg =
   | { t: 'error'; msg: string }
   | { t: 'pong'; c: number; s: number }
   | { t: 'roster'; players: PlayerInfo[]; score: ScoreState }
+  /** A player has started their delivery (server time `at`): everyone starts the same animation, in step. */
+  | { t: 'go'; by: string; at: number }
   /** Pose snapshot: server time + entries. */
   | { t: 'snap'; s: number; e: SnapEntry[] }
   | { t: 'ball'; ball: BallState; score: ScoreState; ev?: BallEvent; players?: PlayerInfo[] };
 
-/** [x, z, yaw, gx, gy, gz, arm, charge] */
-export type PoseWire = [number, number, number, number, number, number, number, number];
+/**
+ * [x, z, yaw, gx, gy, gz, arm, charge, lift, dive]
+ * `charge` is how far through the windup the thrower is (0..1); `lift` is a
+ * leap's height off the grass (m); `dive` is -1..1 toward the body's left/right.
+ */
+export type PoseWire = [number, number, number, number, number, number, number, number, number, number];
 
-/** [id, x, z, yaw, gx, gy, gz, arm, charge] */
-export type SnapEntry = [string, number, number, number, number, number, number, number, number];
+/** [id, x, z, yaw, gx, gy, gz, arm, charge, lift, dive] */
+export type SnapEntry = [string, number, number, number, number, number, number, number, number, number, number];
 
-/** 2: third-person bodies that move (pose carries position + glove point). */
-export const PROTOCOL_VERSION = 2;
+/**
+ * 2: third-person bodies that move (pose carries position + glove point).
+ * 3: signature windups (players carry a windup; the ball leaves the hand a
+ *    beat after the arm starts forward) and leaps/dives in the pose.
+ */
+export const PROTOCOL_VERSION = 3;
 
 /** Room codes: 4 letters, no ambiguous characters. */
 export const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ';

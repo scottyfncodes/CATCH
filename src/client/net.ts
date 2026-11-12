@@ -35,7 +35,7 @@ export class Net {
   onMessage: (m: ServerMsg) => void = () => {};
   onStatus: (s: NetStatus) => void = () => {};
 
-  constructor(private room: string, private hello: () => { guest: string; name: string; hand: Hand }) {}
+  constructor(private room: string, private hello: () => { guest: string; name: string; hand: Hand; windup: number }) {}
 
   now(): number { return performance.now() + this.offset; }
 
@@ -48,7 +48,7 @@ export class Net {
     this.setStatus(this.retry ? 'reconnecting' : 'connecting');
     ws.onopen = () => {
       const h = this.hello();
-      this.sendRaw({ t: 'hello', room: this.room, guest: h.guest, name: h.name, hand: h.hand, v: PROTOCOL_VERSION });
+      this.sendRaw({ t: 'hello', room: this.room, guest: h.guest, name: h.name, hand: h.hand, v: PROTOCOL_VERSION, w: h.windup });
       this.bestRtt = Infinity;
       // Burst of pings to converge the clock quickly, then a slow cadence.
       for (let i = 0; i < 5; i++) setTimeout(() => this.ping(), i * 120);

@@ -7,19 +7,25 @@
 
 import { MOVE_RADIUS, RUN_ACCEL, RUN_SPEED, WALK_SPEED } from '../shared/constants.js';
 import { type Trajectory, closestApproach, positionAt, solveThrowTo, velocityAt } from '../shared/physics.js';
-import { bodyToWorld, clampReach, gloveReady, interceptPlan, lookAngles, releasePoint } from '../shared/pose.js';
+import { bodyToWorld, clampReach, gloveReady, interceptPlan, lookAngles } from '../shared/pose.js';
 import { Arm, type BallState, type CatchQuality, catchGrade, classifyCatch } from '../shared/protocol.js';
 import { type Vec3, dist, len, lerp, wrapAngle } from '../shared/vec.js';
+import { RELEASE_TIME, getWindup, releasePointFor } from '../shared/windups.js';
 import type { Member } from './room.js';
 
 export type BotAction =
   | { kind: 'throw'; p: Vec3; v: Vec3 }
   | { kind: 'catch'; tid: number; tSec: number; q: CatchQuality | 'deflect'; g: number };
 
-const WINDUP_MS = 700;
+/** Coach holds the top of the windup for a beat before going. */
+const TOP_HOLD_MS = 160;
+const RELEASE_MS = RELEASE_TIME * 1000;
 
 export class BotBrain {
+  /** When Coach starts the arm forward (the windup runs up to this). */
   private throwAt = 0;
+  /** A delivery in progress: the ball leaves the hand at `at`. */
+  private pending: { p: Vec3; v: Vec3; at: number } | null = null;
   private releasedAt = 0;
   private throws = 0;
   private plannedTid = -1;
@@ -72,25 +78,38 @@ export class BotBrain {
       if (hd > MOVE_RADIUS) { pose.x = coach.pos[0] + (hx / hd) * MOVE_RADIUS; pose.z = coach.pos[2] + (hz / hd) * MOVE_RADIUS; }
     };
 
-    if (this.releasedAt && t - this.releasedAt > 420) { this.releasedAt = 0; coach.arm = Arm.Idle; }
+    if (this.releasedAt && t - this.releasedAt > 450) { this.releasedAt = 0; coach.arm = Arm.Idle; }
+    if (this.pending && !(ball.phase === 'held' && ball.holder === coach.id)) this.pending = null;
 
-    // Holding the ball: wander back to the spot, look at the friend, wait a beat, wind up, throw.
+    // Holding the ball: wander back to the spot, look at the friend, wait a beat,
+    // go through the windup, then deliver: the ball leaves the hand a beat after
+    // the arm starts forward, exactly as it does for a person.
     if (ball.phase === 'held' && ball.holder === coach.id) {
+      if (this.pending) {
+        coach.arm = Arm.Release;
+        if (t < this.pending.at) return null;
+        const a = this.pending;
+        this.pending = null;
+        this.throwAt = 0;
+        this.releasedAt = t;
+        return { kind: 'throw', p: a.p, v: a.v };
+      }
       settleGlove();
       moveTo(coach.pos, WALK_SPEED);
       if (!human || !human.connected) { coach.arm = Arm.Holding; coach.charge = 0; this.throwAt = Math.max(this.throwAt, t + 1200); return null; }
       face([human.pose.x, 0, human.pose.z]);
       if (!this.throwAt) this.onGotBall(t);
+      const tempo = getWindup(coach.windup).params.tempo * 1000;
+      const windMs = tempo + TOP_HOLD_MS;
       const home = Math.hypot(pose.x - coach.pos[0], pose.z - coach.pos[2]);
-      if (home > 0.8) this.throwAt = Math.max(this.throwAt, t + WINDUP_MS + 250);
+      if (home > 0.8) this.throwAt = Math.max(this.throwAt, t + windMs + 250);
       const left = this.throwAt - t;
-      if (left > WINDUP_MS) { coach.arm = Arm.Holding; coach.charge = 0; return null; }
-      if (left > 0) { coach.arm = Arm.Windup; coach.charge = Math.min(1, 1 - left / WINDUP_MS) * 0.75; return null; }
-      this.throwAt = 0;
-      this.releasedAt = t;
+      if (left > windMs) { coach.arm = Arm.Holding; coach.charge = 0; return null; }
+      if (left > 0) { coach.arm = Arm.Windup; coach.charge = Math.min(1, (windMs - left) / tempo); return null; }
       coach.arm = Arm.Release;
       coach.charge = 0;
-      return { kind: 'throw', ...this.aimAt(coach, human, streak) };
+      this.pending = { ...this.aimAt(coach, human, streak), at: t + RELEASE_MS };
+      return null;
     }
 
     if (!this.releasedAt) { coach.arm = Arm.Idle; coach.charge = 0; }
@@ -201,25 +220,32 @@ export class BotBrain {
     const from: Vec3 = [coach.pose.x, 0, coach.pose.z];
     const glove: Vec3 = [human.pose.x + human.pose.g[0], human.pose.g[1], human.pose.z + human.pose.g[2]];
     const yaw = lookAngles(from, glove).yaw;
-    const p = releasePoint(from, yaw, coach.hand);
+    const p = releasePointFor(coach.windup, from, yaw, coach.hand);
     // Sideways relative to the line between them.
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);
     const warm = this.throws <= 3;
     const r = this.rng();
     let ox: number, oy: number;
-    if (warm || r < 0.68) {
+    let high = 0;
+    if (warm || r < 0.64) {
       // On target, give or take a hand's width.
       const sd = warm ? 0.03 : Math.min(0.1, 0.045 + streak * 0.002);
       ox = this.gauss() * sd; oy = this.gauss() * sd;
-    } else if (r < 0.9) {
+    } else if (r < 0.84) {
       // A bit off: you'll have to adjust the glove.
       const a = this.rng() * Math.PI * 2, m = 0.22 + this.rng() * 0.3;
       ox = Math.cos(a) * m; oy = Math.sin(a) * m * 0.7;
-    } else {
+    } else if (r < 0.92) {
       // Wide: go get it.
       ox = (this.rng() < 0.5 ? -1 : 1) * (1.0 + this.rng() * Math.min(1.3, 0.5 + streak * 0.05)); oy = -0.2 + this.rng() * 0.4;
+    } else if (r < 0.96) {
+      // Sailed: over your head. Get up for it.
+      ox = this.gauss() * 0.15; oy = 0; high = 2.25 + this.rng() * 0.4;
+    } else {
+      // In the dirt: a scoop.
+      ox = this.gauss() * 0.2; oy = 0; high = 0.24 + this.rng() * 0.14;
     }
-    const target: Vec3 = [glove[0] + rx * ox, Math.max(0.25, glove[1] + oy), glove[2] + rz * ox];
+    const target: Vec3 = [glove[0] + rx * ox, high || Math.max(0.25, glove[1] + oy), glove[2] + rz * ox];
     const d = dist(p, target);
     const pace = warm ? 11 : 11.5 + this.rng() * Math.min(6, 2 + streak * 0.25);
     const T = Math.max(0.6, d / pace);
