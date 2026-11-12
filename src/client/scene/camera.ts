@@ -242,7 +242,7 @@ export class CameraRig {
     const dy = wrapAngle(near.yaw - far.yaw) * s.yawK;
     const wantYaw = s.yaw + clamp(clamp(far.yaw, -EYE_TURN, EYE_TURN) + clamp(dy, -0.5 * hHalf, 0.5 * hHalf), -EYE_TURN, EYE_TURN);
     const dp = (near.pitch - far.pitch) * s.pitchK;
-    const wantPitch = clamp(far.pitch + clamp(dp, -(0.86 + 0.4 * (s.landing ?? 0)) * vHalf, 0.5 * vHalf), -1.2, 0.9);
+    const wantPitch = clamp(far.pitch + clamp(dp, -(0.62 + 0.64 * (s.landing ?? 0)) * vHalf, 0.5 * vHalf), -1.2, 0.9);
     const wantRoll = clamp(-s.lean * 0.3, -0.13, 0.13);
     if (!this.eInit) {
       this.eInit = true;

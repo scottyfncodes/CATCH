@@ -567,7 +567,7 @@ function onScore(s: ScoreState, ev?: BallEvent) {
     el.classList.add(s.streak > lastStreak ? 'bump' : 'reset');
   }
   // How far apart you are, in feet (it's baseball), beside the streak.
-  if (!el.classList.contains('milestone')) label.textContent = distLabel(s);
+  if (!el.classList.contains('milestone')) label.innerHTML = distLabel(s);
   if (s.dist !== lastDist) {
     label.classList.remove('step'); void label.offsetWidth; label.classList.add('step');
     lastDist = s.dist;
@@ -583,7 +583,7 @@ function onScore(s: ScoreState, ev?: BallEvent) {
   if (ev?.k === 'catch' && ev.milestone) {
     el.classList.add('milestone');
     label.textContent = `${ev.milestone} in a row`;
-    setTimeout(() => { el.classList.remove('milestone'); label.textContent = distLabel(game?.score ?? s); }, 3200);
+    setTimeout(() => { el.classList.remove('milestone'); label.innerHTML = distLabel(game?.score ?? s); }, 3200);
   }
   if (ev?.k === 'drop' && ev.void) toast('Connection hiccup — streak kept');
   lastStreak = s.streak;
@@ -592,7 +592,7 @@ function onScore(s: ScoreState, ev?: BallEvent) {
 
 let lastDist = 0;
 const feet = (m: number) => Math.round(m * 3.28084);
-function distLabel(s: ScoreState) { return `in a row · ${feet(s.dist)} ft`; }
+function distLabel(s: ScoreState) { return `in a row · <em class="ft">${feet(s.dist)} ft</em>`; }
 
 const GRADE_WORDS: Record<string, string> = { perfect: 'Perfect pop', pocket: 'Pocket', web: 'Off the web', bobble: 'Bobbled', miss: 'Dropped', wild: 'Wild throw' };
 const STYLE_WORDS: Record<string, string> = { dive: 'Diving catch', leap: 'Leaping grab', run: 'On the run', high: 'High snag', scoop: 'Scooped', backhand: 'Backhand', reach: 'Reaching grab' };

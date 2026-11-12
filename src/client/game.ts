@@ -148,6 +148,9 @@ export class Game {
   /** You've gone after this throw (its id): your feet take you under it while you work the glove. */
   private chaseTid = -1;
   private hintTid = -1;
+  /** How much the incoming throw is dropping out of the sky (0..1): the most it has been, so it doesn't fade as the ball comes level. */
+  private steep = 0;
+  private steepTid = -1;
   private driftTid = -1;
   private drift = 0;
   private targetId: string | null = null;
@@ -1343,10 +1346,14 @@ export class Game {
         if (this.cross) near = this.cross.at;
         // A long throw comes down steeply: as it arrives, your eyes go to where it is landing.
         const tta = this.cross ? this.cross.t - (this.net.now() - this.ball.t0) / 1000 : 1;
-        landing = smooth01(1 - tta / 0.7);
-        // One dropping out of the sky needs a wider look: the ball overhead and the glove below.
+        // One dropping out of the sky needs a wider look (the ball overhead, the
+        // glove below) and, as it lands, eyes on where it's landing. A flat
+        // throw needs neither: it comes to you, and you never look at your feet.
         const up = Math.atan2(far[1] - av.eye.y, Math.hypot(far[0] - av.eye.x, far[2] - av.eye.z));
-        pitchK = 0.5 + 0.4 * landing; yawK = 0.5; wide = 1 + 0.5 * smooth01((up - 0.25) / 0.4);
+        this.steep = Math.max(this.steep * (this.steepTid === this.ball.tid ? 1 : 0), smooth01((up - 0.25) / 0.4));
+        this.steepTid = this.ball.tid;
+        landing = smooth01(1 - tta / 0.7) * this.steep;
+        pitchK = 0.5 + 0.4 * landing; yawK = 0.5; wide = 1 + 0.5 * this.steep;
       }
       eyes = { eye: [av.eye.x, av.eye.y, av.eye.z], yaw: this.yaw, far, near, pitchK, yawK, wide, landing, lean: av.sideLean };
     }
