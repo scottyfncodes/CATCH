@@ -5,21 +5,21 @@
 
 import * as THREE from 'three';
 import {
-  BALL_RADIUS, CHEST_HEIGHT, CLIENT_STATE_HZ, MOVE_RADIUS, RUN_ACCEL, RUN_SPEED, THROW_MAX_SPEED, THROW_MIN_SPEED, WALK_SPEED,
+  BALL_RADIUS, CATCH_PERFECT, CATCH_WEB, CLIENT_STATE_HZ, MOVE_RADIUS, RUN_ACCEL, RUN_SPEED, WALK_SPEED,
 } from '../shared/constants';
 import {
-  type Trajectory, positionAt, simulateFlight, solveElevation, sweptMinDistance, velocityAt,
+  type Trajectory, closestApproach, positionAt, simulateFlight, solveThrowTo, sweptMinDistance, velocityAt,
 } from '../shared/physics';
 import {
-  type Hand, type Pose, clampReach, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, releasePoint,
+  type Hand, type Pose, bodyToWorld, clampReach, gloveReady, gloveWorld, interceptPlan, lookAngles, releasePoint,
 } from '../shared/pose';
 import {
   Arm, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, classifyCatch,
 } from '../shared/protocol';
-import { type Vec3, clamp, lerp, wrapAngle } from '../shared/vec';
+import { type Vec3, clamp, dist, lerp, wrapAngle } from '../shared/vec';
 import { audio } from './audio';
 import { haptic } from './haptics';
-import { type Aim, Controls } from './input';
+import { type Aim, Controls, DEAD, FULL_PULL } from './input';
 import { Net, type NetStatus } from './net';
 import { AimArc } from './scene/aim';
 import { Avatar } from './scene/avatar';
@@ -51,14 +51,13 @@ export interface GameEvents {
 
 const tmpV = new THREE.Vector3();
 const INTERP_MS = 110;
-/** How hard a full-strength pull-back throws, and how far off-line a sideways pull sends it. */
-const AIM_SPREAD = 0.36;
-
-/** Small deterministic hash → [-1, 1] (same throw, same human error). */
-function hash1(n: number) {
-  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
-  return (x - Math.floor(x)) * 2 - 1;
-}
+/** Aim sensitivity: metres the ring moves sideways per pixel of sideways pull. */
+const AIM_X_PER_PX = 0.012;
+/** The aim ring's height range on the glove plane: soft pull = low, full pull = overhead. */
+const AIM_H_LOW = 0.15;
+const AIM_H_SPAN = 2.55;
+/** How far off the glove a last-instant reflex can still reach (it costs grade). */
+const LUNGE_REACH = 0.42;
 
 export class Game {
   readonly renderer: THREE.WebGLRenderer;
@@ -91,14 +90,22 @@ export class Game {
   /** Glove offset from the feet (world axes), and where it is reaching for. */
   glove: Vec3 = [0, 1.18, -0.4];
   private gloveT: Vec3 = [0, 1.18, -0.4];
-  private stick = { x: 0, y: 0 };
+  /** Where you hold your glove (body space: right, up, forward): your friend's target. */
+  private gloveSet: Vec3 = [-0.2, 1.18, 0.42];
+  private gloveDragging = false;
+  /** Where your feet are headed when you push the glove past your reach. */
+  private stepTo: Vec3 | null = null;
+  private lungeTid = -1;
   private keys = new Set<string>();
   private lastInputAt = 0;
   private prevGloveWorld: Vec3 | null = null;
   private prevPose: Pose | null = null;
   private aim: Aim | null = null;
-  private aimBaseYaw = 0;
+  private aimStartAt = 0;
+  private aimPartnerId: string | null = null;
   private aimTraj: Trajectory | null = null;
+  /** Where the ball would cross your friend's glove plane right now (the aim ring). */
+  private aimRing: Vec3 | null = null;
   private releasedAt = -1;
   private lastSent = 0;
   private partnerId: string | null = null;
@@ -125,6 +132,8 @@ export class Game {
   private frameTimes: number[] = [];
   /** Test hook: run under incoming throws automatically (never set in normal play). */
   autoMove = false;
+  /** Test hook: no hand tremor on the aim. */
+  steadyAim = false;
   /** Test hook: skip drawing (software-GL CI is too slow for real-time touch input). */
   renderEnabled = true;
 
@@ -153,8 +162,9 @@ export class Game {
     this.controls = new Controls(touchLayer, {
       canThrow: () => this.canThrow(),
       onAimStart: () => {
-        this.aim = { power: 0, angle: 0, armed: false };
-        this.aimBaseYaw = this.partnerYaw();
+        this.aim = { power: 0, side: 0, armed: false };
+        this.aimStartAt = performance.now();
+        this.aimPartnerId = this.partner();
         this.ev.moment('aim');
       },
       onAim: (a) => {
@@ -163,10 +173,8 @@ export class Game {
       },
       onThrow: (a) => this.release(a),
       onAimCancel: () => { this.aim = null; },
-      onMove: (x, y) => {
-        this.stick.x = x; this.stick.y = y;
-        if (x || y) { this.lastInputAt = performance.now(); this.ev.moment('move'); }
-      },
+      onGlove: (dx, dy, speed) => this.moveGlove(dx, dy, speed),
+      onGloveActive: (a) => { this.gloveDragging = a; this.lastInputAt = performance.now(); },
     });
 
     this.net = new Net(room, () => ({ guest: prefs().guest, name: prefs().name, hand: prefs().hand }));
@@ -524,38 +532,52 @@ export class Game {
     return !!this.me && this.ball.phase === 'held' && this.ball.holder === this.me && performance.now() >= this.holdReadyAt && !this.predThrowAt;
   }
 
-  /** The throw a pull-back describes: real launch position and velocity. */
-  private planThrow(a: Aim, noisy: boolean): { p0: Vec3; v0: Vec3; speed: number } {
-    const dev = AIM_SPREAD * a.angle + 0.36 * Math.max(0, Math.abs(a.angle) - 0.6) * Math.sign(a.angle);
-    let throwYaw = this.aimBaseYaw - dev;
-    const speed = lerp(THROW_MIN_SPEED, THROW_MAX_SPEED, Math.pow(a.power, 0.85));
-    const p0 = releasePoint(this.pos, throwYaw, this.hand);
-    // Who is it for? The person closest to that line (else a default distance).
-    let D = 12, h = CHEST_HEIGHT;
-    let bestAng = 0.4;
-    for (const o of this.players.values()) {
-      if (o.info.id === this.me) continue;
-      const f = this.feetOf(o.info.id)!;
-      const ang = Math.abs(wrapAngle(lookAngles(this.pos, f).yaw - throwYaw));
-      if (ang < bestAng) { bestAng = ang; D = Math.hypot(f[0] - p0[0], f[2] - p0[2]) * Math.cos(ang); h = CHEST_HEIGHT; }
+  /**
+   * The throw a pull-back describes. The pull places a target on your
+   * friend's glove plane (sideways pull = left/right, pull length = height),
+   * which breathes a little with your hand; the throw is solved to arrive
+   * exactly there, so the aim ring is the truth.
+   */
+  private planThrow(a: Aim): { p0: Vec3; v0: Vec3; speed: number; ring: Vec3; T: number } {
+    const me = this.pos;
+    const pid = this.aimPartnerId && this.players.has(this.aimPartnerId) ? this.aimPartnerId : this.partner();
+    const pf = this.feetOf(pid);
+    const pav = this.avatarOf(pid);
+    // Throw axis: you → your friend.
+    let ux = 0, uz = -1, depth = 12;
+    if (pf) {
+      const dx = pf[0] - me[0], dz = pf[2] - me[2], l = Math.hypot(dx, dz) || 1;
+      ux = dx / l; uz = dz / l; depth = l;
+      if (pav) depth = Math.max(2, (pav.gloveWorldPos.x - me[0]) * ux + (pav.gloveWorldPos.z - me[2]) * uz);
+    } else {
+      ux = -Math.sin(this.yaw); uz = -Math.cos(this.yaw);
     }
-    let el = solveElevation(speed, D, p0[1], h) ?? 0.66;
-    if (noisy) {
-      // Nobody throws exactly where they mean to; harder throws scatter more.
-      const n = this.ball.tid + 1;
-      const err = 0.012 + 0.04 * a.power * a.power;
-      throwYaw += hash1(n * 3.1 + this.pos[0]) * err;
-      el += hash1(n * 7.7 + this.pos[2]) * err * 0.9;
+    const rx = -uz, rz = ux;
+    const lat = -a.side * AIM_X_PER_PX;
+    let h = AIM_H_LOW + AIM_H_SPAN * a.power;
+    let wl = 0;
+    if (!this.steadyAim) {
+      // A breathing hand: steadier for soft throws, shakier for hard ones and long holds.
+      const held = (performance.now() - this.aimStartAt) / 1000;
+      const amp = 0.012 + 0.038 * a.power + clamp((held - 1.4) * 0.05, 0, 0.07);
+      const t = performance.now() / 1000;
+      wl = amp * (Math.sin(t * 2.1) + 0.5 * Math.sin(t * 4.7 + 1)) / 1.5;
+      h += amp * (Math.sin(t * 1.6 + 2) + 0.5 * Math.sin(t * 3.9)) / 1.5;
     }
-    el = clamp(el, -0.3, 1.1);
-    const v0: Vec3 = [-Math.sin(throwYaw) * Math.cos(el) * speed, Math.sin(el) * speed, -Math.cos(throwYaw) * Math.cos(el) * speed];
-    return { p0, v0, speed };
+    const target: Vec3 = [me[0] + ux * depth + rx * (lat + wl), h, me[2] + uz * depth + rz * (lat + wl)];
+    const yawTo = lookAngles(me, target).yaw;
+    const p0 = releasePoint(me, yawTo, this.hand);
+    // Pace: pull harder, throw harder (and it carries higher).
+    const speed = lerp(11.5, 20.5, a.power) * clamp(depth / 11, 0.75, 1.5);
+    const T = Math.max(0.35, dist(p0, target) / speed);
+    const v0 = solveThrowTo(p0, target, T);
+    return { p0, v0, speed: Math.hypot(...v0), ring: target, T };
   }
 
   private release(a: Aim) {
     this.aim = null;
     if (!this.canThrow() || !this.me) return;
-    const { p0, v0 } = this.planThrow(a, true);
+    const { p0, v0 } = this.planThrow(a);
     const t0 = this.net.now();
     const tid = this.ball.tid + 1;
     this.net.send({ t: 'throw', rt: t0, p: p0, v: v0, tid });
@@ -626,27 +648,21 @@ export class Game {
     const holding = b.phase === 'held' && b.holder === this.me;
     const tNow = Math.max(0, (sNow - b.t0) / 1000);
     const incoming = this.incoming();
-    const plan = incoming ? interceptPlan(this.traj!, tNow, this.pos[0], this.pos[2]) : null;
 
     // ---- where do you want to go?
-    let sx = this.stick.x, sy = this.stick.y;
+    let sx = 0, sy = 0;
     if (this.keys.size) {
       const k = this.keys;
       sx = (k.has('d') || k.has('arrowright') ? 1 : 0) - (k.has('a') || k.has('arrowleft') ? 1 : 0);
       sy = (k.has('w') || k.has('arrowup') ? 1 : 0) - (k.has('s') || k.has('arrowdown') ? 1 : 0);
       const l = Math.hypot(sx, sy); if (l > 1) { sx /= l; sy /= l; }
     }
+    if (this.autoMove && incoming && this.traj) this.autoCatch(tNow);
     let tvx = 0, tvz = 0;
     let top = RUN_SPEED;
-    if (this.autoMove && incoming && this.traj) {
-      // Test hook: run to where the ball comes through chest height.
-      const ip = interceptPlan(this.traj, 0, this.home[0], this.home[2]);
-      const p = ip.point;
-      const dx = p[0] - this.pos[0], dz = p[2] - this.pos[2];
-      const d = Math.hypot(dx, dz);
-      if (d > 0.08) { tvx = (dx / d) * Math.min(RUN_SPEED, d * 6); tvz = (dz / d) * Math.min(RUN_SPEED, d * 6); }
-    } else if (sx || sy) {
-      // Thumb direction on screen → direction on the grass, as the camera sees it.
+    if (sx || sy) {
+      // Desktop keys: direction on the grass, as the camera sees it.
+      this.stepTo = null;
       const cam = this.rig.camera;
       const fwd = tmpV.set(0, 0, -1).applyQuaternion(cam.quaternion);
       const fl = Math.hypot(fwd.x, fwd.z) || 1;
@@ -654,7 +670,13 @@ export class Game {
       const rx = -fz, rz = fx;
       tvx = (rx * sx + fx * sy) * RUN_SPEED;
       tvz = (rz * sx + fz * sy) * RUN_SPEED;
-    } else if (!incoming && !this.controls.aiming && now - this.lastInputAt > 700) {
+    } else if (this.stepTo) {
+      // Stepping after a glove you pushed past your reach.
+      const dx = this.stepTo[0] - this.pos[0], dz = this.stepTo[2] - this.pos[2];
+      const d = Math.hypot(dx, dz);
+      if (d < 0.04) this.stepTo = null;
+      else { tvx = (dx / d) * Math.min(RUN_SPEED, d * 7); tvz = (dz / d) * Math.min(RUN_SPEED, d * 7); }
+    } else if (!incoming && !this.gloveDragging && (holding || b.phase !== 'held') && now - this.lastInputAt > 900) {
       // Nothing to do: wander back to your spot.
       const dx = this.home[0] - this.pos[0], dz = this.home[2] - this.pos[2];
       const d = Math.hypot(dx, dz);
@@ -674,45 +696,82 @@ export class Game {
       this.pos[0] = this.home[0] + (hx / hd) * MOVE_RADIUS; this.pos[2] = this.home[2] + (hz / hd) * MOVE_RADIUS;
       this.vel.x *= 0.5; this.vel.z *= 0.5;
     }
-    const speed = Math.hypot(this.vel.x, this.vel.z);
 
-    // ---- facing: the ball when it's coming, your aim while throwing, else your friend
-    let faceYaw = this.yaw;
-    if (incoming && this.traj) {
-      const p = positionAt(this.traj, tNow);
-      faceYaw = lookAngles(this.pos, p).yaw;
-    } else if (this.controls.aiming && this.aim) {
-      faceYaw = this.aimBaseYaw - AIM_SPREAD * this.aim.angle;
-    } else if (speed > 0.6 && !holding) {
-      faceYaw = this.partnerYaw();
-    } else {
-      faceYaw = this.partnerYaw();
-    }
+    // ---- facing: square to your friend (so a set glove stays set), or your aim while throwing
+    const faceYaw = this.controls.aiming && this.aimRing ? lookAngles(this.pos, this.aimRing).yaw : this.partnerYaw();
     this.yaw = wrapAngle(this.yaw + wrapAngle(faceYaw - this.yaw) * (1 - Math.exp(-dt / 0.14)));
 
-    // ---- glove: ready position, or reaching for where the ball will be
-    let want = gloveReady(this.yaw, this.hand);
-    if (incoming && plan && plan.t - tNow < 0.85) {
-      const rel: Vec3 = [plan.point[0] - this.pos[0], plan.point[1], plan.point[2] - this.pos[2]];
-      // Human error grows with the stretch and with catching on the run.
-      const n = reachNorm(rel);
-      const err = Math.max(0, n - 0.55) * 0.26 + speed * 0.022;
-      const tid = this.ball.tid;
-      const e: Vec3 = [hash1(tid * 1.3) * err, hash1(tid * 2.9) * err * 0.8, hash1(tid * 4.7) * err];
-      want = clampReach([rel[0] + e[0], rel[1] + e[1], rel[2] + e[2]]);
-    } else if (this.localCatch || (holding && this.catchShow?.by === this.me && now < this.holdReadyAt)) {
-      // Ball in the glove: bring it in to the chest.
+    // ---- glove: tucked while you hold the ball, otherwise exactly where you hold it
+    const showingCatch = this.localCatch || (holding && this.catchShow?.by === this.me && now < this.holdReadyAt);
+    let want: Vec3;
+    if (holding || showingCatch) {
       want = gloveReady(this.yaw, this.hand);
-      want[1] += 0.05;
+      if (showingCatch) want[1] += 0.05;
+      // After a catch, the next target starts from a relaxed ready spot.
+      this.gloveSet = [this.hand === 'R' ? -0.2 : 0.2, 1.18, 0.42];
+    } else {
+      want = clampReach(bodyToWorld(this.yaw, this.gloveSet), 0.98);
+    }
+    // A last-instant reflex: a ball just off the glove gets a lunge (and an ugly POP).
+    let lunging = false;
+    if (incoming && this.traj && !holding) {
+      const gw: Vec3 = [this.pos[0] + want[0], want[1], this.pos[2] + want[2]];
+      const ca = closestApproach(this.traj, gw);
+      const until = ca.t - tNow;
+      if (until > -0.02 && until < 0.2 && ca.dist > 0.16 && ca.dist < LUNGE_REACH) {
+        const bp = positionAt(this.traj, ca.t);
+        const k = 1 - 0.135 / ca.dist;
+        want = clampReach([want[0] + (bp[0] - gw[0]) * k, want[1] + (bp[1] - gw[1]) * k, want[2] + (bp[2] - gw[2]) * k]);
+        lunging = true;
+        if (this.lungeTid !== b.tid) this.lungeTid = b.tid;
+      }
     }
     this.gloveT = want;
-    // Smooth the glove in the world, not relative to the body: a hand reaching
-    // for a point doesn't trail behind when you run.
-    const gk = 1 - Math.exp(-dt / (incoming ? 0.075 : 0.18));
+    // Smooth in the world, not relative to the body: a hand holding a spot
+    // doesn't trail behind when you step.
+    const tau = lunging ? 0.045 : this.gloveDragging ? 0.035 : holding ? 0.18 : 0.06;
+    const gk = 1 - Math.exp(-dt / tau);
     const moved: Vec3 = [this.pos[0] - prevX, 0, this.pos[2] - prevZ];
     const g: Vec3 = [this.glove[0] - moved[0], this.glove[1], this.glove[2] - moved[2]];
     for (let i = 0; i < 3; i++) g[i] += (this.gloveT[i] - g[i]) * gk;
     this.glove = clampReach(g);
+  }
+
+  /** Your thumb moves your glove: precise when slow, quick when you flick. */
+  private moveGlove(dx: number, dy: number, speed: number) {
+    if (this.ball.phase === 'held' && this.ball.holder === this.me) return;
+    const gain = 0.0045 + Math.min(0.02, speed * 0.012);
+    const gs = this.gloveSet;
+    gs[0] += dx * gain;
+    gs[1] = clamp(gs[1] + dy * gain, 0.18, 2.3);
+    // Past your reach to the side: step over after it.
+    const lim = 0.72;
+    if (Math.abs(gs[0]) > lim) {
+      const over = gs[0] - Math.sign(gs[0]) * lim;
+      gs[0] -= over;
+      const r = bodyToWorld(this.yaw, [over, 0, 0]);
+      const from = this.stepTo ?? this.pos;
+      let tx = from[0] + r[0], tz = from[2] + r[2];
+      const hx = tx - this.home[0], hz = tz - this.home[2], hd = Math.hypot(hx, hz);
+      if (hd > MOVE_RADIUS) { tx = this.home[0] + (hx / hd) * MOVE_RADIUS; tz = this.home[2] + (hz / hd) * MOVE_RADIUS; }
+      this.stepTo = [tx, 0, tz];
+    }
+    // High balls: the glove goes up and a touch back; low: out in front.
+    gs[2] = 0.42 + clamp((1.0 - gs[1]) * 0.12, -0.12, 0.1);
+    this.lastInputAt = performance.now();
+    this.ev.moment('move');
+  }
+
+  /** Test hook: put the glove where the ball will come through, and get there. */
+  private autoCatch(tNow: number) {
+    const ip = interceptPlan(this.traj!, Math.max(0, tNow - 0.05), this.home[0], this.home[2]);
+    const p = ip.point;
+    const r = bodyToWorld(this.yaw, [1, 0, 0]);
+    // Stand so the glove (held a little to the glove side) meets the ball.
+    const side = this.hand === 'R' ? -0.2 : 0.2;
+    const f = bodyToWorld(this.yaw, [0, 0, 0.42]);
+    this.stepTo = [p[0] - r[0] * side - f[0], 0, p[2] - r[2] * side - f[2]];
+    this.gloveSet = [side, clamp(p[1], 0.18, 2.3), 0.42];
   }
 
   /** Local, predicted catch detection: did the ball actually pass through your glove? */
@@ -737,6 +796,10 @@ export class Game {
     const speed = Math.hypot(...velocityAt(this.traj, res.t));
     const q = classifyCatch(res.dist, speed);
     if (!q) return;
+    // Still closing on the pocket? Wait for the true closest pass (the grade is
+    // how close it came, not where it was when it first touched leather).
+    const ahead = sweptMinDistance(this.traj, tNow, Math.min(this.traj.groundT, tNow + 0.08), g, g);
+    if (ahead.t > tNow + 1e-4 && ahead.dist < res.dist - 0.002) { this.lastCheckT = tPrev; return; }
     this.claimedTid = b.tid;
     // Report the pose at the moment of contact (between last frame and this one).
     const a = tNow > tPrev ? clamp((res.t - tPrev) / (tNow - tPrev), 0, 1) : 1;
@@ -917,7 +980,9 @@ export class Game {
     const me: Vec3 = this.myAvatar ? [this.myAvatar.position.x, 0, this.myAvatar.position.z] : this.pos;
     const partner: Vec3 = pf ?? [me[0] - Math.sin(this.yaw) * 12, 0, me[2] - Math.cos(this.yaw) * 12];
     // The camera stands on your glove side, so every catch is in plain view.
-    this.rig.update(dt, { me, partner, ball, side: this.hand === 'R' ? -1 : 1 });
+    // While you aim, the shot pushes in on your friend so you can see their glove.
+    const focus = this.controls.aiming && this.aimRing ? { point: this.aimRing, amount: 1 } : null;
+    this.rig.update(dt, { me, partner, ball, side: this.hand === 'R' ? -1 : 1, focus });
     const l = this.rig.listener(me);
     audio.setListener(l.pos, l.fwd, l.up);
   }
@@ -925,11 +990,17 @@ export class Game {
   private updateAim(dt: number) {
     const a = this.aim;
     if (a && a.armed && this.controls.aiming && this.canThrow()) {
-      const { p0, v0 } = this.planThrow(a, false);
+      const { p0, v0, T } = this.planThrow(a);
       this.aimTraj = simulateFlight(p0, v0);
-      this.aimArc.show(this.aimTraj, a.power, this.rig.camera, dt);
+      // The ring sits where the ball really crosses the glove plane.
+      this.aimRing = positionAt(this.aimTraj, T);
+      const pav = this.avatarOf(this.aimPartnerId);
+      const off = pav ? dist(this.aimRing, [pav.gloveWorldPos.x, pav.gloveWorldPos.y, pav.gloveWorldPos.z]) : 1;
+      const glove: Vec3 | null = pav ? [pav.gloveWorldPos.x, pav.gloveWorldPos.y, pav.gloveWorldPos.z] : null;
+      this.aimArc.show(this.aimTraj, a.power, this.rig.camera, dt, { pos: this.aimRing, onTarget: clamp(1 - (off - CATCH_PERFECT) / (CATCH_WEB - CATCH_PERFECT), 0, 1), glove });
     } else {
-      this.aimArc.show(null, 0, this.rig.camera, dt);
+      if (!this.controls.aiming) this.aimRing = null;
+      this.aimArc.show(null, 0, this.rig.camera, dt, null);
     }
   }
 
@@ -957,7 +1028,7 @@ export class Game {
     return {
       me: this.me, status: this.net.status, ball: this.ball, score: this.score,
       players: [...this.players.values()].map((p) => ({ id: p.info.id, name: p.info.name, connected: p.info.connected, catches: p.info.catches, drops: p.info.drops, bot: p.info.bot })),
-      pos: this.pos, home: this.home, yaw: this.yaw, glove: this.glove, partner: this.partnerId, partnerPos: this.feetOf(this.partnerId), controls: this.controls.stats, canThrow: this.canThrow(),
+      pos: this.pos, home: this.home, yaw: this.yaw, glove: this.glove, gloveSet: this.gloveSet, partner: this.partnerId, partnerPos: this.feetOf(this.partnerId), controls: this.controls.stats, canThrow: this.canThrow(),
       audio: audio.log.slice(-40), zipPeak: Math.max(audio.zipPeak, audio.lastZipPeak), audioState: audio.ctx?.state ?? 'none', rtt: this.net.rtt, pixelRatio: this.pixelRatio,
       fov: this.rig.camera.fov,
     };
@@ -975,11 +1046,18 @@ export class Game {
     if (this.players.has(id) && id !== this.me) this.partnerId = id;
   }
 
-  /** Where the ball would come to rest for a given pull-back (tests). */
-  previewThrow(power: number, angle: number) {
-    const a: Aim = { power, angle, armed: true };
-    this.aimBaseYaw = this.partnerYaw();
-    const { v0, speed } = this.planThrow(a, false);
-    return { v0, speed };
+  /** The pull (CSS px from the touch point) that puts the aim ring on a partner's glove (tests). */
+  pullFor(id: string): { side: number; pull: number } | null {
+    const av = this.avatarOf(id);
+    if (!av) return null;
+    this.aimPartnerId = id;
+    const me = this.pos;
+    const g = av.gloveWorldPos;
+    const pf = this.feetOf(id)!;
+    const dx = pf[0] - me[0], dz = pf[2] - me[2], l = Math.hypot(dx, dz) || 1;
+    const lat = ((g.x - me[0]) * -dz + (g.z - me[2]) * dx) / l;
+    const H = this.root.clientHeight;
+    const power = (g.y - AIM_H_LOW) / AIM_H_SPAN;
+    return { side: -lat / AIM_X_PER_PX, pull: DEAD + power * FULL_PULL * H };
   }
 }

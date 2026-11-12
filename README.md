@@ -14,17 +14,23 @@ No accounts, no installs: open the link, pick a name and a throwing hand, play.
 
 One thumb, no buttons on screen:
 
+- **Set the target** (when your friend has the ball): your thumb is your glove.
+  Drag to hold it up where you want the throw: chest, high, low, across. It
+  stays where you leave it. Slow drags are precise, quick ones cover ground,
+  and pushing it past your reach makes you step over after it.
 - **Throw** (when you have the ball): touch anywhere, **pull back** and **let go**.
-  Pull further for a harder throw. Pull off to one side and the throw goes to the
-  other side (like a slingshot). A faint line of dots shows the first part of the
-  arc while you pull. Slide back to where you started (or pull upward) and let go
-  to cancel.
-- **Catch**: when a throw is coming, **drag to move** and get under it. Your
-  glove reaches for the ball by itself; whether it ends up in the pocket depends
-  on you. Settled and square: a crisp pocket catch. A full stretch, or still
-  running when it arrives: it may tip off the web or pop out. Too far: it's gone.
-  Watch the ball's shadow on the grass to judge where it will come down.
-- Let go and you wander back to your spot. Desktop: arrow keys / WASD also move.
+  An aim ring appears on your friend's glove plane (their pocket gets a faint
+  gold mark). Pull to one side to move the ring across (like a slingshot), pull
+  further to lift it (and throw harder). The ring breathes a little with your
+  hand, more for hard throws and long holds, so pick your moment. It turns gold
+  on the pocket. While you aim, the shot eases in on your friend.
+- **Catch**: hold the glove still and let a good throw find it. If the throw is
+  off, get the glove to the ball (and yourself, if you must). Late adjustments
+  cost you the clean POP, and a last-instant lunge can save a near miss, but it
+  won't sound good. Watch the ball's shadow to judge where it's coming down.
+- **Both jobs make the POP**: a perfect POP needs a throw that finds the pocket
+  *and* a glove held still. The grade word under the streak tells you how it went.
+- Desktop: arrow keys / WASD also move you.
 - **The POP is your grade.** The server scores each catch by how close the ball
   came to the centre of your pocket, and everyone hears that grade: a perfect
   catch cracks and rings off the houses, an off-centre one thwaps, a bobble
@@ -49,9 +55,13 @@ tests/e2e/    Playwright: real server + production build + up to 7 independent b
 - **Bodies and reach.** A player is a body at (x, z) near their spot (they can
   run up to 4.5 m from it), facing a direction, with the glove anywhere inside a
   shared reach envelope (an ellipsoid: crouch to the grass, stretch overhead, a
-  long arm and half a step to the side). Your glove reaches for where the ball
-  will pass on its own, with a human error that grows with the stretch and with
-  catching on the run.
+  long arm and half a step to the side). The glove is exactly where the player
+  holds it (no auto-reach); only a short last-instant reflex can stretch it
+  toward a near miss.
+- **Grade.** The catch is claimed at the ball's true closest pass to the pocket
+  (not the first frame it is within reach), and the server grades it 0..1 from
+  that distance. The thrower's aim ring is solved to the exact crossing point,
+  so the ring is the truth.
 - **Catches** are detected on the catcher's device by a swept test of the ball
   against the real glove position, sent with the exact contact time and pose,
   and re-validated on the server against the same deterministic trajectory

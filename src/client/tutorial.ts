@@ -11,7 +11,6 @@ export class Tutorial {
   private ghost: HTMLDivElement;
   private done = new Set<Skill>();
   private holding = false;
-  private incoming = false;
   private finished = false;
   private finale = 0;
   private current = '';
@@ -36,9 +35,7 @@ export class Tutorial {
     if (kind === 'throw') this.done.add('throw');
     if (kind === 'move') this.done.add('move');
     if (kind === 'catch') this.done.add('catch');
-    if (kind === 'incoming') this.incoming = true;
-    if (kind === 'catch' || kind === 'drop') this.incoming = false;
-    if (kind === 'drop' && !this.done.has('catch')) this.flash('So close. Get under it a little sooner.');
+    if (kind === 'drop' && !this.done.has('catch')) this.flash('So close. Get the glove to the ball a little sooner.');
     this.render();
   }
 
@@ -47,7 +44,6 @@ export class Tutorial {
   /** Called every ~200ms with whether you hold the ball. */
   tick(holding: boolean) {
     this.holding = holding;
-    if (holding) this.incoming = false;
     this.render();
   }
 
@@ -80,16 +76,16 @@ export class Tutorial {
     if (performance.now() < this.flashUntil) { this.show('flash' + this.flashText, this.flashText, null); return; }
     if (this.holding && !this.done.has('throw')) {
       if (!this.canThrow()) { this.hide(); return; }
-      this.show('throw', 'Pull back and let go to throw<small>Pull further for a harder throw. Pull to one side to throw to the other.</small>', 'throw');
+      this.show('throw', 'Pull back to aim, let go to throw<small>Put the ring on their glove. Pull to one side to move it across; pull further to throw higher and harder.</small>', 'throw');
       return;
     }
-    if (!this.holding && this.incoming && !this.done.has('catch') && !this.done.has('move')) {
-      this.show('move', 'Drag to get under the ball<small>Your glove does the rest.</small>', 'move');
+    if (!this.holding && !this.done.has('catch') && !this.done.has('move')) {
+      this.show('move', 'Drag to hold your glove up<small>That’s their target. Keep it still, and move it to the ball if the throw is off.</small>', 'move');
       return;
     }
     if (this.done.has('throw') && this.done.has('catch')) {
       if (!this.finale) this.finale = performance.now();
-      this.show('streak', 'That’s it. Every catch adds to the streak<small>Listen to the POP: the cleaner the catch, the better it sounds.</small>', null);
+      this.show('streak', 'That’s it. Every catch adds to the streak<small>Chase the perfect POP: a throw that finds a glove held still.</small>', null);
       if (performance.now() - this.finale > 4200) this.finish();
       return;
     }
