@@ -15,7 +15,6 @@ import {
   RECONNECT_GRACE_MS,
   RECOVER_DELAY_MS,
   SERVER_TICK_HZ,
-  STREAK_MILESTONES,
   THROW_SPEED_LIMIT,
 } from '../shared/constants.js';
 import {
@@ -45,6 +44,7 @@ import {
   sanitizeName,
 } from '../shared/protocol.js';
 import { type Vec3, dist, len, wrapAngle } from '../shared/vec.js';
+import { COACH_STYLE, MILESTONES, type Style, defaultStyle, sanitizeStyle } from '../shared/style.js';
 import { HOUSE_WINDUP, RELEASE_REACH, WINDUP_IDS, windupId } from '../shared/windups.js';
 import { BotBrain } from './bot.js';
 
@@ -76,7 +76,7 @@ export interface Member {
   hand: Hand;
   bot: boolean;
   joinOrder: number;
-  look: number;
+  style: Style;
   conn: Conn | null;
   connected: boolean;
   disconnectedAt: number;
@@ -160,7 +160,7 @@ export class Room {
   playerInfo(m: Member): PlayerInfo {
     return {
       id: m.id, name: m.name, hand: m.hand, seat: m.seat, pos: m.pos, facing: m.facing,
-      connected: m.connected, bot: m.bot, catches: m.catches, drops: m.drops, perfects: m.perfects, saves: m.saves, windup: m.windup, look: m.look,
+      connected: m.connected, bot: m.bot, catches: m.catches, drops: m.drops, perfects: m.perfects, saves: m.saves, windup: m.windup, style: m.style,
     };
   }
 
@@ -191,6 +191,7 @@ export class Room {
       existing.name = sanitizeName(msg.name);
       existing.hand = msg.hand === 'L' ? 'L' : 'R';
       existing.windup = windupId(msg.w, existing.windup);
+      existing.style = sanitizeStyle(msg.s, existing.style);
       this.sendWelcome(existing);
       this.broadcastRoster();
       return existing;
@@ -199,7 +200,7 @@ export class Room {
       conn.send({ t: 'full', room: this.code, max: MAX_PLAYERS });
       return null;
     }
-    const m = this.addMember({ guest, name: sanitizeName(msg.name), hand: msg.hand === 'L' ? 'L' : 'R', bot: false, conn, windup: windupId(msg.w) });
+    const m = this.addMember({ guest, name: sanitizeName(msg.name), hand: msg.hand === 'L' ? 'L' : 'R', bot: false, conn, windup: windupId(msg.w), style: sanitizeStyle(msg.s, defaultStyle(guest)) });
     this.syncBot();
     if (!this.ball.holder && this.ball.phase === 'held') this.giveBall(m.id);
     this.relayout();
@@ -208,13 +209,10 @@ export class Room {
     return m;
   }
 
-  private addMember(o: { guest: string; name: string; hand: Hand; bot: boolean; conn: Conn | null; windup: number }): Member {
-    const used = new Set([...this.members.values()].map((m) => m.look));
-    let look = 0;
-    while (used.has(look)) look++;
+  private addMember(o: { guest: string; name: string; hand: Hand; bot: boolean; conn: Conn | null; windup: number; style: Style }): Member {
     const m: Member = {
       id: o.bot ? 'coach' : newId(), guest: o.guest, name: o.name, hand: o.hand, bot: o.bot,
-      joinOrder: this.joinCounter++, look, conn: o.conn, connected: true, disconnectedAt: 0,
+      joinOrder: this.joinCounter++, style: o.style, conn: o.conn, connected: true, disconnectedAt: 0,
       pose: { x: 0, z: 0, yaw: 0, g: gloveReady(0, o.hand) }, poseAt: this.now(), joinedAt: this.now(),
       arm: Arm.Idle, charge: 0, lift: 0, dive: 0, speed: 0, windup: o.windup, catches: 0, drops: 0, perfects: 0, saves: 0, seat: 0, pos: [0, 0, 0], facing: 0,
     };
@@ -258,7 +256,7 @@ export class Room {
       // Coach throws with a windup from the library: a different one in every room.
       const pick = WINDUP_IDS.filter((id) => id !== HOUSE_WINDUP);
       const n = [...this.code].reduce((a, c) => a + c.charCodeAt(0), 0);
-      this.addMember({ guest: 'coach', name: 'Coach', hand: 'R', bot: true, conn: null, windup: pick.length ? pick[n % pick.length] : HOUSE_WINDUP });
+      this.addMember({ guest: 'coach', name: 'Coach', hand: 'R', bot: true, conn: null, windup: pick.length ? pick[n % pick.length] : HOUSE_WINDUP, style: COACH_STYLE });
       this.bot = new BotBrain();
     } else if (humans !== 1 && botMember) {
       this.members.delete('coach');
@@ -366,6 +364,8 @@ export class Room {
         m.name = sanitizeName(msg.name);
         m.hand = msg.hand === 'L' ? 'L' : 'R';
         m.windup = windupId(msg.w, m.windup);
+        // (Cosmetic only, so it is taken on trust: there are no accounts to check what was earned.)
+        m.style = sanitizeStyle(msg.s, m.style);
         this.broadcastRoster();
         return;
       case 'rec': {
@@ -469,7 +469,7 @@ export class Room {
       m.catches++;
       if (q === 'perfect') m.perfects++;
       if (isGreatCatch(st)) m.saves++;
-      if (STREAK_MILESTONES.includes(this.streak)) milestone = this.streak;
+      if (MILESTONES.includes(this.streak)) milestone = this.streak;
       this.sessionBest = Math.max(this.sessionBest, this.streak);
       this.records.raise(this.groupKey(), this.streak);
       // Caught: everyone takes a step back.

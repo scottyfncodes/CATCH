@@ -9,19 +9,101 @@ import { type Hand, type Pose, bodyToWorld, gloveWorld, worldToBody } from '../.
 import { Arm } from '../../shared/protocol';
 import { type Vec3, clamp, wrapAngle } from '../../shared/vec';
 import { DELIVERY_LENGTH, type DeliveryPose, RELEASE_TIME, type Windup, deliveryPose, getWindup, pelvisHeight, windupPose } from '../../shared/windups';
+import { BUILDS, GLOVES, HAIR_COLORS, HATS, type Hat, PANTS, S, SKINS, type Style, TOPS } from '../../shared/style';
 import { buildGlove, buildHand, setGloveClosure } from './gear';
 
-export const LOOKS = [
-  { shirt: '#857f5a', cap: '#2d2f63', pants: '#93b1cf', skin: '#e3ad7c' },
-  { shirt: '#3f7cac', cap: '#d4a72c', pants: '#c2b59b', skin: '#8d5524' },
-  { shirt: '#e3b448', cap: '#2f4f3a', pants: '#4a4e57', skin: '#f1c27d' },
-  { shirt: '#5f8d4e', cap: '#7b2d26', pants: '#2f3542', skin: '#c68642' },
-  { shirt: '#efe6d2', cap: '#1d3557', pants: '#5b6b7a', skin: '#ffdbac' },
-  { shirt: '#8d99ae', cap: '#b23a48', pants: '#3a3a3a', skin: '#a0662f' },
-];
+type Mat = (c: string, r?: number) => THREE.MeshStandardMaterial;
+
+/** Hair, drawn so it sits under whatever is on the head. */
+function buildHair(kind: number, mat: THREE.Material, hat: Hat['shape']): THREE.Group {
+  const g = new THREE.Group();
+  if (kind === 0) return g;
+  const covered = hat !== 'none' && hat !== 'visor';
+  // A close crop over the top and back of the head (a hat hides the top of it).
+  const crop = new THREE.Mesh(new THREE.SphereGeometry(0.117, 14, 10, 0, Math.PI * 2, 0, Math.PI * (covered ? 0.62 : 0.56)), mat);
+  crop.scale.set(0.94, 1.03, 1.02);
+  crop.position.set(0, 0.022, 0.006);
+  crop.rotation.x = 0.32;
+  g.add(crop);
+  const ball = (r: number, x: number, y: number, z: number) => { const b = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), mat); b.position.set(x, y, z); g.add(b); };
+  if (kind === 2) {
+    // Curls: a ring of them round the sides and back, and over the top when nothing is in the way.
+    for (let i = 0; i < 9; i++) { const a = Math.PI * 0.25 + (i / 8) * Math.PI * 1.5; ball(0.046, Math.sin(a) * 0.092, -0.005, -Math.cos(a) * 0.092 + 0.012); }
+    if (!covered) for (let i = 0; i < 7; i++) { const a = (i / 7) * Math.PI * 2; ball(0.05, Math.sin(a) * 0.06, 0.105, Math.cos(a) * 0.06 + 0.008); }
+  } else if (kind === 3) {
+    // Long: down the back to the shoulders.
+    const fall = new THREE.Mesh(new THREE.CapsuleGeometry(0.075, 0.13, 4, 8), mat);
+    fall.scale.set(1.15, 1, 0.55);
+    fall.position.set(0, -0.085, 0.082);
+    g.add(fall);
+  } else if (kind === 4) {
+    // Ponytail: out through the back.
+    const tail = new THREE.Mesh(new THREE.CapsuleGeometry(0.03, 0.13, 4, 6), mat);
+    tail.position.set(0, -0.03, 0.145);
+    tail.rotation.x = -0.5;
+    g.add(tail);
+    ball(0.036, 0, 0.035, 0.115);
+  } else if (kind === 5) {
+    // Bun: high on the back of the head.
+    ball(0.05, 0, covered ? 0.02 : 0.085, covered ? 0.125 : 0.095);
+  }
+  return g;
+}
+
+/** A hat. The brim of a cap is the clearest "where are they looking" cue, so most have one. */
+function buildHat(hat: Hat, mat: Mat): THREE.Group {
+  const g = new THREE.Group();
+  if (hat.shape === 'none') return g;
+  const main = mat(hat.color, 0.7);
+  const accent = hat.accent ? mat(hat.accent, 0.7) : main;
+  const dome = (r: number, sy: number) => { const d = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), main); d.position.y = 0.045; d.scale.set(0.95, sy, 1.02); return d; };
+  const brim = (mt: THREE.Material) => {
+    const b = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.012, 16, 1, false, -Math.PI / 2, Math.PI), mt);
+    b.scale.set(1.05, 1, 1.25);
+    b.position.set(0, 0.05, -0.08);
+    b.rotation.x = 0.12;
+    return b;
+  };
+  if (hat.shape === 'cap' || hat.shape === 'back') {
+    g.add(dome(0.118, 0.85), brim(accent));
+    if (hat.accent) { const button = new THREE.Mesh(new THREE.SphereGeometry(0.014, 8, 6), accent); button.position.y = 0.146; g.add(button); }
+    if (hat.shape === 'back') g.rotation.y = Math.PI;
+  } else if (hat.shape === 'visor') {
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.113, 0.113, 0.035, 18, 1, true), main);
+    band.scale.set(0.95, 1, 1.02);
+    band.position.y = 0.06;
+    g.add(band, brim(main));
+  } else if (hat.shape === 'bucket') {
+    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.105, 0.12, 0.085, 16), main);
+    crown.position.y = 0.095;
+    const skirt = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.185, 0.05, 18, 1, true), main);
+    skirt.position.y = 0.03;
+    (skirt.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
+    g.add(crown, skirt);
+  } else if (hat.shape === 'beanie') {
+    const d = dome(0.122, 1.02);
+    d.position.y = 0.03;
+    const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.121, 0.121, 0.04, 18, 1, true), accent);
+    cuff.scale.set(0.95, 1, 1.02);
+    cuff.position.y = 0.045;
+    const bobble = new THREE.Mesh(new THREE.SphereGeometry(0.026, 8, 6), accent);
+    bobble.position.y = 0.165;
+    g.add(d, cuff, bobble);
+  } else if (hat.shape === 'straw') {
+    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.112, 0.09, 16), main);
+    crown.position.y = 0.1;
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.235, 0.235, 0.012, 24), main);
+    disc.position.y = 0.055;
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.114, 0.114, 0.026, 16, 1, true), accent);
+    band.position.y = 0.072;
+    g.add(crown, disc, band);
+  }
+  return g;
+}
 
 const UP = new THREE.Vector3(0, 1, 0);
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpC = new THREE.Vector3();
+const tmpQ = new THREE.Quaternion();
 
 const THIGH = 0.45, SHIN = 0.44, HIP_W = 0.1, HIP_Y = 0.92;
 const UPPER = 0.29, FORE = 0.27;
@@ -133,6 +215,9 @@ export class Avatar {
   private sleeveA = new THREE.Vector3();
   private sleeveB = new THREE.Vector3();
   private diveK = 0;
+  private gloveK = 0;
+  private gloveV = 0;
+  private gloveSet = false;
   private debt = 0;
   private showK = 0;
   /** World position of the eyes (first-person camera). */
@@ -151,47 +236,63 @@ export class Avatar {
   readonly headTop = new THREE.Vector3();
   readonly chestPos = new THREE.Vector3();
 
-  constructor(home: Vec3, facing: number, public hand: Hand, look: number, windup = 0) {
-    const L = LOOKS[look % LOOKS.length];
+  constructor(home: Vec3, facing: number, public hand: Hand, readonly style: Style, windup = 0) {
     const m = (c: string, r = 0.8) => { const x = new THREE.MeshStandardMaterial({ color: c, roughness: r }); this.mats.push(x); return x; };
-    const pants = m(L.pants), skin = m(L.skin, 0.6), shoe = m('#efeae0', 0.7);
+    const skinHex = SKINS[style[S.skin]], top = TOPS[style[S.top]], hat = HATS[style[S.hat]];
+    const w = BUILDS[style[S.build]].w;
+    const pants = m(PANTS[style[S.pants]]), skin = m(skinHex, 0.6), shoe = m('#efeae0', 0.7);
     // The head and chest get their own materials: in first person they fade
     // out of the way (and keep casting your shadow on the grass).
     const core = (c: string, r = 0.8) => { const x = m(c, r); this.coreMats.push(x); return x; };
-    const shirtC = core(L.shirt), skinC = core(L.skin, 0.6), capC = core(L.cap, 0.7);
+    const shirtC = core(top.color), skinC = core(skinHex, 0.6);
+    // A raglan's sleeves are the other colour.
+    const sleeveHex = top.pattern === 'raglan' && top.accent ? top.accent : top.color;
     this.bodyYaw = facing;
     this.windup = getWindup(windup);
 
-    // Legs: thigh + shin per side, knees solved each frame.
-    this.legSegs = [seg(pants, 0.085, 0.07), seg(pants, 0.068, 0.055), seg(pants, 0.085, 0.07), seg(pants, 0.068, 0.055)];
-    this.knees = [joint(pants, 0.072), joint(pants, 0.072)];
+    // Legs: thigh + shin per side, knees solved each frame. (A build is how
+    // thick you are, never how far you reach: joints stay where they are.)
+    this.legSegs = [seg(pants, 0.085 * w, 0.07 * w), seg(pants, 0.068 * w, 0.055 * w), seg(pants, 0.085 * w, 0.07 * w), seg(pants, 0.068 * w, 0.055 * w)];
+    this.knees = [joint(pants, 0.072 * w), joint(pants, 0.072 * w)];
     this.shoes = [0, 1].map(() => {
       const g = new THREE.BoxGeometry(0.11, 0.075, 0.27);
       g.translate(0, 0.0375, -0.05);
-      const s = new THREE.Mesh(g, shoe);
-      s.castShadow = true;
-      return s;
+      const sh = new THREE.Mesh(g, shoe);
+      sh.castShadow = true;
+      return sh;
     });
     this.root.add(...this.legSegs, ...this.knees, ...this.shoes);
 
     // Pelvis carries the torso; it drops and shifts with weight.
     // (The hips fade with the head and chest in first person: from above they are just a blob.)
-    const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.1, 4, 10), core(L.pants));
+    const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.1, 4, 10), core(PANTS[style[S.pants]]));
     hips.rotation.z = Math.PI / 2;
-    hips.scale.set(1, 1, 0.75);
+    hips.scale.set(w, 1, 0.75 * w);
     this.pelvis.add(hips);
     this.root.add(this.pelvis);
     this.torso.position.y = 0.04;
     this.torso.rotation.order = 'YXZ';
     this.pelvis.add(this.torso);
     this.chest = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.32, 4, 10), shirtC);
-    this.chest.scale.set(1.18, 1, 0.7);
+    this.chest.scale.set(1.18 * w, 1, 0.7 * w);
     this.chest.position.y = 0.3;
     this.torso.add(this.chest);
+    if (top.accent && top.pattern !== 'raglan') {
+      // Stripes are two bands round the chest; a two-tone is one deep one round the waist.
+      const accent = core(top.accent);
+      const bands = top.pattern === 'stripes' ? [[0.36, 0.045], [0.24, 0.045]] : [[0.17, 0.2]];
+      for (const [y, h] of bands) {
+        const band = new THREE.Mesh(new THREE.CylinderGeometry(0.1725, 0.1725, h, 20, 1, true), accent);
+        band.scale.set(1.18 * w, 1, 0.7 * w);
+        band.position.y = y;
+        this.torso.add(band);
+      }
+    }
     this.shoulderL.position.set(-0.215, 0.5, 0);
     this.shoulderR.position.set(0.215, 0.5, 0);
     this.torso.add(this.shoulderL, this.shoulderR);
-    for (const sh of [this.shoulderL, this.shoulderR]) sh.add(joint(shirtC, 0.062));
+    const shoulderMat = core(sleeveHex);
+    for (const sh of [this.shoulderL, this.shoulderR]) sh.add(joint(shoulderMat, 0.062 * w));
     const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.056, 0.1, 8), skinC);
     neck.position.y = 0.6;
     this.torso.add(neck);
@@ -211,27 +312,20 @@ export class Avatar {
       ear.position.set(sx * 0.1, 0.0, 0.0);
       this.head.add(ear);
     }
-    // Ball cap: crown + brim. The brim is the clearest "where are they looking" cue.
-    const crown = new THREE.Mesh(new THREE.SphereGeometry(0.118, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), capC);
-    crown.position.y = 0.045;
-    crown.scale.set(0.95, 0.85, 1.02);
-    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.012, 16, 1, false, -Math.PI / 2, Math.PI), capC);
-    brim.scale.set(1.05, 1, 1.25);
-    brim.position.set(0, 0.05, -0.08);
-    brim.rotation.x = 0.12;
-    this.head.add(crown, brim);
+    this.head.add(buildHair(style[S.hair], core(HAIR_COLORS[style[S.hairColor]], 0.9), hat.shape));
+    this.head.add(buildHat(hat, core));
 
     // Arms live in world space (IK each frame).
     // In first person the throwing arm's sleeve fades with the head and chest (its
     // shoulder sits right under the camera). The glove arm keeps its sleeve, so the
     // arm you watch is a whole arm; it only thins out if it swings in close to the lens.
-    this.sleeve = m(L.shirt);
-    this.armSegs = [seg(this.sleeve, 0.046, 0.04), seg(skin, 0.038, 0.032), seg(shirtC, 0.046, 0.04), seg(skin, 0.038, 0.032)];
-    this.elbows = [joint(skin, 0.038), joint(skin, 0.038)];
-    this.glove = buildGlove();
-    this.glove.scale.setScalar(1.25);
-    if (hand === 'L') this.glove.scale.x = -1.25;
-    this.handMesh = buildHand(L.skin);
+    this.sleeve = m(sleeveHex);
+    this.armSegs = [seg(this.sleeve, 0.046 * w, 0.04 * w), seg(skin, 0.038 * w, 0.032 * w), seg(core(sleeveHex), 0.046 * w, 0.04 * w), seg(skin, 0.038 * w, 0.032 * w)];
+    this.elbows = [joint(skin, 0.038 * w), joint(skin, 0.038 * w)];
+    // A regular glove, at its real size.
+    this.glove = buildGlove(GLOVES[style[S.glove]]);
+    if (hand === 'L') this.glove.scale.x = -1;
+    this.handMesh = buildHand(skinHex);
     this.handMesh.scale.setScalar(1.1);
     if (hand === 'L') this.handMesh.scale.x = -1.1;
     this.root.add(...this.armSegs, ...this.elbows, this.glove, this.handMesh);
@@ -325,6 +419,7 @@ export class Avatar {
     this.recoil = Math.min(1, 0.35 + speed / 26);
     this.recoilDir.set(vel[0], vel[1], vel[2]).normalize();
     this.closure = 1;
+    this.gloveV += 9;
   }
   /** Throwing hand reaches over and takes the ball out of the glove. */
   transfer() { this.transferT = 0; }
@@ -521,8 +616,15 @@ export class Avatar {
     if (P && dw > 0) gp.lerp(pitch(P.glove), dw);
     this.recoil = Math.max(0, this.recoil - dt * 4.2);
     if (this.recoil > 0) gp.addScaledVector(this.recoilDir, 0.09 * Math.sin(this.recoil * Math.PI) * this.recoil);
+    // The glove is alive: it opens to take a throw, snaps shut on the ball (a
+    // stiff spring, so it overshoots into a squeeze), holds, and eases back to its cup.
     this.closure = Math.max(0, this.closure - dt * 1.6);
-    setGloveClosure(this.glove, Math.min(1, this.closure * 1.6 + (f.gloved ? 0.35 : 0)));
+    const shut = this.closure > 0.35 || !!f.gloved;
+    const wantShape = shut ? 1 : f.ready ? -0.4 : 0;
+    const stiff = shut ? 900 : 110, dampK = shut ? 34 : 16;
+    this.gloveV += ((wantShape - this.gloveK) * stiff - this.gloveV * dampK) * Math.min(dt, 0.02);
+    this.gloveK += this.gloveV * Math.min(dt, 0.02);
+    setGloveClosure(this.glove, clamp(this.gloveK, -0.6, 1.25));
     // Pocket faces where the ball comes from (or out in front).
     const faceDir = f.look && dw < 0.5 ? tmpB.set(f.look[0] - gp.x, f.look[1] - lift - gp.y, f.look[2] - gp.z).normalize() : fwd.clone();
     if (faceDir.dot(fwd) < -0.2) faceDir.copy(fwd);
@@ -561,7 +663,10 @@ export class Avatar {
       upHint.lerp(fa, dw).normalize();
     }
     const lookM = new THREE.Matrix4().lookAt(gp, tmpA.copy(gp).sub(faceDir), upHint);
-    this.glove.quaternion.setFromRotationMatrix(lookM);
+    // The wrist turns smoothly; it doesn't flick from one facing to the next.
+    tmpQ.setFromRotationMatrix(lookM);
+    if (!this.gloveSet) { this.glove.quaternion.copy(tmpQ); this.gloveSet = true; }
+    else this.glove.quaternion.slerp(tmpQ, 1 - Math.exp(-dt / 0.045));
     this.gloveWorldPos.copy(gp);
     this.gloveWorldPos.y += lift;
 

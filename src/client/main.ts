@@ -5,13 +5,15 @@ import { positionAt, simulateFlight, solveThrowTo, type Trajectory } from '../sh
 import { type Hand, clampReach, gloveReady, interceptPlan, lookAngles, seatLayout } from '../shared/pose';
 import { Arm, type BallEvent, type PlayerInfo, type ScoreState, isGreatCatch, isRoomCode, randomRoomCode, sanitizeName } from '../shared/protocol';
 import type { Vec3 } from '../shared/vec';
+import { sameStyle } from '../shared/style';
 import { DEFAULT_WINDUP, HOUSE_WINDUP, RELEASE_TIME, WINDUPS, getWindup, releasePointFor } from '../shared/windups';
 import { audio } from './audio';
 import { Game } from './game';
 import { haptic } from './haptics';
 import type { NetStatus } from './net';
 import { serverHttpUrl } from './net';
-import { Avatar, LOOKS } from './scene/avatar';
+import { BUILDS, GLOVES, HAIRS, HAIR_COLORS, HATS, type Kind, MILESTONES, PANTS, S, SKINS, type Style, TOPS, defaultStyle, nextMilestone, owns, rewardAt } from '../shared/style';
+import { Avatar } from './scene/avatar';
 import { buildBall } from './scene/gear';
 import { CameraRig } from './scene/camera';
 import { buildWorld } from './scene/world';
@@ -61,13 +63,13 @@ class Backdrop {
   private t = 0;
   /** The windup selector's model: one player, throwing your delivery on a loop. */
   private model: Avatar | null = null;
-  private show: { id: number; t: number } | null = null;
+  private show: { id: number; t: number; look: boolean } | null = null;
   private cam = new THREE.PerspectiveCamera(40, 1, 0.1, 600);
 
   constructor() {
     this.seats.forEach((s, i) => {
       // Two friends, two deliveries.
-      const a = new Avatar(s.pos, s.yaw, i === 0 ? 'R' : 'L', i === 0 ? 0 : 2, i === 0 ? DEFAULT_WINDUP : HOUSE_WINDUP);
+      const a = new Avatar(s.pos, s.yaw, i === 0 ? 'R' : 'L', i === 0 ? prefs().style : defaultStyle('a friend'), i === 0 ? DEFAULT_WINDUP : HOUSE_WINDUP);
       this.world.scene.add(a.root);
       this.avatars.push(a);
     });
@@ -92,25 +94,32 @@ class Backdrop {
   stop() { this.running = false; cancelAnimationFrame(this.raf); }
 
   /** Show one player throwing windup `id` (or go back to the two friends with null). */
-  showcase(id: number | null, hand: Hand = 'R', look = 0) {
+  showcase(id: number | null, hand: Hand = 'R', style: Style = prefs().style, look = false) {
     if (id === null) {
       this.show = null;
       if (this.model) this.model.root.visible = false;
+      // The friend in the foreground of the home screen is you: wear what you just chose.
+      if (!sameStyle(this.avatars[0].style, prefs().style)) {
+        const old = this.avatars[0];
+        this.avatars[0] = new Avatar(this.seats[0].pos, this.seats[0].yaw, old.hand, prefs().style, old.windupId);
+        this.world.scene.add(this.avatars[0].root);
+        old.dispose();
+      }
       for (const a of this.avatars) a.root.visible = true;
       this.rig.reset();
       return;
     }
     const seat = this.seats[0];
-    if (!this.model || this.model.hand !== hand) {
+    if (!this.model || this.model.hand !== hand || !sameStyle(this.model.style, style)) {
       this.model?.dispose();
-      this.model = new Avatar(seat.pos, seat.yaw, hand, look, id);
+      this.model = new Avatar(seat.pos, seat.yaw, hand, style, id);
       this.world.scene.add(this.model.root);
     }
     this.model.setWindup(id);
     this.model.root.visible = true;
     this.model.teleport(seat.pos, lookAngles(seat.pos, this.seats[1].pos).yaw);
     for (const a of this.avatars) a.root.visible = false;
-    this.show = { id, t: 0 };
+    this.show = { id, t: look && this.show?.look ? this.show.t : 0, look };
   }
 
   /** The selector's loop: set, wind up, hold the top for a beat, deliver, watch it go, again. */
@@ -120,6 +129,7 @@ class Backdrop {
     renderer.setSize(w, h, false);
     const seat = this.seats[0], other = this.seats[1];
     const yaw = lookAngles(seat.pos, other.pos).yaw;
+    if (s.look) { this.frameLook(dt, s, av, yaw, w, h); return; }
     const wu = getWindup(s.id);
     const SET = 0.55, top = SET + wu.params.tempo, go = top + 0.3, rel = go + RELEASE_TIME, end = go + 1.9;
     s.t += dt;
@@ -154,6 +164,32 @@ class Backdrop {
     this.cam.aspect = w / h;
     this.cam.updateProjectionMatrix();
     this.ball.scale.setScalar(1);
+    this.world.update(dt, this.t);
+    renderer.render(this.world.scene, this.cam);
+  }
+
+  /** The look editor: your player standing easy, turning slowly so you can see all of it, glove working now and then. */
+  private frameLook(dt: number, s: { t: number }, av: Avatar, yaw: number, w: number, h: number) {
+    const seat = this.seats[0];
+    s.t += dt;
+    const turn = yaw + Math.PI + Math.sin(s.t * 0.5) * 1.15;
+    // Glove held easy, in close.
+    const g = gloveReady(turn, av.hand);
+    g[0] *= 0.75; g[2] *= 0.75; g[1] += 0.08;
+    // Every few seconds the glove snaps shut, as if a ball had just arrived.
+    const beat = s.t % 3.2;
+    if (beat < dt) av.catchImpact([0, -0.2, 1], 12);
+    av.update(dt, { pose: { x: seat.pos[0], z: seat.pos[2], yaw: turn, g }, arm: Arm.Idle, charge: 0, look: null, gloved: beat < 0.5, ready: beat > 2.5 });
+    this.ball.visible = false;
+    const f = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+    const portrait = w < h;
+    // Head to toe in the part of the screen the sheet leaves free.
+    const dist = portrait ? 6.0 : 3.6;
+    this.cam.position.set(seat.pos[0], 1.3, seat.pos[2]).addScaledVector(f, -dist);
+    this.cam.lookAt(seat.pos[0], portrait ? -0.5 : 1.0, seat.pos[2]);
+    this.cam.fov = portrait ? 46 : 36;
+    this.cam.aspect = w / h;
+    this.cam.updateProjectionMatrix();
     this.world.update(dt, this.t);
     renderer.render(this.world.scene, this.cam);
   }
@@ -236,7 +272,8 @@ function home(notice?: string) {
       <div class="stack">
         <button class="btn btn-primary" data-act="play">PLAY CATCH</button>
         <button class="btn btn-glass" data-act="join">JOIN FRIEND</button>
-        <div class="pair">
+        <div class="pair three">
+          <button class="btn btn-text" data-act="look" aria-label="Change how your player looks${prefs().fresh.length ? '. New items unlocked' : ''}">LOOK${prefs().fresh.length ? '<i class="new-dot"></i>' : ''}</button>
           <button class="btn btn-text" data-act="windup" aria-label="Choose your windup. Current: number ${getWindup(prefs().windup).id}">WINDUP <b class="num">${getWindup(prefs().windup).label}</b></button>
           <button class="btn btn-text" data-act="settings">SETTINGS</button>
         </div>
@@ -251,6 +288,7 @@ function home(notice?: string) {
   ui.querySelector('[data-act=join]')!.addEventListener('click', () => { audio.unlock(); joinSheet(); });
   ui.querySelector('[data-act=settings]')!.addEventListener('click', () => settingsSheet(() => home()));
   ui.querySelector('[data-act=windup]')!.addEventListener('click', () => { audio.unlock(); windupSheet(() => home()); });
+  ui.querySelector('[data-act=look]')!.addEventListener('click', () => { audio.unlock(); lookSheet(() => home()); });
 }
 
 function sheet(html: string, onClose?: () => void): HTMLElement {
@@ -386,8 +424,7 @@ function bindSettings(el: HTMLElement) {
  */
 function windupSheet(onClose?: () => void) {
   const inGame = !!game;
-  const mine = roster.find((p) => p.id === me);
-  const preview = (id: number) => backdrop.showcase(id, prefs().hand, mine?.look ?? 0);
+  const preview = (id: number) => backdrop.showcase(id, prefs().hand, prefs().style);
   ui.querySelector('.home')?.setAttribute('hidden', '');
   app.classList.add('choosing');
   if (game) game.renderEnabled = false;
@@ -428,6 +465,93 @@ function windupSheet(onClose?: () => void) {
   }));
   el.querySelector('#done')!.addEventListener('click', () => closeSheet(el));
   sync(false);
+}
+
+/**
+ * The look editor. Your player stands on the field behind the sheet, turning
+ * slowly; what you tap is what they wear, saved at once and shown to everyone
+ * you play with. Things you haven't earned yet say what earns them.
+ */
+function lookSheet(onClose?: () => void) {
+  const inGame = !!game;
+  let tab = prefs().fresh.length ? (rewardAt(prefs().fresh[0])?.kind ?? 'body') : 'body';
+  const fresh = new Set(prefs().fresh);
+  save({ fresh: [] });
+  ui.querySelector('.home')?.setAttribute('hidden', '');
+  app.classList.add('choosing');
+  if (game) game.renderEnabled = false;
+  const preview = () => backdrop.showcase(prefs().windup, prefs().hand, prefs().style, true);
+  preview();
+  backdrop.start();
+  const el = sheet(`
+    <div class="wu-head"><h2>Look</h2><b class="wu-num" id="lknext"></b></div>
+    <div class="tabs" role="tablist">
+      ${[['body', 'Body'], ['hat', 'Hat'], ['glove', 'Glove'], ['top', 'Clothes']].map(([k, n]) => `<button type="button" role="tab" data-tab="${k}">${n}</button>`).join('')}
+    </div>
+    <div class="look" id="lkbody"></div>
+    <div class="actions"><button class="btn btn-ink" id="done">Done</button></div>`, () => {
+    app.classList.remove('choosing');
+    backdrop.showcase(null);
+    if (inGame && game) { backdrop.stop(); game.renderEnabled = true; }
+    onClose?.();
+  });
+  el.classList.add('clear');
+  const set = (i: number, v: number) => {
+    const st = [...prefs().style] as Style;
+    st[i] = v;
+    save({ style: st });
+    game?.setStyle(st);
+    preview();
+    haptic('light');
+    render();
+  };
+  const swatches = (label: string, i: number, colors: string[]) => `
+    <div class="lk-row"><span>${label}</span><div class="swatches" role="radiogroup" aria-label="${label}">
+      ${colors.map((c, k) => `<button type="button" class="swatch" role="radio" aria-checked="${prefs().style[i] === k}" aria-label="${label} ${k + 1}" data-set="${i}:${k}" style="--c:${c}"></button>`).join('')}
+    </div></div>`;
+  const chips = (label: string, i: number, names: string[]) => `
+    <div class="lk-row"><span>${label}</span><div class="chips" role="radiogroup" aria-label="${label}">
+      ${names.map((n, k) => `<button type="button" class="pick" role="radio" aria-checked="${prefs().style[i] === k}" data-set="${i}:${k}">${esc(n)}</button>`).join('')}
+    </div></div>`;
+  const items = (kind: Kind, i: number, list: { name: string; at: number }[], color: (k: number) => string) => `
+    <div class="items" role="radiogroup" aria-label="${kind}">
+      ${list.map((it, k) => {
+        const mine = owns(kind, k, prefs().earned);
+        return `<button type="button" class="item${mine ? '' : ' locked'}" role="radio" aria-checked="${prefs().style[i] === k}" ${mine ? `data-set="${i}:${k}"` : 'aria-disabled="true"'}
+          aria-label="${esc(it.name)}${mine ? '' : `, earned at ${it.at} in a row`}">
+          <i style="--c:${color(k)}"></i><b>${esc(it.name)}</b>
+          <small>${mine ? (fresh.has(it.at) ? 'New' : it.at ? `Earned at ${it.at}` : '&nbsp;') : `${it.at} in a row`}</small>
+        </button>`;
+      }).join('')}
+    </div>`;
+  function render() {
+    el.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
+    const body = el.querySelector<HTMLElement>('#lkbody')!;
+    body.innerHTML = tab === 'body'
+      ? swatches('Skin', S.skin, SKINS) + chips('Build', S.build, BUILDS.map((b) => b.name)) + chips('Hair', S.hair, HAIRS) + swatches('Hair colour', S.hairColor, HAIR_COLORS)
+      : tab === 'hat' ? items('hat', S.hat, HATS, (k) => HATS[k].shape === 'none' ? 'transparent' : HATS[k].color)
+      : tab === 'glove' ? items('glove', S.glove, GLOVES, (k) => GLOVES[k].leather)
+      : items('top', S.top, TOPS, (k) => TOPS[k].color) + swatches('Trousers', S.pants, PANTS);
+    body.querySelectorAll<HTMLButtonElement>('[data-set]').forEach((b) => b.addEventListener('click', () => {
+      const [i, v] = b.dataset.set!.split(':').map(Number);
+      set(i, v);
+    }));
+    const next = MILESTONES.find((m) => !prefs().earned.includes(m));
+    const r = next ? rewardAt(next) : null;
+    el.querySelector('#lknext')!.textContent = r ? `Next: ${r.name} at ${next}` : 'Everything earned';
+  }
+  el.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.tab as typeof tab; render(); }));
+  el.querySelector('#done')!.addEventListener('click', () => closeSheet(el));
+  render();
+}
+
+/** A streak milestone: something new to wear, once. Returns what it was (or null if you already had it). */
+function earn(milestone: number): string | null {
+  const p = prefs();
+  const r = rewardAt(milestone);
+  if (!r || p.earned.includes(milestone)) return null;
+  save({ earned: [...p.earned, milestone], fresh: [...p.fresh, milestone] });
+  return r.name;
 }
 
 function settingsSheet(onClose?: () => void) {
@@ -581,6 +705,9 @@ function onScore(s: ScoreState, ev?: BallEvent) {
   if (ev?.k === 'drop' && !ev.void) showGrade(ev.by && ev.by === game?.ball.thrower ? 'wild' : 'miss');
   if (ev?.k === 'deflect') showGrade('miss');
   if (ev?.k === 'catch' && ev.milestone) {
+    // Everyone in the room when the streak gets there earns the reward, once.
+    const got = earn(ev.milestone);
+    if (got) { toast(`${ev.milestone} in a row. Unlocked: ${got}`); haptic('firm'); }
     el.classList.add('milestone');
     label.textContent = `${ev.milestone} in a row`;
     setTimeout(() => { el.classList.remove('milestone'); label.innerHTML = distLabel(game?.score ?? s); }, 3200);
@@ -615,7 +742,7 @@ function showGrade(q: string, st?: string | null) {
 function pauseSheet(code: string) {
   const s = game?.score;
   const people = [...roster].sort((a, b) => a.seat - b.seat).map((p) => `
-    <li><span class="dot" style="background:${LOOKS[p.look % LOOKS.length].shirt}"></span>
+    <li><span class="dot" style="background:${TOPS[p.style[S.top]]?.color ?? '#888'}"></span>
       <span class="nm">${esc(p.name)}${p.id === me ? ' <em>you</em>' : ''}${p.bot ? ' <em>practice</em>' : ''}${p.connected ? '' : ' <em>reconnecting</em>'}</span>
       <span class="num">${p.catches} caught${p.perfects ? ` · ${p.perfects} perfect` : ''}${p.saves ? ` · ${p.saves} great` : ''}</span><span class="num">${p.drops} dropped</span></li>`).join('');
   const el = sheet(`
@@ -636,6 +763,8 @@ function pauseSheet(code: string) {
       <ul class="people">${people}</ul>
     </section>
     <section>
+      <div class="row"><label id="lkl">Look</label><button class="btn btn-quiet btn-sm" id="lk" aria-labelledby="lkl lk">${prefs().fresh.length ? '<i class="new-dot"></i>' : ''}Change</button></div>
+      <p class="hint" style="margin:0 2px 10px">${(() => { const n = nextMilestone(s?.streak ?? 0); const nx = MILESTONES.find((m) => !prefs().earned.includes(m)); const r = nx ? rewardAt(nx) : null; return r ? `Next reward: ${esc(r.name)} at ${nx} in a row${n === nx && s ? ` (${nx - s.streak} to go)` : ''}.` : 'You have earned everything there is.'; })()}</p>
       <div class="row"><label id="wul">Windup</label><button class="btn btn-quiet btn-sm" id="wu" aria-labelledby="wul wu"><b class="num">${getWindup(prefs().windup).label}</b>&nbsp;Change</button></div>
     </section>
     ${settingsBody()}
@@ -646,6 +775,7 @@ function pauseSheet(code: string) {
   bindSettings(el);
   el.querySelector('#share')!.addEventListener('click', () => invite(code));
   el.querySelector('#wu')!.addEventListener('click', () => { el.remove(); windupSheet(); });
+  el.querySelector('#lk')!.addEventListener('click', () => { el.remove(); lookSheet(); });
   el.querySelector('#resume')!.addEventListener('click', () => closeSheet(el));
   el.querySelector('#leave')!.addEventListener('click', () => { el.remove(); home(); });
 }

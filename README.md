@@ -50,6 +50,12 @@ One thumb, no buttons on screen:
   glove down and scoop it. A last-instant lunge can still save a near miss.
   Everyone sees how it was caught ("Diving catch · Pocket"), and great catches
   are counted in the pause sheet.
+- **Make the player yours** (LOOK on the home screen, or in the pause sheet):
+  skin, build, hair, and what you wear. Hats, gloves and tops are **earned**:
+  one new thing, once, at 10, 25, 50, 100, 250, 500, 750, 1000, 1500, 2000,
+  3000 and 5000 in a row, for everyone in the room when the streak gets
+  there. What you wear changes nothing about how you play: every glove is the
+  same regular-sized glove.
 - **Both jobs make the POP**: a perfect POP needs a throw that finds the pocket
   *and* a glove held still. The grade word under the streak tells you how it went.
 - Desktop: arrow keys / WASD also move you.
@@ -83,6 +89,17 @@ tests/visual/ authoring tool: a filmstrip of any windup, frame by frame
   speed is whatever that takes, so the same pull is the same throw at any range.
   Your own long throw is filmed by letting go of you and framing the ball and
   your friend: wide on the arc, closing in like a long lens as it comes down.
+- **Looks** (`src/shared/style.ts`). A style is eight small numbers (skin,
+  build, hair, hair colour, hat, glove, top, trousers) indexing shared tables;
+  the avatar is built from it out of primitives, so there are no assets. The
+  server checks a style is well-formed and relays it. What has been earned
+  lives on the device (there are no accounts), so it does not follow you to
+  another phone, and the server takes it on trust; that is acceptable only
+  because nothing cosmetic affects play. A build changes how thick the limbs
+  are drawn, never where the joints are, so reach and release are identical.
+- **The glove** is a regular glove at its real size. It rests as a cup, opens
+  to take a throw, and snaps shut on the ball on a stiff spring (so it
+  overshoots into a squeeze) before easing back.
 - **Bodies and reach.** A player is a body at (x, z) near their spot (they can
   run up to 4.5 m from it), facing a direction, with the glove anywhere inside a
   shared reach envelope (an ellipsoid: crouch to the grass, stretch overhead, a

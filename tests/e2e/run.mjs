@@ -20,6 +20,7 @@ const procs = [];
 const ALPHA = 'ABCDEFGHJKMNPQRSTUVWXYZ';
 const code = () => Array.from({ length: 4 }, () => ALPHA[Math.floor(Math.random() * ALPHA.length)]).join('');
 const results = [];
+const errsExtra = [];
 let failed = 0;
 
 function start(cmd, args, env = {}) {
@@ -560,8 +561,73 @@ try {
   await S1.page.reload();
   check('…and what you have after a reload', /#55/.test(await S1.page.locator('[data-act=windup]').innerText()));
 
+  console.log('\nLOOKS AND REWARDS');
+  {
+    // Choose a look on the home screen: it is saved, and it is what you wear in a room.
+    const P = await ctxHome();
+    await P.page.locator('[data-act=look]').tap();
+    await P.page.locator('[data-tab=body]').tap();
+    await P.page.locator('[data-set="0:4"]').tap();
+    await P.page.locator('[data-set="2:3"]').tap();
+    await P.page.locator('[data-tab=top]').tap();
+    await P.page.locator('[data-set="6:2"]').tap();
+    await P.page.locator('[data-tab=hat]').tap();
+    const lockedN = await P.page.locator('.item.locked').count();
+    const lockedText = await P.page.locator('.item.locked').first().innerText();
+    check('hats you have not earned are shown with what earns them', lockedN === 4 && /25 in a row/.test(lockedText), `${lockedN} locked · ${lockedText.replace(/\s+/g, ' ')}`);
+    await P.page.locator('.item.locked').first().tap({ force: true });
+    const st = await P.page.evaluate(() => JSON.parse(localStorage.getItem('catch.prefs.v1')).style);
+    check('choosing a body, hair and a top saves at once; a locked hat cannot be put on', st[0] === 4 && st[2] === 3 && st[6] === 2 && st[4] < 5, JSON.stringify(st));
+    const tgt = await P.page.locator('.swatch, .pick, .item:not(.locked)').first().boundingBox();
+    check('the choices are comfortable touch targets', tgt.width >= 44 && tgt.height >= 44, `${Math.round(tgt.width)}×${Math.round(tgt.height)} px`);
+    await P.page.locator('#done').tap();
+    // (A home screen draws the field all the time: close it, and the earlier ones, before more players join.)
+    await P.ctx.close();
+    for (const x of [S1, C, D, X, Y, L]) await x.ctx.close().catch(() => {});
+
+    // Two players reach ten in a row together: both earn the reward, once, and can wear it.
+    const room4 = code();
+    const guestU = `e2e-u-${Date.now()}`;
+    const U = await player(room4, 'Uma', 'R', guestU), V = await player(room4, 'Vic', 'L');
+    await waitFor(async () => (await U.state()).players.length === 2 && (await V.state()).players.length === 2);
+    const uId = await idOf(U), vId = await idOf(V);
+    const seen = (await V.state()).players.length === 2 && await V.page.evaluate((id) => window.__catch.game.players.get(id).info.style, uId);
+    const mineU = await U.page.evaluate(() => JSON.parse(localStorage.getItem('catch.prefs.v1')).style);
+    check('the other player is told your look and draws you with it', JSON.stringify(seen) === JSON.stringify(mineU) && JSON.stringify(await V.page.evaluate((id) => window.__catch.game.players.get(id).avatar.style, uId)) === JSON.stringify(mineU), JSON.stringify(seen));
+    for (const p of [U, V]) { await p.page.evaluate(() => { window.__catch.game.steadyAim = true; }); await setAutoMove(p, true); }
+    for (let i = 0; i < 14 && (await U.state()).score.streak < 10; i++) {
+      const s = await waitFor(async () => { const q = await U.state(); return q.ball.phase === 'held' && q.ball.holder ? q : null; }, 9000);
+      const [T, R, rId] = s.ball.holder === uId ? [U, V, vId] : [V, U, uId];
+      await aimAt(T, rId);
+      await waitCanThrow(T);
+      await sleep(350);
+      await aimedThrow(T, rId);
+      await waitFor(async () => { const q = await R.state(); return q.ball.phase === 'held' && q.ball.holder === rId; }, 7000);
+    }
+    await sleep(400);
+    const [su, sv] = [await U.state(), await V.state()];
+    const earnedOf = (p) => p.page.evaluate(() => JSON.parse(localStorage.getItem('catch.prefs.v1')).earned);
+    const [eu, ev] = [await earnedOf(U), await earnedOf(V)];
+    check('ten in a row: both players earn the reward', su.score.streak >= 10 && eu.includes(10) && ev.includes(10), `streak=${su.score.streak} earned U=${JSON.stringify(eu)} V=${JSON.stringify(ev)}`);
+    check('…and by now they are ten steps further apart', su.score.dist === 14 + su.score.streak && sv.score.dist === su.score.dist, `${su.score.dist} m at a streak of ${su.score.streak}`);
+    // Put it on, mid-game: the other phone sees it.
+    await U.page.locator('#pauseBtn').tap();
+    const hint = await U.page.locator('.sheet').innerText();
+    check('the pause sheet says what the next reward is', /Next reward: Bucket hat at 25/.test(hint), (hint.match(/Next reward[^\n]*/) || [''])[0]);
+    await U.page.locator('#lk').tap();
+    await U.page.locator('[data-tab=glove]').tap();
+    const newTag = await U.page.locator('.item[data-set="5:2"]').innerText();
+    await U.page.locator('.item[data-set="5:2"]').tap();
+    await U.page.locator('#done').tap();
+    const worn = await waitFor(() => V.page.evaluate((id) => window.__catch.game.players.get(id).avatar.style[5] === 2, uId), 4000);
+    check('the earned glove can be put on mid-game, and the other player sees it', !!worn && /Black/.test(newTag), newTag.replace(/\s+/g, ' '));
+    // Once only: reload, come back, drop and climb past ten again, and nothing is handed out twice.
+    check('a reward is given once', eu.filter((m) => m === 10).length === 1);
+    errsExtra.push(...P.errors, ...U.errors, ...V.errors);
+  }
+
   console.log('\nPERFORMANCE / STABILITY');
-  const errs = [A, B, C, D, L, X, Y, S1].flatMap((x) => x.errors);
+  const errs = [...[A, B, C, D, L, X, Y, S1].flatMap((x) => x.errors), ...errsExtra];
   check('no page errors in any client', errs.length === 0, errs.slice(0, 3).join(' | '));
   const loops = await A.page.evaluate(async () => {
     let n = 0; const t0 = performance.now();

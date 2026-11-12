@@ -9,6 +9,7 @@ import {
   CATCH_WEB,
 } from './constants.js';
 import type { Hand } from './pose.js';
+import type { Style } from './style.js';
 import type { Vec3 } from './vec.js';
 
 export type CatchQuality = 'perfect' | 'pocket' | 'web' | 'bobble';
@@ -82,8 +83,8 @@ export interface PlayerInfo {
   saves: number;
   /** Which windup they throw with (a number from the library). */
   windup: number;
-  /** Shirt/cap colour index. */
-  look: number;
+  /** What they look like and wear (cosmetic only). */
+  style: Style;
 }
 
 export type BallPhase = 'held' | 'flight' | 'loose';
@@ -126,7 +127,7 @@ export type BallEvent =
 // ---- client -> server ------------------------------------------------------
 
 export type ClientMsg =
-  | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number; w?: number }
+  | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number; w?: number; s?: number[] }
   | { t: 'ping'; c: number }
   /** x, z, yaw, gx, gy, gz, arm, windup phase, lift, dive — rounded. */
   | { t: 'st'; p: PoseWire }
@@ -135,7 +136,7 @@ export type ClientMsg =
   | { t: 'throw'; rt: number; p: Vec3; v: Vec3; tid: number }
   /** Pose (x, z, yaw, gx, gy, gz, lift, dive) at the moment of contact. */
   | { t: 'catch'; tid: number; at: number; pose: number[] }
-  | { t: 'prof'; name: string; hand: Hand; w?: number }
+  | { t: 'prof'; name: string; hand: Hand; w?: number; s?: number[] }
   | { t: 'rec'; key: string; best: number }
   | { t: 'leave' };
 
@@ -164,12 +165,13 @@ export type PoseWire = [number, number, number, number, number, number, number, 
 export type SnapEntry = [string, number, number, number, number, number, number, number, number, number, number];
 
 /**
+ * 5: players carry a style (body, hat, glove, top) instead of a palette number.
  * 4: long-distance catch (the room carries its distance; throws are as hard as the distance takes).
  * 2: third-person bodies that move (pose carries position + glove point).
  * 3: signature windups (players carry a windup; the ball leaves the hand a
  *    beat after the arm starts forward) and leaps/dives in the pose.
  */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /** Room codes: 4 letters, no ambiguous characters. */
 export const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ';
