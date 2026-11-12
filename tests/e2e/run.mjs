@@ -417,6 +417,25 @@ try {
   const untilTta = (p, secs) => p.page.evaluate((secs) => new Promise((res) => { const g = window.__catch.game; const t0 = performance.now(); const f = () => { const s = g.debugState(); if ((s.tta !== null && s.tta <= secs) || s.ball.phase !== 'flight' || performance.now() - t0 > 4000) res(s.tta); else requestAnimationFrame(f); }; f(); }), secs);
   const gradeText = (p) => p.page.locator('#grade').textContent();
 
+  // 0. Wide, and the catcher just moves a thumb toward it (no flick): they run under it,
+  //    and the view slides over with them instead of swinging round.
+  await waitCanThrow(T1);
+  await aimAt(T1, r1Id);
+  const from0 = (await R1.state()).pos.slice();
+  await throwGesture(T1, { pull: 60, side: 150 });
+  const w0 = await waitFor(() => crossOf(R1), 3000, 8);
+  const turns = R1.page.evaluate(() => new Promise((res) => { const g = window.__catch.game; let m = 0; const f = () => { const s = g.debugState(); m = Math.max(m, Math.abs(s.turn)); if (s.ball.phase === 'flight') requestAnimationFrame(f); else res(m); }; f(); }));
+  await R1.touch('touchStart', [[195, 480]]);
+  for (let i = 1; i <= 10; i++) { await R1.touch('touchMove', [[195 + Math.sign(w0.right) * i * 3, 480]]); await sleep(30); }
+  const ran0 = await waitFor(async () => { const s = await R1.state(); return s.ball.phase === "held" && s.ball.holder === r1Id ? s : s.ball.phase === "loose" ? { fail: true } : null; }, 5000, 20);
+  await R1.touch('touchEnd', []);
+  const maxTurn = await turns;
+  const moved0 = ran0 && !ran0.fail ? Math.hypot(ran0.pos[0] - from0[0], ran0.pos[2] - from0[2]) : 0;
+  check('a wide throw: move your thumb toward it and you run under it and catch it', !!ran0 && !ran0.fail && moved0 > 0.8, `off by ${w0?.right?.toFixed(2)} m, ran ${moved0.toFixed(2)} m, ${(await T1.state()).lastCatch?.st ?? 'routine'}`);
+  check('…and the view never swings round to chase it', maxTurn < 0.45, `turned at most ${(maxTurn * 57.3).toFixed(0)}°`);
+  [T1, R1, t1Id, r1Id] = [R1, T1, r1Id, t1Id];
+  await sleep(1900);
+
   // 1. Wide: ~1.9 m off the glove. Out of reach from where the catcher stands.
   await waitCanThrow(T1);
   await aimAt(T1, r1Id);

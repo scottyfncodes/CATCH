@@ -38,8 +38,9 @@ One thumb, no buttons on screen:
   ring before it shuts: dead centre is a perfect POP. The ring's colour is the
   honest answer to "can I get that?": cream is routine, amber is one you have
   to go and get, red needs something special, grey is gone.
-- **Bad throws are a chance at a great catch.** Wide of you: **flick toward
-  it** and you dive. Over your head: **flick up** and you leap. Low: get the
+- **Bad throws are a chance at a great catch.** Off to one side: **move your
+  thumb toward it** and you run under it (your view slides over with you; it
+  doesn't swing round). Too far to run: **flick toward it** and you dive. Over your head: **flick up** and you leap. Low: get the
   glove down and scoop it. A last-instant lunge can still save a near miss.
   Everyone sees how it was caught ("Diving catch · Pocket"), and great catches
   are counted in the pause sheet.

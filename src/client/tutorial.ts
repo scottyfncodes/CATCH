@@ -6,6 +6,9 @@ import { prefs, save } from './storage';
 
 type Skill = 'throw' | 'move' | 'catch';
 
+/** Bump when the way you play changes, so people who learned the old way get the tips once more. */
+const TIPS = 2;
+
 export class Tutorial {
   private el: HTMLDivElement;
   private ghost: HTMLDivElement;
@@ -80,7 +83,7 @@ export class Tutorial {
       return;
     }
     if (!this.holding && !this.done.has('catch') && !this.done.has('move')) {
-      this.show('move', 'Drag to move your glove<small>Where you hold it is their target. When the throw comes, get your glove to the ring. Flick to dive or jump for a wild one.</small>', 'move');
+      this.show('move', 'Drag to move your glove<small>Where you hold it is their target. When the throw comes, get your glove to the ring. Off target? Drag toward it and you run; flick and you dive or jump.</small>', 'move');
       return;
     }
     if (this.done.has('throw') && this.done.has('catch')) {
@@ -95,7 +98,7 @@ export class Tutorial {
   finish() {
     this.finished = true;
     this.hide();
-    save({ tutorialDone: true });
+    save({ tutorialDone: true, tipsSeen: TIPS });
   }
 
   restart() {
@@ -106,7 +109,7 @@ export class Tutorial {
     this.render();
   }
 
-  static needed() { return !prefs().tutorialDone; }
+  static needed() { return !prefs().tutorialDone || prefs().tipsSeen < TIPS; }
 
   destroy() { this.el.remove(); this.ghost.remove(); }
 }

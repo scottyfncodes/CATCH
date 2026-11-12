@@ -13,6 +13,10 @@ export interface Prefs {
   /** Whether the player has completed the profile step. */
   profiled: boolean;
   tutorialDone: boolean;
+  /** Which set of tips they have seen (the tips are shown again when how you play changes). */
+  tipsSeen: number;
+  /** Dives and leaps made: the flick is hinted at until you have the hang of it. */
+  acts: number;
   volume: number;
   haptics: boolean;
   /** Best streak per group key (mirrors the server; re-seeds it after restarts). */
@@ -42,6 +46,8 @@ export function prefs(): Prefs {
     windup: windupId(s.windup),
     profiled: !!s.profiled,
     tutorialDone: !!s.tutorialDone,
+    tipsSeen: typeof s.tipsSeen === 'number' ? s.tipsSeen : 0,
+    acts: typeof s.acts === 'number' ? s.acts : 0,
     volume: typeof s.volume === 'number' ? s.volume : 0.9,
     haptics: s.haptics !== false,
     records: s.records && typeof s.records === 'object' ? s.records : {},

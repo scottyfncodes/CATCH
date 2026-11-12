@@ -29,7 +29,7 @@ import { CameraRig, type EyeShot } from './scene/camera';
 import { buildBall, contactShadow } from './scene/gear';
 import { CatchGuide, type GuideState, TRAIL, Tier, type TierId } from './scene/guide';
 import { type World, buildWorld } from './scene/world';
-import { prefs, raiseRecord, recordFor } from './storage';
+import { prefs, raiseRecord, recordFor, save } from './storage';
 
 interface Snap { t: number; x: number; z: number; yaw: number; g: Vec3; arm: number; charge: number; lift: number; dive: number }
 
@@ -70,10 +70,12 @@ const RELEASE_MS = RELEASE_TIME * 1000;
 /** A reference release point (pitch frame) that sets the pace of every throw, whatever the arm slot. */
 const PACE_FROM: Vec3 = [0.3, 1.74, 0.38];
 /** A flick: this much thumb travel (CSS px) inside this window (ms). */
-const FLICK_PX = 52;
+const FLICK_PX = 40;
 const FLICK_MS = 90;
 /** How far in front of you the glove is held (m): out where you can see it. */
 const GLOVE_OUT = 0.56;
+/** Going after a wide one, you run until the ball is this far to your side (m): a comfortable reach. */
+const CHASE_REACH = 0.45;
 const smooth01 = (k: number) => { const c = clamp(k, 0, 1); return c * c * (3 - 2 * c); };
 
 export class Game {
@@ -145,6 +147,11 @@ export class Game {
   private crossTier: TierId = Tier.Easy;
   /** The live throw is meant for you. */
   private forMe = false;
+  /** You've gone after this throw (its id): your feet take you under it while you work the glove. */
+  private chaseTid = -1;
+  private hintTid = -1;
+  private driftTid = -1;
+  private drift = 0;
   private targetId: string | null = null;
   private eyesUntil = 0;
   private first = false;
@@ -800,6 +807,18 @@ export class Game {
       const since = (now - this.dive.at) / 1000 - DIVE_TIME;
       if (since > 0.14) this.gloveSet[1] += (0.3 - this.gloveSet[1]) * (1 - Math.exp(-dt / 0.12));
     }
+    let hustle = false;
+    // Going after one: run until the ball is coming down a comfortable glove's
+    // reach to that side of you. The glove is still yours to place.
+    if (incoming && this.cross && this.chaseTid === b.tid && !this.dive && !this.keys.size) {
+      const rel = worldToBody(this.yaw, [this.cross.at[0] - this.pos[0], 0, this.cross.at[2] - this.pos[2]]);
+      const go = rel[0] - Math.sign(rel[0]) * Math.min(Math.abs(rel[0]), CHASE_REACH);
+      hustle = true;
+      const r = bodyToWorld(this.yaw, [go, 0, 0]);
+      this.stepTo = Math.abs(go) > 0.05 ? [this.pos[0] + r[0], 0, this.pos[2] + r[2]] : null;
+    }
+    // The throw has gone by: nothing more to do in your own eyes. Step back out and watch it go.
+    if (incoming && this.forMe && !this.cross && tNow > 0.2) this.forMe = false;
     let tvx = 0, tvz = 0;
     let top = RUN_SPEED;
     if (sx || sy) {
@@ -817,7 +836,11 @@ export class Game {
       const dx = this.stepTo[0] - this.pos[0], dz = this.stepTo[2] - this.pos[2];
       const d = Math.hypot(dx, dz);
       if (d < 0.04) this.stepTo = null;
-      else { tvx = (dx / d) * Math.min(RUN_SPEED, d * 7); tvz = (dz / d) * Math.min(RUN_SPEED, d * 7); }
+      else {
+        // Going after a throw you break harder than when you're just shuffling over.
+        const sp = hustle ? Math.min(RUN_SPEED * 1.2, d * 11) : Math.min(RUN_SPEED, d * 7);
+        tvx = (dx / d) * sp; tvz = (dz / d) * sp;
+      }
     } else if (!incoming && !this.gloveDragging && (holding || b.phase !== 'held') && now - this.lastInputAt > 900) {
       // Nothing to do: wander back to your spot.
       const dx = this.home[0] - this.pos[0], dz = this.home[2] - this.pos[2];
@@ -840,7 +863,7 @@ export class Game {
       this.stepTo = null;
     } else {
       const ax = tvx - this.vel.x, az = tvz - this.vel.z;
-      const al = Math.hypot(ax, az), amax = RUN_ACCEL * dt * (top === WALK_SPEED ? 0.4 : 1);
+      const al = Math.hypot(ax, az), amax = RUN_ACCEL * dt * (top === WALK_SPEED ? 0.4 : hustle ? 1.6 : 1);
       const kk = al > amax ? amax / al : 1;
       this.vel.x += ax * kk; this.vel.z += az * kk;
     }
@@ -941,6 +964,7 @@ export class Game {
     } else return false;
     this.actReadyAt = now + 900;
     this.flicks.length = 0;
+    save({ acts: prefs().acts + 1 });
     haptic('light');
     return true;
   }
@@ -953,13 +977,30 @@ export class Game {
     while (this.flicks.length && now - this.flicks[0].t > FLICK_MS) this.flicks.shift();
     this.lastInputAt = now;
     if (this.leap || this.dive || this.tryAct(now)) return;
+    // A throw that's off to one side: move your thumb that way and you go after it.
+    if (this.incoming() && this.cross && this.chaseTid !== this.ball.tid) {
+      const rel = worldToBody(this.yaw, [this.cross.at[0] - this.pos[0], this.cross.at[1], this.cross.at[2] - this.pos[2]]);
+      // (Thumb travel since this throw left the hand: a slow drag counts as much as a quick one.)
+      if (this.driftTid !== this.ball.tid) { this.driftTid = this.ball.tid; this.drift = 0; }
+      this.drift += dx;
+      const fx = this.drift;
+      if (Math.abs(rel[0]) > 0.6 && fx * rel[0] > 0 && Math.abs(fx) > 6) {
+        // Off you go, glove out on that side at about the right height; the rest is yours.
+        this.chaseTid = this.ball.tid;
+        this.gloveSet[0] = Math.sign(rel[0]) * CHASE_REACH;
+        this.gloveSet[1] = clamp(rel[1], 0.25, 2.2);
+      }
+    }
+    // While your feet are taking you there, sideways thumb travel trims the glove (it doesn't fight the run).
+    const chasing = this.chaseTid === this.ball.tid && this.incoming();
     const gain = 0.0045 + Math.min(0.02, speed * 0.012);
     const gs = this.gloveSet;
     gs[0] += dx * gain;
     gs[1] = clamp(gs[1] + dy * gain, 0.18, 2.3);
     // Past your reach to the side: step over after it.
     const lim = 0.72;
-    if (Math.abs(gs[0]) > lim) {
+    if (chasing) gs[0] = clamp(gs[0], -lim, lim);
+    else if (Math.abs(gs[0]) > lim) {
       const over = gs[0] - Math.sign(gs[0]) * lim;
       gs[0] -= over;
       const r = bodyToWorld(this.yaw, [over, 0, 0]);
@@ -1336,6 +1377,11 @@ export class Game {
       else if (high <= LEAP_HEIGHT - 0.06 && side <= run + DIVE_SPEED * DIVE_TIME * 0.7) tier = Tier.Great;
       if (this.leap || this.dive) tier = Math.min(tier, Tier.Great) as TierId;
       this.crossTier = tier;
+      // Until you have the hang of it: say what a throw like this is asking for.
+      if (this.hintTid !== this.ball.tid && prefs().acts < 3 && tta > 0.25 && (high > 0 || side > run * 0.6)) {
+        this.hintTid = this.ball.tid;
+        this.ev.toast(high > 0 ? 'Over your head: flick up to jump' : 'Out of reach: flick toward it to dive');
+      }
       const pocket = gloveWorld(this.myPose());
       const on = clamp(1 - (dist(pocket, c.at) - CATCH_PERFECT) / (CATCH_WEB - CATCH_PERFECT), 0, 1);
       // The trail runs from just ahead of the ball you see to the spot.
@@ -1419,6 +1465,8 @@ export class Game {
       hand: this.myAvatar ? [this.myAvatar.handBall.x, this.myAvatar.handBall.y, this.myAvatar.handBall.z] : null,
       lastCatch: this.lastCatchEv, ballPos: this.lastBallPos, lift: this.lift,
       // Seconds until the incoming ball reaches your glove plane.
+      // How far the first-person view has turned from straight ahead (rad).
+      turn: this.rig.blend > 0.99 ? wrapAngle(this.rig.camera.rotation.y - this.yaw) : 0,
       tta: this.cross ? this.cross.t - (this.net.now() - this.ball.t0) / 1000 : null, dive: this.diveAmt, lastStyle: this.lastStyle, tier: this.crossTier, cross: this.cross,
       remotes: [...this.players.values()].filter((p) => p.avatar).map((p) => ({ id: p.info.id, arm: p.arm, charge: p.charge, delivery: p.avatar!.deliveryTime, windup: p.avatar!.windupId, hand: [p.avatar!.handBall.x, p.avatar!.handBall.y, p.avatar!.handBall.z] })),
     };
