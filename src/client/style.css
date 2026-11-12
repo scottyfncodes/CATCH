@@ -146,6 +146,12 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .streak.bump b { animation: bump 380ms cubic-bezier(0.2, 1.4, 0.4, 1); }
 .streak.reset b { animation: reset 520ms ease; }
 .streak.milestone span { color: #ffe1a8; }
+.streak .grade {
+  display: block; margin-top: 6px; font-style: normal; font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  opacity: 0; transform: translateY(-3px); transition: opacity 260ms ease, transform 260ms ease; min-height: 15px;
+}
+.streak .grade.show { opacity: 0.85; transform: none; }
+.streak .grade.perfect { color: #ffd27a; opacity: 1; }
 .corner { position: absolute; top: calc(var(--sa-t) + 12px); height: 44px; display: flex; align-items: center; }
 .corner.left { left: calc(12px + var(--sa-l)); }
 .corner.right { right: calc(12px + var(--sa-r)); }
@@ -183,7 +189,7 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 /* ------------------------------------------------------------ coach marks */
 
 .coach {
-  position: absolute; left: 50%; top: calc(var(--sa-t) + 90px); transform: translateX(-50%);
+  position: absolute; left: 50%; top: calc(var(--sa-t) + 112px); transform: translateX(-50%);
   width: min(88%, 380px); text-align: center; padding: 13px 18px; border-radius: 18px;
   background: rgba(24, 19, 14, 0.58); border: 1px solid var(--glass-line); color: var(--cream);
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);

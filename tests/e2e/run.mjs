@@ -79,7 +79,7 @@ async function throwGesture(p, { pull = 110, side = 0, x = 195, y = 430 } = {}) 
   await p.touch('touchEnd', []);
 }
 
-/** Real gesture: drag to move for `ms`. */
+/** Real gesture: drag (the glove, when you don't have the ball) and hold for `ms`. */
 async function moveGesture(p, { dx = 50, dy = 0, ms = 600, x = 195, y = 500 } = {}) {
   await p.touch('touchStart', [[x, y]]);
   for (let i = 1; i <= 4; i++) { await p.touch('touchMove', [[x + (dx * i) / 4, y + (dy * i) / 4]]); await sleep(12); }
@@ -89,6 +89,14 @@ async function moveGesture(p, { dx = 50, dy = 0, ms = 600, x = 195, y = 500 } = 
 }
 
 async function aimAt(p, id) { await p.page.evaluate((id) => window.__catch.game.lookAtPlayer(id), id); await sleep(60); }
+/** Pull exactly onto a partner's glove (with the hand tremor off), optionally nudged by px. */
+async function aimedThrow(p, id, { dSide = 0, dPull = 0 } = {}) {
+  await p.page.evaluate(() => { window.__catch.game.steadyAim = true; });
+  const a = await p.page.evaluate((id) => window.__catch.game.pullFor(id), id);
+  await throwGesture(p, { pull: a.pull + dPull, side: a.side + dSide, x: 195 - (a.side + dSide) / 2, y: 330 });
+  await p.page.evaluate(() => { window.__catch.game.steadyAim = false; });
+  return a;
+}
 async function setAutoMove(p, on) { await p.page.evaluate((on) => { window.__catch.game.autoMove = on; }, on); }
 const idOf = async (p) => (await p.state()).me;
 const waitCanThrow = (p) => waitFor(async () => (await p.state()).canThrow, 4000, 50);
@@ -110,7 +118,7 @@ try {
   await setAutoMove(other, true);
   await aimAt(holder, otherId);
   await waitCanThrow(holder);
-  await throwGesture(holder, { pull: 110 });
+  await throwGesture(holder, { pull: 80 });
   const inFlight = await waitFor(async () => { const s = await other.state(); return s.ball.phase === 'flight' ? s : null; }, 3000, 30);
   check('throw is accepted by the server and seen by the receiver', !!inFlight);
   const caught = await waitFor(async () => { const s = await other.state(); return s.ball.phase === 'held' && s.ball.holder === otherId ? s : null; }, 6000);
@@ -129,18 +137,18 @@ try {
   await setAutoMove(holder, true);
   await aimAt(other, holder === A ? aId : bId);
   await waitCanThrow(other);
-  await throwGesture(other, { pull: 230 });
+  await throwGesture(other, { pull: 150 });
   const back = await waitFor(async () => { const s = await holder.state(); return s.ball.phase === 'held' && s.ball.holder === (holder === A ? aId : bId) ? s : null; }, 6000);
   await sleep(300);
   check('any player can throw back (second catch)', !!back && (await A.state()).score.streak === 2);
   const zipHard = (await holder.state()).zipPeak;
   check('throw sound responds to velocity (harder throw → louder ZIP)', zipHard > zipSoft * 1.3, `soft=${zipSoft.toFixed(3)} hard=${zipHard.toFixed(3)}`);
 
-  // Positioning matters: a throw ~2 m wide is caught by running to it…
+  // Positioning matters: a throw ~2 m wide is caught by getting the glove (and yourself) there…
   await aimAt(holder, otherId);
   await waitCanThrow(holder);
   const wideFrom = (await other.state()).pos.slice();
-  await throwGesture(holder, { pull: 72, side: -50 });
+  await throwGesture(holder, { pull: 90, side: -170 });
   const wideCaught = await waitFor(async () => { const s = await other.state(); return s.ball.phase === 'held' && s.ball.holder === otherId ? s : null; }, 6000);
   const ranTo = (await other.state()).pos;
   const ran = Math.hypot(ranTo[0] - wideFrom[0], ranTo[2] - wideFrom[2]);
@@ -161,6 +169,27 @@ try {
   check('a miss resets exactly once (one drop recorded)', dropsA === 1, `drops=${dropsA}`);
   const recovered = await waitFor(async () => { const s = await A.state(); return s.ball.phase === 'held' && s.ball.holder ? s : null; }, 9000);
   check('ball recovery after a drop', !!recovered, `holder=${recovered?.ball.holder}`);
+
+  console.log('\nTHE PERFECT POP (both jobs)');
+  for (const x of [A, B]) await setAutoMove(x, false);
+  await sleep(2200); // everyone back on their spot, gloves held still
+  const thrower = (await A.state()).ball.holder === aId ? A : B, catcher = thrower === A ? B : A;
+  const catcherId = await idOf(catcher), throwerId = await idOf(thrower);
+  await aimAt(thrower, catcherId);
+  await waitCanThrow(thrower);
+  await sleep(400);
+  await aimedThrow(thrower, catcherId);
+  const pg = await waitFor(async () => { const s = await catcher.state(); return s.ball.holder === catcherId ? s : null; }, 6000);
+  const perfectPop = pg && [...pg.audio].reverse().find((x) => x.k === 'pop');
+  check('ring on a glove held still → caught dead centre: a perfect POP', perfectPop?.q === 'perfect', `q=${perfectPop?.q} g=${perfectPop?.g}`);
+  // Same thing, but the throw is ~14 cm off the glove: still caught, not perfect.
+  await aimAt(catcher, throwerId);
+  await waitCanThrow(catcher);
+  await sleep(400);
+  await aimedThrow(catcher, throwerId, { dSide: 12 });
+  const og = await waitFor(async () => { const s = await thrower.state(); return s.ball.holder === throwerId ? s : null; }, 6000);
+  const offPop = og && [...og.audio].reverse().find((x) => x.k === 'pop');
+  check('a throw a hand-width off the glove still finds it, but not perfectly', !!offPop && offPop.q !== 'perfect' && offPop.g < 0.8, `q=${offPop?.q} g=${offPop?.g}`);
 
   console.log('\nRECONNECTION');
   const before = await A.state();
@@ -196,7 +225,7 @@ try {
   await setAutoMove(T, true);
   await aimAt(H, tId);
   await waitCanThrow(H);
-  await throwGesture(H, { pull: 120 });
+  await throwGesture(H, { pull: 110 });
   const got = await waitFor(async () => { const s = await T.state(); return s.ball.phase === 'held' && s.ball.holder === tId ? s : null; }, 6000);
   check('any player can throw to any other player (5-player ring)', !!got);
   const agree = await Promise.all(all.map((x) => x.state()));
@@ -230,16 +259,22 @@ try {
   const ts = await T.state();
   check('pull back then return to the start cancels (no throw)', ts.controls.throws === before2 && ts.ball.phase === 'held');
 
-  // Someone without the ball drags to move: their body moves that way, nothing is thrown.
+  // Someone without the ball drags: that's their glove, and nothing is thrown.
   const mover = others.find((x) => x !== T && x !== E);
   await setAutoMove(mover, false);
   const m0 = await mover.state();
-  await moveGesture(mover, { dx: 55, dy: 0, ms: 500 });
+  await moveGesture(mover, { dx: 40, dy: -30, ms: 300 });
+  await sleep(250);
   const m1 = await mover.state();
-  const moved = Math.hypot(m1.pos[0] - m0.pos[0], m1.pos[2] - m0.pos[2]);
-  check('drag to move: the player runs and nothing is thrown', moved > 0.8 && m1.controls.throws === m0.controls.throws, `moved=${moved.toFixed(2)} m`);
-  const back2 = await waitFor(async () => { const s = await mover.state(); return Math.hypot(s.pos[0] - s.home[0], s.pos[2] - s.home[2]) < 0.3 ? s : null; }, 8000);
-  check('let go and they wander back to their spot', !!back2);
+  check('drag sets the glove (up and to the side) and nothing is thrown', m1.gloveSet[0] > m0.gloveSet[0] + 0.1 && m1.gloveSet[1] > m0.gloveSet[1] + 0.08 && m1.controls.throws === m0.controls.throws, `Δright=${(m1.gloveSet[0] - m0.gloveSet[0]).toFixed(2)} Δup=${(m1.gloveSet[1] - m0.gloveSet[1]).toFixed(2)}`);
+  await sleep(1200);
+  const m2 = await mover.state();
+  check('…and the glove stays where you leave it', Math.abs(m2.gloveSet[0] - m1.gloveSet[0]) < 1e-6 && Math.abs(m2.gloveSet[1] - m1.gloveSet[1]) < 1e-6);
+  await moveGesture(mover, { dx: 300, dy: 0, ms: 600 });
+  await sleep(500);
+  const m3 = await mover.state();
+  const stepped = Math.hypot(m3.pos[0] - m2.pos[0], m3.pos[2] - m2.pos[2]);
+  check('push the glove past your reach and you step after it', stepped > 0.5, `stepped=${stepped.toFixed(2)} m`);
 
   // Release direction and power come from the pull.
   const yawOf = (v) => Math.atan2(-v[0], -v[2]);
@@ -261,12 +296,12 @@ try {
     return m ? { yawOff: Math.atan2(Math.sin(yawOf(m.v) - toYaw), Math.cos(yawOf(m.v) - toYaw)), speed: Math.hypot(...m.v) } : null;
   };
   const s0 = await sample({ pull: 110, side: 0 });
-  const sR = await sample({ pull: 110, side: -70 });
-  const sL = await sample({ pull: 110, side: 70 });
-  check('pulling to one side throws to the other (slingshot)', s0 && sR && sL && sR.yawOff < s0.yawOff - 0.1 && sL.yawOff > s0.yawOff + 0.1, `straight=${s0?.yawOff.toFixed(2)} pull-left=${sR?.yawOff.toFixed(2)} pull-right=${sL?.yawOff.toFixed(2)}`);
+  const sR = await sample({ pull: 110, side: -110 });
+  const sL = await sample({ pull: 110, side: 110 });
+  check('pulling to one side throws to the other (slingshot)', s0 && sR && sL && sR.yawOff < s0.yawOff - 0.06 && sL.yawOff > s0.yawOff + 0.06, `straight=${s0?.yawOff.toFixed(2)} pull-left=${sR?.yawOff.toFixed(2)} pull-right=${sL?.yawOff.toFixed(2)}`);
   const sSoft = await sample({ pull: 50 });
   const sHard = await sample({ pull: 240 });
-  check('pull length sets throw speed (soft toss vs hard throw)', sSoft && sHard && sHard.speed > sSoft.speed + 8, `soft=${sSoft?.speed.toFixed(1)} hard=${sHard?.speed.toFixed(1)} m/s`);
+  check('pull length sets throw speed (soft toss vs hard throw)', sSoft && sHard && sHard.speed > sSoft.speed + 5, `soft=${sSoft?.speed.toFixed(1)} hard=${sHard?.speed.toFixed(1)} m/s`);
 
   console.log('\nLEFT-HANDED + AUDIO');
   const room2 = code();

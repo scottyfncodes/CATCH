@@ -16,6 +16,8 @@ export interface Shot {
   ball: Vec3 | null;
   /** Which side the camera stands on (+1 = your right). */
   side: number;
+  /** Push in on a point near your partner (aiming at their glove). */
+  focus?: { point: Vec3; amount: number } | null;
 }
 
 const damp = (cur: number, want: number, tau: number, dt: number) => cur + (want - cur) * (1 - Math.exp(-dt / tau));
@@ -28,6 +30,7 @@ export class CameraRig {
   private pitchC = -0.1;
   private half = 0.45;
   private init = false;
+  private focusK = 0;
   private t = Math.random() * 100;
   aspect = 0.5;
 
@@ -88,13 +91,35 @@ export class CameraRig {
     const hH = Math.atan(Math.tan(ySpan / sideB) / this.aspect);
     let half = clamp(Math.max(hV * 1.02, hH), portrait ? 0.36 : 0.3, portrait ? 0.7 : 0.6);
     const midP = (pHi + pLo) / 2;
-    const wantPitch = midP - ((top + bottom) / 2) * half;
-    const wantYaw = this.axis + centreYaw;
+    let wantPitch = midP - ((top + bottom) / 2) * half;
+    let wantYaw = this.axis + centreYaw;
+    // Aiming: ease in on your friend (head to toe, plus the aim ring) so their glove reads.
+    this.focusK = damp(this.focusK, s.focus ? s.focus.amount : 0, s.focus ? 0.32 : 0.5, dt);
+    if (this.focusK > 0.001) {
+      // Centred on your friend; the frame only widens if the ring wanders off them.
+      const feet: Vec3 = [s.partner[0], 0, s.partner[2]], head: Vec3 = [s.partner[0], 2.05, s.partner[2]];
+      const fyc = yawOf(feet);
+      const flo0 = pitchOf(feet) - 0.015, fhi0 = pitchOf(head) + 0.015;
+      const fpc = (flo0 + fhi0) / 2;
+      let vNeed = (fhi0 - flo0) / 2, hNeed = 0.04;
+      if (s.focus) {
+        vNeed = Math.max(vNeed, Math.abs(pitchOf(s.focus.point) - fpc) + 0.03);
+        hNeed = Math.max(hNeed, Math.abs(wrapAngle(yawOf(s.focus.point) - fyc)) + 0.03);
+      }
+      const fHalf = clamp(Math.max(vNeed / 0.55, Math.atan(Math.tan(hNeed / 0.7) / this.aspect)), 0.07, half);
+      // Your friend sits a little below centre, under the streak.
+      const fPitch = fpc + 0.08 * fHalf;
+      const k = this.focusK * this.focusK * (3 - 2 * this.focusK);
+      half = half + (fHalf - half) * k;
+      wantPitch = wantPitch + (fPitch - wantPitch) * k;
+      wantYaw = wantYaw + wrapAngle(this.axis + fyc - wantYaw) * k;
+    }
     if (!this.init) { this.half = half; this.pitchC = wantPitch; this.yawC = wantYaw; this.init = true; }
     // Breathe slowly; pan a little quicker so the ball never escapes.
-    this.half = damp(this.half, half, s.ball ? 0.55 : 0.9, dt);
-    this.pitchC = damp(this.pitchC, wantPitch, 0.45, dt);
-    this.yawC += wrapAngle(wantYaw - this.yawC) * (1 - Math.exp(-dt / 0.5));
+    const quick = this.focusK > 0.02 ? 0.4 : 1;
+    this.half = damp(this.half, half, (s.ball ? 0.55 : 0.9) * quick, dt);
+    this.pitchC = damp(this.pitchC, wantPitch, 0.45 * quick, dt);
+    this.yawC += wrapAngle(wantYaw - this.yawC) * (1 - Math.exp(-dt / (0.5 * quick)));
     half = this.half;
     const roll = Math.sin(this.t * 0.23) * 0.004;
     this.camera.rotation.set(this.pitchC + Math.sin(this.t * 0.6) * 0.002, this.yawC, roll, 'YXZ');

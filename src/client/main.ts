@@ -349,7 +349,7 @@ function enterRoom(code: string) {
   roster = []; me = null; lastStreak = 0;
   setUI(`
     <div class="hud">
-      <div class="streak" aria-live="polite"><b id="streak">0</b><span id="streakLabel">in a row</span></div>
+      <div class="streak" aria-live="polite"><b id="streak">0</b><span id="streakLabel">in a row</span><em class="grade" id="grade"></em></div>
       <div class="corner left"><button class="chip tap" id="inviteBtn" aria-label="Invite friends to room ${code}">${ICON.share}<span>${code}</span></button></div>
       <div class="corner right"><button class="chip icon-btn tap" id="pauseBtn" aria-label="Pause and settings">${ICON.pause}</button></div>
       <div class="chip status" id="status" hidden><span class="pulse"></span><span id="statusText">Connecting…</span></div>
@@ -428,6 +428,7 @@ function onScore(s: ScoreState, ev?: BallEvent) {
     void el.offsetWidth;
     el.classList.add(s.streak > lastStreak ? 'bump' : 'reset');
   }
+  if (ev?.k === 'catch') showGrade(ev.q);
   if (ev?.k === 'catch' && ev.milestone) {
     el.classList.add('milestone');
     label.textContent = `${ev.milestone} in a row`;
@@ -438,6 +439,18 @@ function onScore(s: ScoreState, ev?: BallEvent) {
   if (ev?.k === 'deflect' && lastStreak >= 5) toast(`Off the glove at ${lastStreak}`);
   lastStreak = s.streak;
   updateCompany();
+}
+
+const GRADE_WORDS: Record<string, string> = { perfect: 'Perfect pop', pocket: 'Pocket', web: 'Off the web', bobble: 'Bobbled' };
+let gradeTimer = 0;
+/** One quiet word under the streak: how clean that catch was. */
+function showGrade(q: string) {
+  const el = ui.querySelector<HTMLElement>('#grade');
+  if (!el) return;
+  el.textContent = GRADE_WORDS[q] ?? '';
+  el.className = 'grade show ' + q;
+  clearTimeout(gradeTimer);
+  gradeTimer = window.setTimeout(() => { el.className = 'grade'; }, 1700);
 }
 
 function pauseSheet(code: string) {

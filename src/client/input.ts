@@ -1,22 +1,24 @@
 // One-thumb controls, decided at touch-down by what you're doing:
 //
-//   You have the ball → touch anywhere and pull back. How far you pull sets
-//   how hard you throw; pulling off to one side sends it to the other (like a
-//   slingshot). Let go to throw. Slide back to where you started (or pull
-//   upward) and let go to cancel.
+//   You have the ball → touch anywhere and pull back. An aim ring appears on
+//   your friend's glove plane: pulling off to one side moves it to the other
+//   side (like a slingshot), pulling further moves it higher and throws
+//   harder. Put the ring on their glove and let go. Slide back to where you
+//   started (or pull upward) and let go to cancel.
 //
-//   You don't → touch anywhere and drag to move. The touch point is a
-//   floating stick that follows your thumb; lift to stop. Your glove reaches
-//   for the ball by itself: your job is to get there.
+//   You don't → your thumb is your glove. Drag to put it where you want the
+//   throw (that's your friend's target); it stays where you leave it. Slow
+//   drags are precise, quick ones cover ground, and pushing it past your reach
+//   makes you step over after it.
 //
-// A move drag can never become a throw: the gesture type is fixed at
-// touch-down, and a second finger is ignored while one is active.
+// The gesture type is fixed at touch-down, and a second finger is ignored
+// while one is active.
 
 export interface Aim {
   /** 0..1 from how far you pulled back. */
   power: number;
-  /** Throw direction, radians from straight ahead (+ = to the right). */
-  angle: number;
+  /** Sideways pull in CSS px (+ = pulled to the right). */
+  side: number;
   /** Whether letting go now would throw. */
   armed: boolean;
 }
@@ -27,18 +29,18 @@ export interface InputHandlers {
   onAim(a: Aim): void;
   onThrow(a: Aim): void;
   onAimCancel(): void;
-  /** Stick in screen space, -1..1, x to the right, y up the screen. */
-  onMove(x: number, y: number): void;
+  /** Glove drag: movement since the last event in CSS px (x right, y up), and its speed in px/ms. */
+  onGlove(dx: number, dy: number, speed: number): void;
+  onGloveActive(active: boolean): void;
 }
 
-type Role = 'aim' | 'move';
+type Role = 'aim' | 'glove';
 
-interface Track { role: Role; id: number; ox: number; oy: number; x: number; y: number }
+interface Track { role: Role; id: number; ox: number; oy: number; x: number; y: number; t: number }
 
 /** Pull (as a fraction of the screen height) for a full-strength throw. */
-const FULL_PULL = 0.27;
-const DEAD = 14;
-const STICK = 58;
+export const FULL_PULL = 0.27;
+export const DEAD = 14;
 
 export class Controls {
   private track: Track | null = null;
@@ -47,7 +49,7 @@ export class Controls {
   private knob: HTMLDivElement;
   private band: HTMLDivElement;
   /** Diagnostics for tests. */
-  stats = { moves: 0, throws: 0, cancels: 0, aims: 0 };
+  stats = { gloves: 0, throws: 0, cancels: 0, aims: 0 };
 
   constructor(private el: HTMLElement, private h: InputHandlers) {
     el.addEventListener('pointerdown', this.down, { passive: false });
@@ -78,11 +80,11 @@ export class Controls {
     e.preventDefault();
     if (!this.enabled || this.track) return;
     const { x, y } = this.local(e);
-    const role: Role = this.h.canThrow() ? 'aim' : 'move';
+    const role: Role = this.h.canThrow() ? 'aim' : 'glove';
     try { this.el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-    this.track = { role, id: e.pointerId, ox: x, oy: y, x, y };
+    this.track = { role, id: e.pointerId, ox: x, oy: y, x, y, t: e.timeStamp };
     if (role === 'aim') { this.stats.aims++; this.h.onAimStart(); }
-    else this.stats.moves++;
+    else { this.stats.gloves++; this.h.onGloveActive(true); }
     this.draw();
   };
 
@@ -90,35 +92,26 @@ export class Controls {
     const t = this.track;
     if (!t || t.id !== e.pointerId) return;
     e.preventDefault();
-    const { x, y } = this.local(e);
-    t.x = x; t.y = y;
-    if (t.role === 'move') {
-      // Floating stick: the origin follows a thumb that runs past the edge.
-      const dx = t.x - t.ox, dy = t.y - t.oy, l = Math.hypot(dx, dy);
-      if (l > STICK) { t.ox = t.x - (dx / l) * STICK; t.oy = t.y - (dy / l) * STICK; }
-      this.emitMove(t);
-    } else {
-      this.h.onAim(this.aimOf(t));
+    const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+    for (const ev of evs.length ? evs : [e]) {
+      const { x, y } = this.local(ev);
+      if (t.role === 'glove') {
+        const dx = x - t.x, dy = y - t.y;
+        const dt = Math.max(1, ev.timeStamp - t.t);
+        this.h.onGlove(dx, -dy, Math.hypot(dx, dy) / dt);
+      }
+      t.x = x; t.y = y; t.t = ev.timeStamp;
     }
+    if (t.role === 'aim') this.h.onAim(this.aimOf(t));
     this.draw();
   };
-
-  private emitMove(t: Track) {
-    const dx = t.x - t.ox, dy = t.y - t.oy, l = Math.hypot(dx, dy);
-    if (l < 4) { this.h.onMove(0, 0); return; }
-    const m = Math.min(1, (l - 4) / (STICK - 4));
-    this.h.onMove((dx / l) * m, (-dy / l) * m);
-  }
 
   aimOf(t: { ox: number; oy: number; x: number; y: number }): Aim {
     const H = this.el.clientHeight || 800;
     const dx = t.x - t.ox, dy = t.y - t.oy;
-    const l = Math.hypot(dx, dy);
-    const power = Math.min(1, Math.max(0, (l - DEAD) / (FULL_PULL * H)));
-    // Throw goes opposite the pull. Straight down = straight at your friend.
-    const angle = Math.max(-1, Math.min(1, Math.atan2(-dx, Math.max(1, dy))));
-    const armed = l > DEAD + 4 && dy > l * 0.3;
-    return { power, angle, armed };
+    const power = Math.min(1, Math.max(0, (dy - DEAD) / (FULL_PULL * H)));
+    const armed = dy > DEAD + 4 && dy > Math.abs(dx) * 0.35;
+    return { power, side: dx, armed };
   }
 
   private up = (e: PointerEvent) => {
@@ -126,7 +119,7 @@ export class Controls {
     if (!t || t.id !== e.pointerId) return;
     this.track = null;
     this.hideMarks();
-    if (t.role === 'move') { this.h.onMove(0, 0); return; }
+    if (t.role === 'glove') { this.h.onGloveActive(false); return; }
     const a = this.aimOf(t);
     if (a.armed && this.h.canThrow()) { this.stats.throws++; this.h.onThrow(a); }
     else { this.stats.cancels++; this.h.onAimCancel(); }
@@ -137,7 +130,7 @@ export class Controls {
     if (!t || t.id !== (e as PointerEvent).pointerId) return;
     this.track = null;
     this.hideMarks();
-    if (t.role === 'move') this.h.onMove(0, 0);
+    if (t.role === 'glove') this.h.onGloveActive(false);
     else { this.stats.cancels++; this.h.onAimCancel(); }
   };
 
@@ -147,12 +140,12 @@ export class Controls {
     this.track = null;
     this.hideMarks();
     if (!t) return;
-    if (t.role === 'move') this.h.onMove(0, 0);
+    if (t.role === 'glove') this.h.onGloveActive(false);
     else this.h.onAimCancel();
   }
 
   get aiming() { return this.track?.role === 'aim'; }
-  get moving() { return this.track?.role === 'move'; }
+  get gloving() { return this.track?.role === 'glove'; }
 
   // ---- the only on-screen control marks, and only under your thumb
 
@@ -168,9 +161,10 @@ export class Controls {
     put(this.knob, t.x, t.y);
     this.ring.dataset.role = t.role;
     this.knob.dataset.role = t.role;
-    if (t.role === 'move') {
-      this.ring.style.opacity = '1';
-      this.knob.style.opacity = '1';
+    if (t.role === 'glove') {
+      // Just a soft dot under the thumb: the glove itself is the feedback.
+      this.ring.style.opacity = '0';
+      this.knob.style.opacity = '0.7';
       this.band.style.opacity = '0';
       return;
     }

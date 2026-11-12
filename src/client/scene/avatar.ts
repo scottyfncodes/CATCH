@@ -100,6 +100,7 @@ export class Avatar {
   private vel = new THREE.Vector3();
   private bodyYaw: number;
   private crouch = 0;
+  private tiptoe = 0;
   private leanF = 0;
   private leanS = 0;
   private twist = 0;
@@ -332,7 +333,9 @@ export class Avatar {
     const idle = speed < 0.2 && arm !== Arm.Windup && rk < 0 ? 1 : 0;
     const sway = Math.sin(this.time * 0.55) * 0.012 * idle;
     centre.addScaledVector(right, sway);
-    const hipY = HIP_Y - this.crouch * 0.42 + bob - 0.01 * idle * (0.5 + 0.5 * Math.sin(this.time * 1.7));
+    // High glove: up on the toes.
+    this.tiptoe += (clamp((gl[1] - 1.75) * 0.32, 0, 0.13) - this.tiptoe) * (1 - Math.exp(-dt / 0.1));
+    const hipY = HIP_Y - this.crouch * 0.42 + this.tiptoe + bob - 0.01 * idle * (0.5 + 0.5 * Math.sin(this.time * 1.7));
     this.pelvis.position.set(centre.x, hipY, centre.z);
     this.pelvis.rotation.set(0, yaw, 0, 'YXZ');
     this.pelvis.rotateY(this.twist * 0.35);
@@ -397,11 +400,11 @@ export class Avatar {
     const poleG = new THREE.Vector3(0, -1, 0).addScaledVector(right, -side * 0.9).addScaledVector(fwd, -0.3);
     solve2(sG, wristT, UPPER, FORE, poleG, elbow, wrist);
     placeSeg(this.armSegs[0], sG, elbow);
-    placeSeg(this.armSegs[1], elbow, wrist);
+    // The glove is where the pose says it is (that's what the server checks and
+    // what your friend aims at); if the arm is a touch short, the forearm stretches.
+    placeSeg(this.armSegs[1], elbow, wristT);
     this.elbows[0].position.copy(elbow);
     // If the arm couldn't quite reach, the glove stays on the hand.
-    const reachMiss = wrist.distanceTo(wristT);
-    if (reachMiss > 0.01) gp.add(tmpA.subVectors(wrist, wristT));
     this.glove.position.copy(gp);
     const upHint = low > 0.5 ? new THREE.Vector3(0, -1, 0) : new THREE.Vector3(0, 1, 0);
     const lookM = new THREE.Matrix4().lookAt(gp, tmpA.copy(gp).sub(faceDir), upHint);

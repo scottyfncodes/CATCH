@@ -433,4 +433,46 @@ describe('room', () => {
     expect(moved).toBeGreaterThan(1);
     expect(room.ball.holder).toBe('coach');
   });
+
+  it("Coach holds its glove as your target, and its POP grades your throw", () => {
+    const run = (off: number) => {
+      const { room, ids, conns, clock } = setup(1, true);
+      for (let i = 0; i < 10; i++) { clock.advance(33); room.tick(); }
+      const coach = room.members.get('coach')!;
+      const glove = gloveWorld(coach.pose);
+      const me = room.members.get(ids[0])!;
+      const yaw = lookAngles(me.pos, glove).yaw;
+      const p = releasePoint(me.pos, yaw, 'R');
+      const rx = Math.cos(yaw), rz = -Math.sin(yaw);
+      const target: Vec3 = [glove[0] + rx * off, glove[1], glove[2] + rz * off];
+      const t0 = clock.now();
+      room.handle(ids[0], { t: 'throw', rt: t0, p, v: solveThrowTo(p, target, dist(p, target) / 14), tid: 1 });
+      for (let i = 0; i < 80 && room.ball.phase === 'flight'; i++) { clock.advance(33); room.tick(); }
+      const ev = conns[0].events().find((e) => e.k === 'catch');
+      return ev && ev.k === 'catch' ? ev : null;
+    };
+    const dead = run(0);
+    expect(dead?.by).toBe('coach');
+    expect(dead?.q).toBe('perfect');
+    expect(dead!.g).toBeGreaterThan(0.8);
+    const off = run(0.3);
+    expect(off?.by).toBe('coach');
+    expect(off!.g).toBeLessThan(0.55);
+  });
+
+  it('Coach aims at your glove (wherever you hold it)', () => {
+    const { room, ids, clock } = setup(1, true);
+    const me = room.members.get(ids[0])!;
+    const high: Pose = { x: me.pos[0], z: me.pos[2], yaw: me.facing, g: bodyToWorld(me.facing, [0.3, 1.9, 0.35]) };
+    // Give Coach the ball: throw it over, Coach catches.
+    throwAt(room, ids[0], 'coach', clock.now());
+    for (let i = 0; i < 80 && room.ball.phase === 'flight'; i++) { clock.advance(33); room.tick(); }
+    expect(room.ball.holder).toBe('coach');
+    for (let i = 0; i < 150 && room.ball.phase === 'held'; i++) { stream(room, ids[0], high); clock.advance(33); room.tick(); }
+    expect(room.ball.thrower).toBe('coach');
+    const g = gloveWorld(high);
+    let best = Infinity;
+    for (let t = 0; t < room.traj!.groundT; t += 0.005) best = Math.min(best, dist(positionAt(room.traj!, t), g));
+    expect(best).toBeLessThan(0.15);
+  });
 });
