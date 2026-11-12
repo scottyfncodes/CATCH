@@ -73,8 +73,12 @@ export const CATCH_PERFECT = 0.045;
 export const CATCH_POCKET = 0.095;
 export const CATCH_WEB = 0.155;
 export const CATCH_BOBBLE = 0.205;
-/** A bobble at this relative speed or above deflects out of the glove. */
-export const BOBBLE_DEFLECT_SPEED = 21;
+/**
+ * A bobble at this relative speed or above deflects out of the glove. Only a
+ * real peg does it: a long throw arrives quick (25-30 m/s from 100 m) simply
+ * because it had to be thrown hard, and that must not cost you the catch.
+ */
+export const BOBBLE_DEFLECT_SPEED = 34;
 
 /** How long the server waits after ground contact for a late catch claim (ms). */
 export const CATCH_GRACE_MS = 450;
