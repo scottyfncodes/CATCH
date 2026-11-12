@@ -47,7 +47,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // ------------------------------------------------------------------ home backdrop: two friends playing catch
 
 class Backdrop {
-  private world = buildWorld(true);
+  private world = buildWorld(true, renderer);
   private rig = new CameraRig();
   private avatars: Avatar[] = [];
   private seats = seatLayout(2);
@@ -720,7 +720,7 @@ function onScore(s: ScoreState, ev?: BallEvent) {
   const progress = `${s.mode}:${s.dist}:${s.glove}`;
   if (progress !== lastProgress) {
     if (lastProgress.startsWith(s.mode)) { label.classList.remove('step'); void label.offsetWidth; label.classList.add('step'); }
-    else if (hud && !lastProgress) toast(`${MODE_INFO[s.mode].name}: ${MODE_INFO[s.mode].line}`);
+    else if (hud && !lastProgress && !Tutorial.needed()) toast(`${MODE_INFO[s.mode].name}: ${MODE_INFO[s.mode].line}`); // (not on top of the first-time tips: one thing to read at a time)
     lastProgress = progress;
   }
   if ((ev?.k === 'drop' && !ev.void) || ev?.k === 'deflect') {

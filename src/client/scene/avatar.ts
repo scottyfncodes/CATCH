@@ -104,6 +104,13 @@ function buildHat(hat: Hat, mat: Mat): THREE.Group {
 const UP = new THREE.Vector3(0, 1, 0);
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpC = new THREE.Vector3();
 const tmpQ = new THREE.Quaternion();
+const tmpE = new THREE.Euler();
+const tmpM = new THREE.Matrix4();
+const SHOULDER_L = new THREE.Vector3(-0.215, 0.5, 0), SHOULDER_R = new THREE.Vector3(0.215, 0.5, 0);
+/** How far a shoulder can travel on its own (shrug, reach forward) before the trunk has to go with it (m). */
+const SHOULDER_TRAVEL = 0.065;
+/** How far the hand can bend off the line of the forearm (rad): about 83 degrees (a glove held fingers-up in front of the chest is near it). */
+const WRIST_MAX = 1.45;
 
 const THIGH = 0.45, SHIN = 0.44, HIP_W = 0.1, HIP_Y = 0.92;
 const UPPER = 0.29, FORE = 0.27;
@@ -218,12 +225,20 @@ export class Avatar {
   private gloveK = 0;
   private gloveV = 0;
   private gloveSet = false;
+  /** The glove arm's joints as last solved (root space), for validation: nothing in play reads these. */
+  readonly joints = {
+    shoulder: new THREE.Vector3(), elbow: new THREE.Vector3(), wrist: new THREE.Vector3(), glove: new THREE.Vector3(),
+    pocket: new THREE.Vector3(), fingers: new THREE.Vector3(), forearm: new THREE.Vector3(), pole: new THREE.Vector3(), gap: 0,
+  };
   private debt = 0;
   private showK = 0;
   /** World position of the eyes (first-person camera). */
   readonly eye = new THREE.Vector3();
   private recoil = 0;
   private recoilDir = new THREE.Vector3();
+  /** Where on the glove the ball struck (about the glove's own x and y axes): a ball off the centre of the pocket turns it. */
+  private hinge = new THREE.Vector2();
+  private gloveBase = new THREE.Quaternion();
   private closure = 0;
   private transferT = -1;
   private tapT = -1;
@@ -288,8 +303,8 @@ export class Avatar {
         this.torso.add(band);
       }
     }
-    this.shoulderL.position.set(-0.215, 0.5, 0);
-    this.shoulderR.position.set(0.215, 0.5, 0);
+    this.shoulderL.position.copy(SHOULDER_L);
+    this.shoulderR.position.copy(SHOULDER_R);
     this.torso.add(this.shoulderL, this.shoulderR);
     const shoulderMat = core(sleeveHex);
     for (const sh of [this.shoulderL, this.shoulderR]) sh.add(joint(shoulderMat, 0.062 * w));
@@ -420,9 +435,17 @@ export class Avatar {
   }
 
   /** Called when this player catches the ball (glove recoil + snap shut). */
-  catchImpact(vel: Vec3, speed: number) {
+  catchImpact(vel: Vec3, speed: number, off?: Vec3) {
     this.recoil = Math.min(1, 0.35 + speed / 26);
     this.recoilDir.set(vel[0], vel[1], vel[2]).normalize();
+    // Off the middle of the pocket (`off`: from the pocket to the ball, world), the glove is turned by it:
+    // tipped back by one caught up in the fingers, twisted by one out on the web or the heel of the hand.
+    this.hinge.set(0, 0);
+    if (off) {
+      const l = tmpA.set(off[0], off[1], off[2]).applyQuaternion(tmpQ.copy(this.gloveBase).invert());
+      const size = Math.abs(this.glove.scale.y) || 1;
+      this.hinge.set(clamp(l.y / (0.11 * size), -1, 1), clamp(-l.x / (0.11 * size), -1, 1)).multiplyScalar(clamp(speed / 24, 0.3, 1));
+    }
     this.closure = 1;
     this.gloveV += 9;
   }
@@ -504,10 +527,11 @@ export class Avatar {
     const gl = worldToBody(yaw, [gw[0] - this.pos.x, gw[1], gw[2] - this.pos.z]);
     const wantCrouch = (f.ready ? 0.1 : 0.025) + clamp((0.95 - gl[1]) / 0.75, 0, 1) * 0.3 + Math.min(0.06, speed * 0.012) + Math.abs(dive) * 0.3;
     this.crouch += (wantCrouch - this.crouch) * (1 - Math.exp(-dt / 0.09));
-    const reachOut = Math.hypot(gl[0], gl[2]);
-    const wantLeanF = clamp((gl[2] - 0.45) * 0.35, -0.1, 0.32) + clamp((0.9 - gl[1]) * 0.35, 0, 0.35) + clamp(speed * 0.02, 0, 0.08);
-    // A long reach to the side comes from the whole body going with it, not from the arm growing.
-    const wantLeanS = clamp(gl[0] * 0.75 * clamp(reachOut - 0.4, 0, 1) * 2, -0.62, 0.62) + dive * 0.8;
+    // Posture (secondary motion, eased): bend at the waist toward a low glove,
+    // lean into a run or a dive. Getting the glove *there* is not posture: the
+    // reach is solved exactly, further down, through shoulder, trunk and hips.
+    const wantLeanF = clamp((0.9 - gl[1]) * 0.3, 0, 0.3) + clamp(speed * 0.02, 0, 0.08);
+    const wantLeanS = dive * 0.8;
     this.leanF += (wantLeanF - this.leanF) * (1 - Math.exp(-dt / 0.1));
     this.leanS += (wantLeanS - this.leanS) * (1 - Math.exp(-dt / 0.1));
 
@@ -520,6 +544,9 @@ export class Avatar {
       const want = this.stance(i, yaw);
       // Moving: plant ahead along the velocity.
       want.addScaledVector(this.vel, clamp(stepDur * 0.7, 0, 0.3));
+      // A wide reach: the foot on that side steps out under it (weight goes with the glove).
+      const out = clamp((Math.abs(gl[0]) - 0.5) * 0.7, 0, 0.3) * (1 - dw);
+      if (out > 0 && (i === 0 ? -1 : 1) === Math.sign(gl[0])) want.addScaledVector(right, Math.sign(gl[0]) * out);
       const other = this.feet[1 - i];
       if (ft.stepping) {
         ft.t += dt / stepDur;
@@ -572,6 +599,125 @@ export class Avatar {
     this.torso.rotation.set(-lean, coil, tilt);
     this.chest.scale.y = 1 + Math.sin(this.time * 1.7) * 0.012;
 
+    // ---- where the glove is going, and how it is turned to receive the ball
+    const gs = -side;
+    const gloveShoulder = this.hand === 'R' ? this.shoulderL : this.shoulderR;
+    const throwShoulder = this.hand === 'R' ? this.shoulderR : this.shoulderL;
+    const gp = new THREE.Vector3(gw[0], gw[1], gw[2]);
+    // While throwing, the glove belongs to the delivery (it leads the stride, then tucks).
+    if (P && dw > 0) gp.lerp(pitch(P.glove), dw);
+    // The arm gives with the ball: the glove rides back along its path and returns.
+    this.recoil = Math.max(0, this.recoil - dt * 4.2);
+    const give = this.recoil > 0 ? Math.sin(this.recoil * Math.PI) * this.recoil : 0;
+    if (give > 0) gp.addScaledVector(this.recoilDir, 0.1 * give);
+    // The pocket faces the ball coming in (out in front when there isn't one),
+    // cupped a little up and back toward your own eyes, the way a hand presents a glove.
+    const pocket = f.look && dw < 0.5 ? tmpB.set(f.look[0] - gp.x, f.look[1] - lift - gp.y, f.look[2] - gp.z).normalize().clone() : fwd.clone();
+    if (pocket.dot(fwd) < -0.2) pocket.copy(fwd);
+    pocket.addScaledVector(UP, 0.14).addScaledVector(fwd, -0.1).normalize();
+    // Just caught: the pocket turns up toward you, and there's the ball in it.
+    this.showK += ((f.gloved && dw < 0.1 ? 1 : 0) - this.showK) * (1 - Math.exp(-dt / (f.gloved ? 0.12 : 0.08)));
+    if (this.showK > 0.01) pocket.lerp(tmpA.copy(fwd).multiplyScalar(-0.55).addScaledVector(UP, 0.83), this.showK * 0.85).normalize();
+    // Which way the fingers point follows where the glove is around the body,
+    // as it does on a fielder: up for a ball above the belt, down for one
+    // below it, out to the side for a wide one, across for a backhand. It
+    // turns continuously through those; there is no height at which it flips.
+    const belt = tmpA.set(this.pos.x, hipY - 0.02, this.pos.z).addScaledVector(right, gs * 0.06).addScaledVector(fwd, 0.12).clone();
+    const fingers = new THREE.Vector3().subVectors(gp, belt);
+    // (Height counts for a little less than width, and the glove side is "out":
+    // so in front of the belt the hand turns over through fingers-sideways,
+    // across a forearm's length of travel, not in a hand's width.)
+    fingers.y *= 0.8;
+    fingers.addScaledVector(right, gs * 0.06);
+    fingers.addScaledVector(pocket, -fingers.dot(pocket));
+    // (Close in to the belt there is no "away from the body": settle on fingers up.)
+    fingers.addScaledVector(UP, Math.max(0, 0.22 - fingers.length()) * 2.2);
+    if (fingers.lengthSq() < 1e-6) fingers.copy(UP);
+    fingers.normalize();
+    // Impact: the wrist gives too (the glove hinges back a little, then returns).
+    if (give > 0) { pocket.addScaledVector(fingers, 0.22 * give).normalize(); fingers.addScaledVector(pocket, -fingers.dot(pocket)).normalize(); }
+    /** From the pocket back to the wrist: down the palm, and in behind the leather. */
+    const HEEL = 0.088, PALM = 0.032;
+    const wristT = gp.clone().addScaledVector(fingers, -HEEL).addScaledVector(pocket, -PALM);
+
+    // ---- the reach, through a connected body. The arm is a fixed length, so
+    // a glove further than the arm goes is reached the way a person reaches:
+    // the shoulder goes first (it has a few centimetres of its own), then the
+    // trunk leans and turns that way, then the hips shift and sink or rise.
+    // Nothing stretches.
+    const reachW = 1 - dw;
+    const baseL = SHOULDER_L, baseR = SHOULDER_R;
+    this.shoulderL.position.copy(baseL);
+    this.shoulderR.position.copy(baseR);
+    let reachGap = 0;
+    if (reachW > 0.01) {
+      // Across the body: the trunk turns to bring that shoulder round.
+      const across = Math.max(0, -gl[0] * gs - 0.02);
+      const twist = gs * Math.min(0.95, across * 1.4) * reachW;
+      this.torso.rotation.y = coil + twist * 0.7;
+      this.pelvis.rotation.y = pelvisYaw + twist * 0.3;
+      // (A foot has stepped out under a wide one, so the hips can go further that way.)
+      const stride = 0.2 + clamp((Math.abs(gl[0]) - 0.5) * 0.7, 0, 0.3) * 0.75;
+      const ARM = UPPER + FORE - 0.012;
+      const girdle = new THREE.Vector3(), shift = new THREE.Vector3();
+      let addF = 0, addT = 0;
+      const sh = new THREE.Vector3(), u = new THREE.Vector3(), inv = new THREE.Quaternion();
+      const base = gloveShoulder === this.shoulderL ? baseL : baseR;
+      /** Pose the trunk with the current corrections and measure how far short the arm is. */
+      const measure = () => {
+        this.torso.rotation.x = -clamp(lean + addF, -0.3, 1.0);
+        this.torso.rotation.z = clamp(tilt + addT, -0.9, 0.9);
+        this.pelvis.position.set(centre.x + shift.x, hipY + shift.y, centre.z + shift.z);
+        this.pelvis.updateMatrixWorld(true);
+        // The shoulder's own travel is set in the trunk's frame.
+        inv.copy(this.torso.getWorldQuaternion(tmpQ)).invert();
+        gloveShoulder.position.copy(base).add(tmpC.copy(girdle).applyQuaternion(inv));
+        gloveShoulder.updateMatrixWorld(true);
+        gloveShoulder.getWorldPosition(sh);
+        u.subVectors(wristT, sh);
+        const D = u.length();
+        u.divideScalar(D || 1);
+        reachGap = Math.max(0, D - ARM);
+        return (D - ARM) * reachW;
+      };
+      // First, comfort: nobody catches with a locked elbow if they can help it.
+      // While the glove is out in front, the trunk comes forward over it (the
+      // athletic stance) until the arm has a working bend in it.
+      const EASY = (UPPER + FORE) * 0.8;
+      for (let it = 0; it < 4; it++) {
+        const e = measure() + (ARM - EASY) * reachW;
+        if (e <= 0.002) break;
+        const ur = u.dot(right), uf = u.dot(fwd);
+        addT = clamp(addT - Math.asin(clamp((ur * e * 0.7) / 0.5, -0.4, 0.4)), -0.22, 0.22);
+        addF = clamp(addF + Math.asin(clamp((uf * e * 0.8) / 0.5, -0.4, 0.4)), -0.06, 0.34);
+        shift.y = clamp(shift.y + u.y * e * 0.5, -0.1, 0.03);
+      }
+      // Then, need: whatever it takes to get there.
+      for (let it = 0; it < 8; it++) {
+        let e = measure();
+        if (e <= 0.0008) break;
+        const room = SHOULDER_TRAVEL - girdle.length();
+        if (room > 1e-4) { const take = Math.min(e, room); girdle.addScaledVector(u, take); e -= take; if (e <= 0.0008) continue; }
+        const ur = u.dot(right), uf = u.dot(fwd);
+        // Trunk first, hips after: a lean covers most of it, the weight follows.
+        // (The trunk bends only so far before it is a fall: past that it is the hips' job.)
+        addT = clamp(addT - Math.asin(clamp((ur * e * 0.5) / 0.5, -0.5, 0.5)), -0.42, 0.42);
+        addF = clamp(addF + Math.asin(clamp((uf * e * 0.6) / 0.5, -0.5, 0.5)), -0.1, 0.62);
+        shift.addScaledVector(right, clamp(ur * e * 0.45, -0.09, 0.09)).addScaledVector(fwd, clamp(uf * e * 0.25, -0.04, 0.05));
+        shift.y = clamp(shift.y + u.y * e * 0.6, -0.34, 0.12);
+        const hl = Math.hypot(shift.x, shift.z);
+        if (hl > stride) { shift.x *= stride / hl; shift.z *= stride / hl; }
+      }
+      // Whatever is left, the hips take (a step's worth at most): the arm is never the thing that gives.
+      for (let it = 0; it < 3; it++) {
+        const e = measure();
+        if (e <= 0.0008 || shift.length() > 0.55) break;
+        shift.addScaledVector(u, Math.min(e, 0.25));
+      }
+      measure();
+      centre.x += shift.x; centre.z += shift.z; hipY += shift.y;
+    }
+
     // ---- head: track the ball (or the friend)
     this.root.updateMatrixWorld(true);
     if (f.look) {
@@ -585,7 +731,7 @@ export class Avatar {
       this.head.rotation.y += (rel - this.head.rotation.y) * k;
       this.head.rotation.x += (pitchA - this.head.rotation.x) * k;
       // Keep the eyes level when the trunk bends sideways.
-      this.head.rotation.z += (-tilt * 0.6 - this.head.rotation.z) * k;
+      this.head.rotation.z += (-this.torso.rotation.z * 0.7 - this.head.rotation.z) * k;
     }
     this.root.updateMatrixWorld(true);
 
@@ -597,6 +743,9 @@ export class Avatar {
       const hip = tmpC.set(sx * HIP_W, -0.02, 0).applyMatrix4(this.pelvis.matrixWorld).clone();
       const fy = feet[i].y;
       const ankle = feet[i].clone().add(new THREE.Vector3(0, 0.07, 0));
+      // A leg at full stretch goes up onto the toes (the heel comes off the grass).
+      const toes = clamp(hip.distanceTo(ankle) - (THIGH + SHIN - 0.004), 0, 0.1);
+      ankle.y += toes;
       const knee = new THREE.Vector3(), end = new THREE.Vector3();
       const pole = pFwd.clone().addScaledVector(pRight, sx * 0.12).addScaledVector(UP, clamp(fy / 0.3, 0, 2.5));
       solve2(hip, ankle, THIGH, SHIN, pole, knee, end);
@@ -604,23 +753,16 @@ export class Avatar {
       placeSeg(this.legSegs[i * 2 + 1], knee, end);
       this.knees[i].position.copy(knee);
       const shoe = this.shoes[i];
-      shoe.position.copy(end).setY(end.y - 0.07);
+      shoe.position.copy(end).setY(end.y - 0.07 + toes * 0.15);
       // The pivot foot turns with the hips; the striding foot points where it's going once it's down.
       let shoeYaw = yaw + sx * 0.12;
       if (P && footW > 0) shoeYaw += -side * (i === gloveFoot ? P.hip * clamp(fy / 0.25, 0, 1) : clamp(P.hip, -0.3, 1.5)) * footW;
-      shoe.rotation.set(-clamp(fy * 0.9, 0, 0.7), shoeYaw, 0, 'YXZ');
+      shoe.rotation.set(-clamp(fy * 0.9, 0, 0.7) - Math.asin(clamp(toes / 0.17, 0, 0.6)), shoeYaw, 0, 'YXZ');
     }
 
-    // ---- glove arm: reach for the streamed glove point
-    const gloveShoulder = this.hand === 'R' ? this.shoulderL : this.shoulderR;
-    const throwShoulder = this.hand === 'R' ? this.shoulderR : this.shoulderL;
+    // ---- glove arm: shoulder, elbow, wrist, then the glove on the hand
     const sG = gloveShoulder.getWorldPosition(new THREE.Vector3());
     const sT = throwShoulder.getWorldPosition(new THREE.Vector3());
-    const gp = new THREE.Vector3(gw[0], gw[1], gw[2]);
-    // While throwing, the glove belongs to the delivery (it leads the stride, then tucks).
-    if (P && dw > 0) gp.lerp(pitch(P.glove), dw);
-    this.recoil = Math.max(0, this.recoil - dt * 4.2);
-    if (this.recoil > 0) gp.addScaledVector(this.recoilDir, 0.09 * Math.sin(this.recoil * Math.PI) * this.recoil);
     // The glove is alive: it opens to take a throw, snaps shut on the ball (a
     // stiff spring, so it overshoots into a squeeze), holds, and eases back to its cup.
     this.closure = Math.max(0, this.closure - dt * 1.6);
@@ -630,50 +772,73 @@ export class Avatar {
     this.gloveV += ((wantShape - this.gloveK) * stiff - this.gloveV * dampK) * Math.min(dt, 0.02);
     this.gloveK += this.gloveV * Math.min(dt, 0.02);
     setGloveClosure(this.glove, clamp(this.gloveK, -0.6, 1.25));
-    // Pocket faces where the ball comes from (or out in front).
-    const faceDir = f.look && dw < 0.5 ? tmpB.set(f.look[0] - gp.x, f.look[1] - lift - gp.y, f.look[2] - gp.z).normalize() : fwd.clone();
-    if (faceDir.dot(fwd) < -0.2) faceDir.copy(fwd);
-    // Just caught: the pocket turns up toward you, and there's the ball in it.
-    this.showK += ((f.gloved && dw < 0.1 ? 1 : 0) - this.showK) * (1 - Math.exp(-dt / (f.gloved ? 0.12 : 0.08)));
-    if (this.showK > 0.01) faceDir.lerp(tmpA.copy(fwd).multiplyScalar(-0.55).addScaledVector(UP, 0.83), this.showK * 0.85).normalize();
-    // Low catches: fingers down (backhand/scoop); high: fingers up.
-    const low = clamp((0.85 - gp.y) / 0.5, 0, 1) * (1 - dw);
-    const wristBack = faceDir.clone().multiplyScalar(-0.07).add(new THREE.Vector3(0, -0.085 * (1 - 2 * low), 0));
-    const wristT = gp.clone().add(wristBack);
+    // The elbow hangs down and out to the glove side; for a low ball (fingers
+    // down) it comes up and back, as it does when you reach for the ground.
+    const lowK = clamp(-fingers.y, 0, 1) * reachW;
     const elbow = new THREE.Vector3(), wrist = new THREE.Vector3();
-    const poleG = new THREE.Vector3(0, -1, 0).addScaledVector(right, -side * 0.9).addScaledVector(fwd, -0.3);
+    const poleG = new THREE.Vector3(0, -1 + 1.25 * lowK, 0).addScaledVector(right, gs * (0.55 + 0.5 * lowK)).addScaledVector(fwd, -0.3 - 0.25 * lowK);
     solve2(sG, wristT, UPPER, FORE, poleG, elbow, wrist);
-    // The glove is where the pose says it is. If that is past the end of the arm,
-    // the whole arm goes out straight to it (never a forearm on its own).
-    if (dw <= 0.5 && sG.distanceTo(wristT) > UPPER + FORE - 0.002) elbow.copy(sG).lerp(wristT, UPPER / (UPPER + FORE));
-    placeSeg(this.armSegs[0], sG, elbow);
-    this.sleeveA.copy(sG).setY(sG.y + lift);
-    this.sleeveB.copy(elbow).setY(elbow.y + lift);
-    // The glove is where the pose says it is (that's what the server checks and
-    // what your friend aims at); if the arm is a touch short, the forearm stretches.
-    const gloveEnd = dw > 0.5 ? wrist : wristT;
-    placeSeg(this.armSegs[1], elbow, gloveEnd);
-    this.elbows[0].position.copy(elbow);
-    if (dw > 0.5) gp.copy(wrist).sub(wristBack);
-    this.glove.position.copy(gp);
-    const upHint = low > 0.5 ? new THREE.Vector3(0, -1, 0) : new THREE.Vector3(0, 1, 0);
+    // The wrist has limits: the hand can only bend so far off the line of the
+    // forearm. Past that the glove comes round toward the forearm (and the arm is solved again).
+    const forearm = new THREE.Vector3().subVectors(wrist, elbow).normalize();
+    const flat = new THREE.Vector3();
+    for (let it = 0; it < 6 && reachW > 0.5; it++) {
+      const bend = forearm.angleTo(fingers);
+      if (bend <= WRIST_MAX) break;
+      // The hand comes round toward the line of the forearm. The forearm rolls
+      // freely, so where it lies across the pocket the hand turns in the
+      // pocket's own plane (which keeps facing the ball); where it points
+      // through the pocket, the pocket has to tip.
+      const through = forearm.dot(pocket);
+      const keep = clamp((Math.sqrt(Math.max(0, 1 - through * through)) - 0.35) / 0.4, 0, 1);
+      flat.copy(forearm).addScaledVector(pocket, -through * keep).normalize();
+      // (A little past the limit each pass: moving the wrist moves the forearm too.)
+      fingers.lerp(flat, Math.min(1, ((bend - WRIST_MAX) / bend) * 1.25 + 0.02)).normalize();
+      pocket.addScaledVector(fingers, -pocket.dot(fingers)).normalize();
+      wristT.copy(gp).addScaledVector(fingers, -HEEL).addScaledVector(pocket, -PALM);
+      solve2(sG, wristT, UPPER, FORE, poleG, elbow, wrist);
+      forearm.subVectors(wrist, elbow).normalize();
+    }
     if (dw > 0.01) {
       // In a delivery the glove is just the end of the arm: fingers along the
       // forearm, pocket turned in toward the chest.
-      const fa = new THREE.Vector3().subVectors(gloveEnd, elbow).normalize();
-      const n = this.chest.getWorldPosition(new THREE.Vector3()).sub(gp);
-      n.addScaledVector(fa, -n.dot(fa));
-      if (n.lengthSq() < 1e-4) n.copy(fwd);
-      faceDir.lerp(n.normalize(), dw).normalize();
-      upHint.lerp(fa, dw).normalize();
+      const inward = this.chest.getWorldPosition(new THREE.Vector3()).sub(gp);
+      inward.addScaledVector(forearm, -inward.dot(forearm));
+      if (inward.lengthSq() < 1e-4) inward.copy(fwd);
+      fingers.lerp(forearm, dw).normalize();
+      pocket.lerp(inward.normalize(), dw);
     }
-    const lookM = new THREE.Matrix4().lookAt(gp, tmpA.copy(gp).sub(faceDir), upHint);
-    // The wrist turns smoothly; it doesn't flick from one facing to the next.
-    tmpQ.setFromRotationMatrix(lookM);
-    if (!this.gloveSet) { this.glove.quaternion.copy(tmpQ); this.gloveSet = true; }
-    else this.glove.quaternion.slerp(tmpQ, 1 - Math.exp(-dt / 0.045));
+    pocket.addScaledVector(fingers, -pocket.dot(fingers));
+    if (pocket.lengthSq() < 1e-6) pocket.copy(fwd).addScaledVector(fingers, -fwd.dot(fingers));
+    pocket.normalize();
+    // Bones are placed at their true lengths, shoulder to elbow to wrist.
+    placeSeg(this.armSegs[0], sG, elbow);
+    placeSeg(this.armSegs[1], elbow, wrist);
+    this.sleeveA.copy(sG).setY(sG.y + lift);
+    this.sleeveB.copy(elbow).setY(elbow.y + lift);
+    this.elbows[0].position.copy(elbow);
+    // The glove is worn on that hand: it sits where the wrist puts it. (When the
+    // arm reaches the pose, which is always unless the body truly can't, that
+    // is exactly the pocket the server checks and your friend aims at.)
+    const worn = wrist.clone().addScaledVector(fingers, HEEL).addScaledVector(pocket, PALM);
+    if (dw > 0.5) gp.copy(worn);
+    this.glove.position.copy(dw > 0.5 || reachGap < 0.004 ? gp : worn);
+    // Orientation: fingers along +Y, pocket out of -Z, built as a rotation (no
+    // look-at, no up vector to flip) and eased, so the wrist turns; it never snaps.
+    const zAxis = tmpC.copy(pocket).multiplyScalar(-1);
+    const xAxis = tmpA.crossVectors(fingers, zAxis).normalize();
+    tmpQ.setFromRotationMatrix(tmpM.makeBasis(xAxis, fingers, zAxis));
+    if (!this.gloveSet) { this.gloveBase.copy(tmpQ); this.gloveSet = true; }
+    else this.gloveBase.slerp(tmpQ, 1 - Math.exp(-dt / 0.05));
+    this.glove.quaternion.copy(this.gloveBase);
+    // The knock of an off-centre ball: applied on top, at once, and gone as the arm recovers.
+    if (give > 0 && this.hinge.lengthSq() > 1e-4) this.glove.quaternion.multiply(tmpQ.setFromEuler(tmpE.set(this.hinge.x * 0.42 * give, this.hinge.y * 0.36 * give, 0)));
     this.gloveWorldPos.copy(gp);
     this.gloveWorldPos.y += lift;
+    // What the validation looks at.
+    const d = this.joints;
+    d.shoulder.copy(sG); d.elbow.copy(elbow); d.wrist.copy(wrist); d.pocket.copy(pocket); d.fingers.copy(fingers); d.forearm.copy(forearm);
+    d.gap = reachGap; d.glove.copy(this.glove.position); d.pole.copy(poleG).normalize();
 
     // ---- throwing arm: idle, holding, taking the ball out of the glove; or the delivery
     let tgt: THREE.Vector3;
@@ -710,10 +875,10 @@ export class Avatar {
     placeSeg(this.armSegs[2], sT, elbow);
     placeSeg(this.armSegs[3], elbow, wrist);
     this.elbows[1].position.copy(elbow);
-    const forearm = tmpA.subVectors(wrist, elbow).normalize();
-    this.handBall.copy(wrist).addScaledVector(forearm, 0.075);
+    const tFore = tmpA.subVectors(wrist, elbow).normalize();
+    this.handBall.copy(wrist).addScaledVector(tFore, 0.075);
     this.handMesh.position.copy(this.handBall);
-    this.handMesh.lookAt(tmpB.copy(this.handBall).addScaledVector(forearm, -1));
+    this.handMesh.lookAt(tmpB.copy(this.handBall).addScaledVector(tFore, -1));
     this.handBall.y += lift;
 
     this.root.position.y = lift;
