@@ -436,10 +436,15 @@ export class AudioEngine {
   }
 
   /** Arm whip at release: a low swish plus the fingertips letting go. */
-  armSwish(power: number, side: number) {
+  /**
+   * The arm coming through. `lead` (seconds) schedules it on the audio clock so
+   * it lands exactly on a release that far away; it is over as the ball leaves,
+   * so nothing low trails after the snap.
+   */
+  armSwish(power: number, side: number, lead = 0) {
     if (!this.ready || !this.ctx) return;
     const ctx = this.ctx;
-    const t = ctx.currentTime;
+    const t = ctx.currentTime + Math.max(0, lead - 0.11);
     const src = ctx.createBufferSource();
     src.buffer = this.bufs.noise[0];
     src.loop = true;
@@ -447,14 +452,14 @@ export class AudioEngine {
     band.type = 'bandpass'; band.Q.value = 1.4;
     band.frequency.setValueAtTime(260, t);
     band.frequency.exponentialRampToValueAtTime(700 + power * 700, t + 0.09);
-    band.frequency.exponentialRampToValueAtTime(300, t + 0.26);
+    band.frequency.exponentialRampToValueAtTime(520, t + 0.15);
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(0.12 + power * 0.28, t + 0.07);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.28);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
     const pan = ctx.createStereoPanner(); pan.pan.value = side * 0.35;
     src.connect(band).connect(g).connect(pan).connect(this.sfx);
-    src.start(t, Math.random()); src.stop(t + 0.32);
+    src.start(t, Math.random()); src.stop(t + 0.17);
     this.log.push({ k: 'throw', t: performance.now(), power });
   }
 
@@ -479,16 +484,17 @@ export class AudioEngine {
     gs.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
     snap.connect(hp).connect(gs).connect(pan);
     snap.start(t, Math.random()); snap.stop(t + 0.09);
-    // The body behind it: a short low thump.
+    // The body behind it: a short low thump, tight to the snap (it is on at once and gone in a
+    // sixteenth of a second: a low note that blooms late reads as a second, delayed sound).
     const o = ctx.createOscillator(); o.type = 'sine';
-    o.frequency.setValueAtTime(150 + power * 40, t);
-    o.frequency.exponentialRampToValueAtTime(62, t + 0.09);
+    o.frequency.setValueAtTime(210 + power * 50, t);
+    o.frequency.exponentialRampToValueAtTime(80, t + 0.04);
     const go = ctx.createGain();
     go.gain.setValueAtTime(0.0001, t);
-    go.gain.exponentialRampToValueAtTime(0.16 + power * 0.3, t + 0.008);
-    go.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
+    go.gain.linearRampToValueAtTime(0.16 + power * 0.3, t + 0.002);
+    go.gain.exponentialRampToValueAtTime(0.0001, t + 0.062);
     o.connect(go).connect(pan);
-    o.start(t); o.stop(t + 0.15);
+    o.start(t); o.stop(t + 0.08);
     // The ball going away: a hiss that falls as it leaves.
     const hiss = ctx.createBufferSource();
     hiss.buffer = this.bufs.noise[0]; hiss.loop = true;

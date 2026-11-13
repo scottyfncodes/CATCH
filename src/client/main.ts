@@ -39,8 +39,9 @@ try { fetch(serverHttpUrl() + '/health', { cache: 'no-store', mode: 'cors' }).ca
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+// The film curve and the evening grade (see scene/look.ts).
+renderer.toneMapping = THREE.CustomToneMapping;
+renderer.toneMappingExposure = 1.16;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 

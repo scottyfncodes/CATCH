@@ -11,6 +11,7 @@ import { type Vec3, clamp, wrapAngle } from '../../shared/vec';
 import { DELIVERY_LENGTH, type DeliveryPose, RELEASE_TIME, type Windup, deliveryPose, exaggerate, getWindup, pelvisHeight, windupPose, windupScale } from '../../shared/windups';
 import { BUILDS, GLOVES, HAIR_COLORS, HATS, type Hat, PANTS, S, SKINS, type Style, TOPS } from '../../shared/style';
 import { buildGlove, buildHand, setGloveClosure } from './gear';
+import { rim } from './look';
 
 type Mat = (c: string, r?: number) => THREE.MeshStandardMaterial;
 
@@ -256,7 +257,7 @@ export class Avatar {
   readonly chestPos = new THREE.Vector3();
 
   constructor(home: Vec3, facing: number, public hand: Hand, readonly style: Style, windup = 0) {
-    const m = (c: string, r = 0.8) => { const x = new THREE.MeshStandardMaterial({ color: c, roughness: r }); this.mats.push(x); return x; };
+    const m = (c: string, r = 0.8) => { const x = rim(new THREE.MeshStandardMaterial({ color: c, roughness: r })); this.mats.push(x); return x; };
     const skinHex = SKINS[style[S.skin]], top = TOPS[style[S.top]], hat = HATS[style[S.hat]];
     const w = BUILDS[style[S.build]].w;
     const pants = m(PANTS[style[S.pants]]), skin = m(skinHex, 0.6), shoe = m('#efeae0', 0.7);
