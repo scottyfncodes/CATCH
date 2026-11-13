@@ -17,7 +17,6 @@ image or model files, and no extra render passes.
 | Sky | painted in its shader: gold through rose and lavender to blue, high combed cloud lit from below, the sun and its glow | `world.ts` |
 | Redwoods | trunks that flare into the ground, furrowed bark, drooping tiers of boughs lit at their edges | `world.ts` |
 | Ground | a forest floor of moss, duff and needles; a worn road with tyre tracks, cracks, a patch and what is left of a centre line; needle drift at its edges; sword ferns | `world.ts` |
-| Lens | the corners fall off a little | `#lens` in `style.css` |
 | Ball | a thin dark edge, so it reads against a bright sky | `gear.ts` |
 
 The grade, haze, shadows and rim are small additions to the shaders three
@@ -44,6 +43,10 @@ rasteriser, not a phone GPU: these say what changed, not how a phone runs it).
 | Triangles a frame | 71 thousand | about 90 thousand |
 | Software render time a frame | 177 ms | about 230 ms |
 | Building the world (first / second time on a page) | 99 ms / 98 ms | 133 ms / 10 ms |
+
+A vignette was tried as a full-screen overlay and taken out: it made the
+browser composite a full-screen blend every frame, which showed up as CPU
+even on pages that were not drawing.
 
 The painted textures are made once a page and shared by the home screen's
 world and the game's. On a phone the existing safety net applies: resolution

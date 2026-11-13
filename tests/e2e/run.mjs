@@ -393,6 +393,7 @@ try {
   })() && (await T1.page.evaluate(() => { const g = window.__catch.game; const s = g.debugState(); const feet = g.screenOf([s.pos[0], 0.05, s.pos[2]]), head = g.screenOf([s.pos[0], 1.95, s.pos[2]]), pal = g.screenOf([s.partnerPos[0], 1.2, s.partnerPos[2]]); return feet.on && head.on && pal.on && pal.y < head.y; })));
   clearInterval(keep);
   // Let go: the ball stays in the hand through the stride, and leaves it at the release.
+  const streak0 = (await T1.state()).score.streak;
   const tUp = Date.now();
   await T1.touch('touchEnd', []);
   await sleep(120);
@@ -405,7 +406,7 @@ try {
   const rAv = seenFlight?.remotes.find((r) => r.id === t1Id);
   check('on the other phone the throw lines up with the delivery it is watching', !!rAv && rAv.delivery >= 0.22 && rAv.delivery < 0.42, `remote clip t=${rAv?.delivery?.toFixed(2)} s when the flight arrived (release is at 0.30)`);
   const caught1 = await waitFor(async () => { const s = await R1.state(); return s.ball.phase === 'held' && s.ball.holder === r1Id ? s : null; }, 6000, 30);
-  check('the catcher catches it in first person', !!caught1 && caught1.view > 0.9, `view=${caught1?.view?.toFixed(2)}`);
+  check('the catcher catches it in first person', !!caught1 && caught1.view > 0.9, `view=${caught1?.view?.toFixed(2)} streak ${streak0} → ${caught1?.score.streak}`);
   const swapped = await waitFor(async () => { const [t, r] = [await T1.state(), await R1.state()]; return t.view >= 1 && r.view <= 0 ? [t, r] : null; }, 5000);
   check('roles reverse and so do the views: each player moves to the view for their own role', !!swapped && swapped[0].first === true && swapped[1].first === false, `old thrower view=${swapped?.[0].view} new thrower view=${swapped?.[1].view}`);
 
