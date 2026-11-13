@@ -20,13 +20,43 @@ export function serverHttpUrl(): string {
   return serverUrl().replace(/^ws/, 'http').replace(/\/ws$/, '');
 }
 
+/** What the client knows about the server's clock. */
+export interface ClockSync {
+  /** serverTime ≈ performance.now() + offset */
+  offset: number;
+  /** The quickest round trip seen lately (it ages, so drift is tracked). */
+  bestRtt: number;
+  /** The round trip of the measurement the offset rests on: it can be wrong by up to half of this. */
+  trust: number;
+  synced: boolean;
+}
+
+export const newClock = (): ClockSync => ({ offset: 0, bestRtt: Infinity, trust: Infinity, synced: false });
+
+/**
+ * One ping come back: sent at `sent` and received at `recv` (this device's
+ * clock), stamped `server` by the server in between.
+ *
+ * A measurement is only as good as its round trip is short. The first one
+ * often arrives while the page is still busy starting the game (so it is slow,
+ * and lopsided, and can be out by hundreds of milliseconds): a much tighter
+ * one replaces what we had outright rather than being averaged into it.
+ */
+export function syncClock(c: ClockSync, sent: number, server: number, recv: number): ClockSync {
+  const rtt = Math.max(0, recv - sent);
+  const off = server + rtt / 2 - recv;
+  const bestRtt = Math.min(c.bestRtt * 1.02 + 1, rtt);
+  if (!c.synced || rtt < c.trust * 0.6) return { offset: off, bestRtt, trust: rtt, synced: true };
+  // Otherwise prefer low-RTT samples (least queueing), and ease toward them.
+  if (rtt <= bestRtt * 1.15) return { offset: c.offset * 0.7 + off * 0.3, bestRtt, trust: c.trust * 0.7 + rtt * 0.3, synced: true };
+  // (An estimate ages: after a while a slower measurement is allowed to correct it.)
+  return { ...c, bestRtt, trust: c.trust * 1.02 + 1 };
+}
+
 export class Net {
   ws: WebSocket | null = null;
   status: NetStatus = 'connecting';
-  /** serverTime ≈ performance.now() + offset */
-  private offset = 0;
-  private bestRtt = Infinity;
-  private synced = false;
+  private clock = newClock();
   rtt = 0;
   private pingTimer = 0;
   private retry = 0;
@@ -37,7 +67,7 @@ export class Net {
 
   constructor(private room: string, private hello: () => { guest: string; name: string; hand: Hand; windup: number; style: number[]; mode?: Mode }) {}
 
-  now(): number { return performance.now() + this.offset; }
+  now(): number { return performance.now() + this.clock.offset; }
 
   connect() {
     this.stopped = false;
@@ -49,9 +79,9 @@ export class Net {
     ws.onopen = () => {
       const h = this.hello();
       this.sendRaw({ t: 'hello', room: this.room, guest: h.guest, name: h.name, hand: h.hand, v: PROTOCOL_VERSION, w: h.windup, s: h.style, m: h.mode });
-      this.bestRtt = Infinity;
-      // Burst of pings to converge the clock quickly, then a slow cadence.
-      for (let i = 0; i < 5; i++) setTimeout(() => this.ping(), i * 120);
+      this.clock = { ...this.clock, bestRtt: Infinity, trust: Infinity };
+      // A burst of pings to find the clock quickly, a few more while the game is still settling in, then a slow cadence.
+      for (const ms of [0, 120, 240, 360, 480, 800, 1200, 1700, 2600, 3600]) setTimeout(() => this.ping(), ms);
       clearInterval(this.pingTimer);
       this.pingTimer = window.setInterval(() => this.ping(), 2000);
     };
@@ -60,7 +90,7 @@ export class Net {
       try { m = JSON.parse(e.data); } catch { return; }
       if (m.t === 'pong') { this.onPong(m.c, m.s); return; }
       if (m.t === 'welcome') {
-        if (!this.synced) this.offset = m.now - performance.now();
+        if (!this.clock.synced) this.clock = { ...this.clock, offset: m.now - performance.now() };
         this.retry = 0;
         this.setStatus('open');
       }
@@ -102,13 +132,7 @@ export class Net {
     const t = performance.now();
     const rtt = t - c;
     this.rtt = this.rtt ? this.rtt * 0.8 + rtt * 0.2 : rtt;
-    // Prefer low-RTT samples (least queueing); let the estimate age so drift is tracked.
-    this.bestRtt = Math.min(this.bestRtt * 1.02 + 1, rtt);
-    if (rtt <= this.bestRtt * 1.15 || !this.synced) {
-      const off = s + rtt / 2 - t;
-      this.offset = this.synced ? this.offset * 0.7 + off * 0.3 : off;
-      this.synced = true;
-    }
+    this.clock = syncClock(this.clock, c, s, t);
   }
 
   send(m: ClientMsg) {
