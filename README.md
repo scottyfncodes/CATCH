@@ -82,7 +82,7 @@ src/server/   authoritative room server (Node + ws): rooms, possession, catch va
 src/client/   Vite + TypeScript + Three.js client: third-person rendering, one-thumb controls, prediction, Web Audio
 tests/unit/   Vitest: physics, room authority, the windup library (and the avatar performing it)
 tests/e2e/    Playwright: real server + production build + up to 7 independent browser clients
-tests/visual/ authoring tools: a filmstrip of any windup, the catching poses, the glove (docs/BODY.md)
+tests/visual/ authoring tools: a filmstrip of any windup, the catching poses, the glove, the players (docs/BODY.md, docs/LOOK.md)
 ```
 
 - **Server-authoritative.** The server owns possession, throws, catches, drops,
