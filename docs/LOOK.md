@@ -24,6 +24,20 @@ already runs for every material (`installLook()` patches its shader chunks once)
 so they cost arithmetic per pixel and nothing else. A material opts into tree
 shadows or rim light with a define.
 
+## The players
+
+People are still rigid pieces hung on the joints the body solver places
+(`docs/BODY.md`): nothing about how they move changed. What changed is the
+pieces (`src/client/scene/body.ts`, each shape built once and shared):
+
+- a trunk with shoulders, a chest and a waist, in a T-shirt with a collar and a hem at the belt;
+- short sleeves with the arm coming out of them, a forearm that tapers to the wrist;
+- thighs and calves, trousers that stop above the ankle, a sock, a sneaker with a gum sole;
+- a head with a jaw, a nose, ears and eyes, a touch larger than life so a face and a cap read from across the road.
+
+Stripes and two-tone shirts follow the trunk's shape. Hats, hair, gloves and
+colours are the same items as before. To look at them: `/tests/visual/people.html`.
+
 ## Changing it
 
 - The sun: `SUN_DIR` in `look.ts`. Haze, shadows, rim, shafts and sky all read it.

@@ -12,6 +12,7 @@ import { DELIVERY_LENGTH, type DeliveryPose, RELEASE_TIME, type Windup, delivery
 import { BUILDS, GLOVES, HAIR_COLORS, HATS, type Hat, PANTS, S, SKINS, type Style, TOPS } from '../../shared/style';
 import { buildGlove, buildHand, setGloveClosure } from './gear';
 import { rim } from './look';
+import { collarGeo, eyesGeo, headGeo, limbs, neckGeo, shoeGeo, torsoBand, torsoGeo } from './body';
 
 type Mat = (c: string, r?: number) => THREE.MeshStandardMaterial;
 
@@ -116,14 +117,6 @@ const WRIST_MAX = 1.45;
 const THIGH = 0.45, SHIN = 0.44, HIP_W = 0.1, HIP_Y = 0.92;
 const UPPER = 0.29, FORE = 0.27;
 
-function seg(mat: THREE.Material, r: number, r2 = r * 0.85) {
-  const g = new THREE.CylinderGeometry(r2, r, 1, 8);
-  g.translate(0, 0.5, 0);
-  const m = new THREE.Mesh(g, mat);
-  m.castShadow = true;
-  return m;
-}
-
 function joint(mat: THREE.Material, r: number) {
   const m = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), mat);
   m.castShadow = true;
@@ -190,7 +183,7 @@ export class Avatar {
   private head = new THREE.Group();
   private shoulderL = new THREE.Object3D();
   private shoulderR = new THREE.Object3D();
-  private armSegs: THREE.Mesh[];
+  private armSegs: THREE.Object3D[];
   private legSegs: THREE.Mesh[];
   private knees: THREE.Mesh[];
   private elbows: THREE.Mesh[];
@@ -222,6 +215,8 @@ export class Avatar {
   private coreMats: THREE.MeshStandardMaterial[] = [];
   private coreAlpha = 1;
   private sleeve!: THREE.MeshStandardMaterial;
+  /** The glove arm's skin above the elbow: it thins out with the sleeve. */
+  private sleeveSkin!: THREE.MeshStandardMaterial;
   private sleeveA = new THREE.Vector3();
   private sleeveB = new THREE.Vector3();
   private diveK = 0;
@@ -260,7 +255,7 @@ export class Avatar {
     const m = (c: string, r = 0.8) => { const x = rim(new THREE.MeshStandardMaterial({ color: c, roughness: r })); this.mats.push(x); return x; };
     const skinHex = SKINS[style[S.skin]], top = TOPS[style[S.top]], hat = HATS[style[S.hat]];
     const w = BUILDS[style[S.build]].w;
-    const pants = m(PANTS[style[S.pants]]), skin = m(skinHex, 0.6), shoe = m('#efeae0', 0.7);
+    const pants = m(PANTS[style[S.pants]], 0.86), skin = m(skinHex, 0.58), shoe = m('#ffffff', 0.72);
     // The head and chest get their own materials: in first person they fade
     // out of the way (and keep casting your shadow on the grass).
     const core = (c: string, r = 0.8) => { const x = m(c, r); this.coreMats.push(x); return x; };
@@ -272,39 +267,37 @@ export class Avatar {
 
     // Legs: thigh + shin per side, knees solved each frame. (A build is how
     // thick you are, never how far you reach: joints stay where they are.)
-    this.legSegs = [seg(pants, 0.085 * w, 0.07 * w), seg(pants, 0.068 * w, 0.055 * w), seg(pants, 0.085 * w, 0.07 * w), seg(pants, 0.068 * w, 0.055 * w)];
-    this.knees = [joint(pants, 0.072 * w), joint(pants, 0.072 * w)];
-    this.shoes = [0, 1].map(() => {
-      const g = new THREE.BoxGeometry(0.11, 0.075, 0.27);
-      g.translate(0, 0.0375, -0.05);
-      const sh = new THREE.Mesh(g, shoe);
-      sh.castShadow = true;
-      return sh;
-    });
+    const L = limbs(w);
+    const part = (g: THREE.BufferGeometry, mat: THREE.Material) => { const x = new THREE.Mesh(g, mat); x.castShadow = true; return x; };
+    this.legSegs = [part(L.thigh, pants), part(L.shin, pants), part(L.thigh, pants), part(L.shin, pants)];
+    this.knees = [joint(pants, 0.064 * w), joint(pants, 0.064 * w)];
+    // Sneakers: one mesh each, its parts told apart by vertex colour.
+    shoe.vertexColors = true;
+    this.shoes = [0, 1].map(() => part(shoeGeo(), shoe));
     this.root.add(...this.legSegs, ...this.knees, ...this.shoes);
 
     // Pelvis carries the torso; it drops and shifts with weight.
     // (The hips fade with the head and chest in first person: from above they are just a blob.)
-    const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.1, 4, 10), core(PANTS[style[S.pants]]));
+    const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.115, 0.1, 4, 10), core(PANTS[style[S.pants]], 0.86));
     hips.rotation.z = Math.PI / 2;
-    hips.scale.set(w, 1, 0.75 * w);
+    hips.scale.set(w, 1, 0.8 * w);
     this.pelvis.add(hips);
     this.root.add(this.pelvis);
     this.torso.position.y = 0.04;
     this.torso.rotation.order = 'YXZ';
     this.pelvis.add(this.torso);
-    this.chest = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.32, 4, 10), shirtC);
+    // The trunk: shoulders, a chest, a waist, a shirt that hangs a little loose over the belt.
+    this.chest = new THREE.Mesh(torsoGeo(), shirtC);
     this.chest.scale.set(1.18 * w, 1, 0.7 * w);
     this.chest.position.y = 0.3;
     this.torso.add(this.chest);
     if (top.accent && top.pattern !== 'raglan') {
       // Stripes are two bands round the chest; a two-tone is one deep one round the waist.
       const accent = core(top.accent);
-      const bands = top.pattern === 'stripes' ? [[0.36, 0.045], [0.24, 0.045]] : [[0.17, 0.2]];
+      const bands = top.pattern === 'stripes' ? [[0.37, 0.045], [0.27, 0.045]] : [[0.112, 0.266]];
       for (const [y, h] of bands) {
-        const band = new THREE.Mesh(new THREE.CylinderGeometry(0.1725, 0.1725, h, 20, 1, true), accent);
+        const band = new THREE.Mesh(torsoBand(y, h), accent);
         band.scale.set(1.18 * w, 1, 0.7 * w);
-        band.position.y = y;
         this.torso.add(band);
       }
     }
@@ -312,26 +305,21 @@ export class Avatar {
     this.shoulderR.position.copy(SHOULDER_R);
     this.torso.add(this.shoulderL, this.shoulderR);
     const shoulderMat = core(sleeveHex);
-    for (const sh of [this.shoulderL, this.shoulderR]) sh.add(joint(shoulderMat, 0.062 * w));
-    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.056, 0.1, 8), skinC);
-    neck.position.y = 0.6;
+    for (const sh of [this.shoulderL, this.shoulderR]) sh.add(joint(shoulderMat, 0.052 * w));
+    // A ribbed collar, a shade deeper than the shirt (or in its second colour).
+    const collar = new THREE.Mesh(collarGeo(), core(top.accent ?? `#${new THREE.Color(top.color).multiplyScalar(0.8).getHexString()}`));
+    collar.position.y = 0.584;
+    this.torso.add(collar);
+    const neck = new THREE.Mesh(neckGeo(), skinC);
+    neck.position.set(0, 0.61, 0.004);
     this.torso.add(neck);
     this.head.position.y = 0.7;
+    // (A touch larger than life: a face and a cap read from across the road.)
+    this.head.scale.setScalar(1.06);
     this.head.rotation.order = 'YXZ';
     this.torso.add(this.head);
-    const skull = new THREE.Mesh(new THREE.SphereGeometry(0.112, 16, 12), skinC);
-    skull.scale.set(0.92, 1.05, 1);
-    skull.position.y = 0.02;
-    this.head.add(skull);
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.018, 0.04, 6), skinC);
-    nose.rotation.x = -Math.PI / 2;
-    nose.position.set(0, 0.0, -0.11);
-    this.head.add(nose);
-    for (const sx of [-1, 1]) {
-      const ear = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 6), skinC);
-      ear.position.set(sx * 0.1, 0.0, 0.0);
-      this.head.add(ear);
-    }
+    // A head with a jaw, a nose and ears (one mesh), and eyes.
+    this.head.add(new THREE.Mesh(headGeo(), skinC), new THREE.Mesh(eyesGeo(), core('#2b1d17', 0.35)));
     this.head.add(buildHair(style[S.hair], core(HAIR_COLORS[style[S.hairColor]], 0.9), hat.shape));
     this.head.add(buildHat(hat, core));
 
@@ -340,14 +328,17 @@ export class Avatar {
     // shoulder sits right under the camera). The glove arm keeps its sleeve, so the
     // arm you watch is a whole arm; it only thins out if it swings in close to the lens.
     this.sleeve = m(sleeveHex);
-    this.armSegs = [seg(this.sleeve, 0.046 * w, 0.04 * w), seg(skin, 0.038 * w, 0.032 * w), seg(core(sleeveHex), 0.046 * w, 0.04 * w), seg(skin, 0.038 * w, 0.032 * w)];
-    this.elbows = [joint(skin, 0.038 * w), joint(skin, 0.038 * w)];
+    this.sleeveSkin = m(skinHex, 0.58);
+    // An upper arm is a short sleeve with the arm coming out of it.
+    const upper = (cloth: THREE.Material, arm: THREE.Material) => { const g = new THREE.Group(); g.add(part(L.sleeve, cloth), part(L.upperArm, arm)); return g; };
+    this.armSegs = [upper(this.sleeve, this.sleeveSkin), part(L.forearm, skin), upper(core(sleeveHex), skinC), part(L.forearm, skin)];
+    this.elbows = [joint(skin, 0.039 * w), joint(skin, 0.039 * w)];
     // A regular glove, at its real size.
     this.glove = buildGlove(GLOVES[style[S.glove]]);
     if (hand === 'L') this.glove.scale.x = -1;
     this.handMesh = buildHand(skinHex);
-    this.handMesh.scale.setScalar(1.1);
-    if (hand === 'L') this.handMesh.scale.x = -1.1;
+    this.handMesh.scale.setScalar(1.2);
+    if (hand === 'L') this.handMesh.scale.x = -1.2;
     this.root.add(...this.armSegs, ...this.elbows, this.glove, this.handMesh);
     // Arms are positioned in world space: keep them out of the root transform.
     for (const o of [...this.armSegs, ...this.elbows, this.glove, this.handMesh, ...this.legSegs, ...this.knees, ...this.shoes]) o.matrixAutoUpdate = true;
@@ -412,12 +403,13 @@ export class Avatar {
       const d = tmpB.copy(this.sleeveA).addScaledVector(ab, t).distanceTo(cam);
       a = smooth(clamp((d - 0.24) / 0.16, 0, 1));
     }
-    const m = this.sleeve;
-    if (m.opacity === a) return;
+    if (this.sleeve.opacity === a) return;
     const t = a < 0.995;
-    if (m.transparent !== t) { m.transparent = t; m.needsUpdate = true; }
-    m.opacity = a;
-    m.depthWrite = a > 0.6;
+    for (const m of [this.sleeve, this.sleeveSkin]) {
+      if (m.transparent !== t) { m.transparent = t; m.needsUpdate = true; }
+      m.opacity = a;
+      m.depthWrite = a > 0.6;
+    }
   }
 
   /** Big mitt: the glove at `size` times a regular one. */
