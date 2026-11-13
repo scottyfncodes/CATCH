@@ -318,12 +318,14 @@ try {
     const toYaw = Math.atan2(-(st.partnerPos[0] - st.pos[0]), -(st.partnerPos[2] - st.pos[2]));
     await throwGesture(h, opts);
     const m = await waitFor(() => h.page.evaluate(() => window.__lastThrow), 2000);
-    return m ? { yawOff: Math.atan2(Math.sin(yawOf(m.v) - toYaw), Math.cos(yawOf(m.v) - toYaw)), speed: Math.hypot(...m.v) } : null;
+    const yawOff = m ? Math.atan2(Math.sin(yawOf(m.v) - toYaw), Math.cos(yawOf(m.v) - toYaw)) : 0;
+    // (How far to the side it is aimed, in metres at the target: the room gets further apart as it catches, so an angle alone means less and less.)
+    return m ? { yawOff, off: Math.tan(yawOff) * Math.hypot(st.partnerPos[0] - st.pos[0], st.partnerPos[2] - st.pos[2]), speed: Math.hypot(...m.v) } : null;
   };
   const s0 = await sample({ pull: 110, side: 0 });
   const sR = await sample({ pull: 110, side: -110 });
   const sL = await sample({ pull: 110, side: 110 });
-  check('pulling to one side throws to the other (slingshot)', s0 && sR && sL && sR.yawOff < s0.yawOff - 0.06 && sL.yawOff > s0.yawOff + 0.06, `straight=${s0?.yawOff.toFixed(2)} pull-left=${sR?.yawOff.toFixed(2)} pull-right=${sL?.yawOff.toFixed(2)}`);
+  check('pulling to one side throws to the other (slingshot)', s0 && sR && sL && sR.off < s0.off - 0.5 && sL.off > s0.off + 0.5, `aimed off the target by: straight=${s0?.off.toFixed(2)} m, pull-left=${sR?.off.toFixed(2)} m, pull-right=${sL?.off.toFixed(2)} m`);
   const sSoft = await sample({ pull: 50 });
   const sHard = await sample({ pull: 240 });
   check('pull length sets throw speed (soft toss vs hard throw)', sSoft && sHard && sHard.speed > sSoft.speed + 5, `soft=${sSoft?.speed.toFixed(1)} hard=${sHard?.speed.toFixed(1)} m/s`);
