@@ -19,7 +19,7 @@ score and every player hears the same one:
 
 | Grade | Distance from pocket centre | What you hear |
 |---|---|---|
-| perfect (g ≳ 0.78) | ≤ 4.5 cm | full-band crack + tight body + tonal pocket **ring** + slapback off the houses |
+| perfect (g ≳ 0.78) | ≤ 4.5 cm | full-band crack + tight body + tonal pocket **ring** + the **report** (dry: nothing comes back off the houses) |
 | pocket | ≤ 9.5 cm | solid crack, full body, a little ring |
 | web | ≤ 15.5 cm | crack low-passed away, dull body, more leather shuffle |
 | bobble | ≤ 20.5 cm | muffled impact, then a second squeeze 130 ms later |
@@ -41,6 +41,7 @@ Layered per catch from pre-rendered variations (picked at random):
 | Layer | Model | Driven by |
 |---|---|---|
 | Crack | 4 ms broadband slap, peaks at 2.5 kHz and 5 kHz, initial click | ball speed (^1.25), only strong on clean pocket catches |
+| Shot | the report: full-band burst (11 ms), a bark at ≈950 Hz (24 ms), a 190→62 Hz punch, hard-clipped; over in about 50 ms with no tail | how centred the catch is (^1.3) and ball speed (^1.4): a hard one in the middle of the pocket goes off like a shot |
 | Body | mid "slap" band (≈430 Hz) + hand thump (170→82 Hz glide) + two leather resonances (≈760 Hz, ≈1.33 kHz) + early reflection, soft-saturated | speed sets level and playback rate; soft tosses are low-passed |
 | Settle | stick-slip micro-clicks + low squeeze, 35–250 ms after impact | always, subtle |
 

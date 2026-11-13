@@ -69,7 +69,7 @@ One thumb, no buttons on screen:
 - Desktop: arrow keys / WASD also move you.
 - **The POP is your grade.** The server scores each catch by how close the ball
   came to the centre of your pocket, and everyone hears that grade: a perfect
-  catch cracks and rings off the houses, an off-centre one thwaps, a bobble
+  catch goes off like a shot (dry, no echo), an off-centre one thwaps, a bobble
   squeezes twice. Perfect catches are counted in the pause sheet.
 - Every caught throw adds one to the room's streak and a step to the distance;
   a drop resets the streak and costs a step.

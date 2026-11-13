@@ -26,8 +26,6 @@ export class AudioEngine {
   ctx: AudioContext | null = null;
   private master!: GainNode;
   private sfx!: GainNode;
-  /** Outdoor slapback (the POP bouncing off the houses) for the best catches. */
-  private slap!: AudioNode;
   private amb!: GainNode;
   private bufs: Bufs = {};
   private zip: {
@@ -93,16 +91,6 @@ export class AudioEngine {
     clip.oversample = '2x';
     this.master.connect(clip).connect(ctx.destination);
     this.sfx = ctx.createGain(); this.sfx.connect(this.master);
-    {
-      const d = ctx.createDelay(0.5); d.delayTime.value = 0.092;
-      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2400;
-      const g = ctx.createGain(); g.gain.value = 0.14;
-      const d2 = ctx.createDelay(0.5); d2.delayTime.value = 0.067;
-      const g2 = ctx.createGain(); g2.gain.value = 0.35;
-      d.connect(lp).connect(g).connect(this.sfx);
-      g.connect(d2).connect(g2).connect(lp);
-      this.slap = d;
-    }
     this.amb = ctx.createGain(); this.amb.gain.value = 0.0; this.amb.connect(this.master);
     // Keep audio alive across iOS interruptions (calls, Siri, app switching).
     ctx.addEventListener('statechange', () => {
@@ -132,7 +120,7 @@ export class AudioEngine {
   private render() {
     const sr = this.ctx!.sampleRate;
     const N = (s: number) => Math.floor(s * sr);
-    const out: Bufs = { ring: [], crack: [], body: [], settle: [], ground: [], transfer: [], creak: [], bird: [], noise: [], wind: [], palm: [] };
+    const out: Bufs = { shot: [], ring: [], crack: [], body: [], settle: [], ground: [], transfer: [], creak: [], bird: [], noise: [], wind: [], palm: [] };
 
     for (let v = 0; v < 4; v++) {
       const r = rng(101 + v * 17);
@@ -144,6 +132,27 @@ export class AudioEngine {
       envelope(c, sr, 0.0002, 0.0042 + r() * 0.0012);
       c[0] += 0.9; c[1] -= 0.5;
       out.crack.push(this.buf(fadeEdges(normalize(c, 1), sr, 1)));
+
+      // Shot: the report of a hard one into the pocket. Everything at once and
+      // then nothing: full-band, clipped, over in a twentieth of a second, with
+      // a punch of low end under it. Dry: no tail, no slap-back.
+      const sn = N(0.11);
+      const shot = new Float32Array(sn);
+      const blast = white(sn, r);
+      biquad(blast, sr, 'highpass', 500, 0.7);
+      biquad(blast, sr, 'peaking', 1900 + r() * 300, 0.9, 7);
+      envelope(blast, sr, 0.00015, 0.011 + r() * 0.002);
+      mix(shot, normalize(blast, 1), 1);
+      const bark = white(sn, r);
+      biquad(bark, sr, 'bandpass', 950 + r() * 120, 0.8);
+      envelope(bark, sr, 0.0003, 0.024);
+      mix(shot, normalize(bark, 1), 0.7);
+      const punch = tone(sn, sr, 190, 62, 0.03, 0.03);
+      envelope(punch, sr, 0.0005, 1);
+      mix(shot, punch, 0.9);
+      shot[0] += 1; shot[1] -= 0.6;
+      saturate(shot, 3.2);
+      out.shot.push(this.buf(fadeEdges(normalize(shot, 1), sr, 1)));
 
       // Body: the pocket. Mid slap + hand thump behind the glove + leather ring.
       const n = N(0.24);
@@ -343,7 +352,7 @@ export class AudioEngine {
   /**
    * THE POP — and the grade. `g` (0..1, from the server) is how close the ball
    * came to the dead centre of the pocket; the POP is how you hear it:
-   *   ~1.0  perfect: a crisp, ringing crack that slaps back off the houses
+   *   ~1.0  perfect: a crisp, ringing crack and a dry report, like a shot
    *   ~0.6  pocket:  a solid, clean pop
    *   ~0.35 web:     a dull leather thwap
    *   <0.25 bobble:  a muffled double squeeze
@@ -356,7 +365,7 @@ export class AudioEngine {
     // De-duplicate: a predicted local catch and its server confirmation must not double up.
     if (ctx.currentTime - this.lastPopAt < 0.09) return;
     this.lastPopAt = ctx.currentTime;
-    const s = Math.min(1, Math.max(0, o.speed / 28));
+    const s = Math.min(1, Math.max(0, o.speed / 26));
     const g = Math.min(1, Math.max(0, o.g));
     const { node, delay } = this.placeAt(o.pos, (o.side ?? 0) * 0.28);
     const t = ctx.currentTime + delay;
@@ -391,11 +400,9 @@ export class AudioEngine {
     if (ringAmt > 0) {
       this.play('ring', node, Math.pow(ringAmt, 1.4) * (0.32 + 0.4 * s), t + 0.001, (0.97 + 0.06 * s) * jitter());
     }
-    // A perfect one echoes off the houses across the street.
-    if (g >= 0.78) {
-      this.play('crack', this.slap, crackGain * 0.9, t, 1);
-      this.play('body', this.slap, 0.4 * loud, t, bodyRate);
-    }
+    // The report: a clean one, thrown hard, goes off like a shot. Dry: nothing comes back off the houses.
+    const shotGain = Math.pow(g, 1.3) * (0.25 + 0.95 * Math.pow(s, 1.4));
+    if (shotGain > 0.04) this.play('shot', node, shotGain * 1.15, t, (0.96 + 0.1 * s) * jitter());
     // Settle: more leather shuffling when it wasn't clean.
     this.play('settle', node, 0.12 + 0.22 * (1 - g), t + 0.012, 0.92 + 0.1 * g);
   }

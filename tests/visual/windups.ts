@@ -2,7 +2,7 @@
 // be judged (and tuned) as a still sequence.
 //
 //   npm run dev:client, then open
-//   /tests/visual/windups.html?id=34&hand=R&view=side   (view: side | front | back | top)
+//   /tests/visual/windups.html?id=34&hand=R&view=side   (view: side | front | back | top; pull=0..1 for the size of the windup)
 //
 // Each figure is a real Avatar stepped through the real clip up to that moment.
 
@@ -17,6 +17,8 @@ const q = new URLSearchParams(location.search);
 const id = Number(q.get('id') ?? 34);
 const hand = q.get('hand') === 'L' ? 'L' : 'R';
 const view = q.get('view') ?? 'side';
+/** How far back the thumb is (0..1): the size of the windup. */
+const pull = Number(q.get('pull') ?? 0.5);
 const w = getWindup(id);
 
 type Shot = { label: string; u: number; t: number };
@@ -78,10 +80,10 @@ function pose(s: Shot) {
   // Settle, wind up in real time, then (maybe) deliver.
   for (let i = 0; i < 90; i++) avatar.update(dt, { ...base, arm: Arm.Holding, charge: 0 });
   const steps = Math.max(1, Math.round((w.params.tempo * s.u) / dt));
-  for (let i = 1; i <= steps; i++) avatar.update(dt, { ...base, arm: Arm.Windup, charge: (s.u * i) / steps });
+  for (let i = 1; i <= steps; i++) avatar.update(dt, { ...base, arm: Arm.Windup, charge: (s.u * i) / steps, pull });
   if (s.t >= 0) {
     const n = Math.round(s.t / dt);
-    for (let i = 0; i < n; i++) avatar.update(dt, { ...base, arm: Arm.Release, charge: 0 });
+    for (let i = 0; i < n; i++) avatar.update(dt, { ...base, arm: Arm.Release, charge: 0, pull });
   }
   ball.position.copy(avatar.handBall);
   ball.visible = s.t < RELEASE_TIME + 0.001;

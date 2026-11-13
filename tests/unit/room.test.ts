@@ -39,7 +39,7 @@ const wire = (p: Pose): Wire => [p.x, p.z, p.yaw, p.g[0], p.g[1], p.g[2]];
 
 /** Stream a pose for a member (as the client does at 20 Hz). */
 function stream(room: Room, id: string, p: Pose) {
-  room.handle(id, { t: 'st', p: [p.x, p.z, p.yaw, p.g[0], p.g[1], p.g[2], 0, 0, 0, 0] });
+  room.handle(id, { t: 'st', p: [p.x, p.z, p.yaw, p.g[0], p.g[1], p.g[2], 0, 0, 0, 0, 0.5] });
 }
 
 /**
@@ -652,7 +652,7 @@ describe('room', () => {
   it('streams a leap and a dive to everyone, clamped to what a body can do', () => {
     const { room, ids, conns } = setup(2);
     const m = room.members.get(ids[0])!;
-    room.handle(ids[0], { t: 'st', p: [m.pos[0], m.pos[2], m.facing, 0, 9, 0, 0, 0, 9, -9] });
+    room.handle(ids[0], { t: 'st', p: [m.pos[0], m.pos[2], m.facing, 0, 9, 0, 0, 0, 9, -9, 0.5] });
     room.snapshot();
     const e = conns[1].last('snap')!.e.find((x) => x[0] === ids[0])!;
     expect(e[9]).toBeLessThanOrEqual(LEAP_HEIGHT + 0.05);

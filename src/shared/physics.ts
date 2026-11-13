@@ -234,13 +234,13 @@ function arcAt(speed: number, elev: number, dist: number, h0: number): { h: numb
 }
 
 /**
- * How steeply a throw of `dist` metres leaves the hand (radians): a flat
- * peg across the road, a high arc for a long one. This is what makes distance
- * cost arm: the further away your friend is, the harder the same throw is thrown.
+ * How steeply a throw of `dist` metres leaves the hand (radians): a rope
+ * across the road, an arc only when the distance needs one. This is what makes
+ * distance cost arm: the further away your friend is, the harder the same throw is thrown.
  */
 export function throwElevation(dist: number): number {
   const k = Math.max(0, Math.min(1, (dist - 14) / 100));
-  return ((13 + 25 * k * k * (3 - 2 * k)) * Math.PI) / 180;
+  return ((6.5 + 27.5 * k * k * (3 - 2 * k)) * Math.PI) / 180;
 }
 
 /**

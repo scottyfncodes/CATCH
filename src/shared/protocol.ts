@@ -155,7 +155,7 @@ export type BallEvent =
 export type ClientMsg =
   | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number; w?: number; s?: number[]; m?: Mode }
   | { t: 'ping'; c: number }
-  /** x, z, yaw, gx, gy, gz, arm, windup phase, lift, dive — rounded. */
+  /** x, z, yaw, gx, gy, gz, arm, windup phase, lift, dive, pull (how big the windup is) — rounded. */
   | { t: 'st'; p: PoseWire }
   /** "Here it comes": the holder has let go of the aim and the delivery has started (the throw follows RELEASE_TIME later). */
   | { t: 'go' }
@@ -185,10 +185,10 @@ export type ServerMsg =
  * `charge` is how far through the windup the thrower is (0..1); `lift` is a
  * leap's height off the grass (m); `dive` is -1..1 toward the body's left/right.
  */
-export type PoseWire = [number, number, number, number, number, number, number, number, number, number];
+export type PoseWire = [number, number, number, number, number, number, number, number, number, number, number];
 
-/** [id, x, z, yaw, gx, gy, gz, arm, charge, lift, dive] */
-export type SnapEntry = [string, number, number, number, number, number, number, number, number, number, number];
+/** [id, x, z, yaw, gx, gy, gz, arm, charge, lift, dive, pull] */
+export type SnapEntry = [string, number, number, number, number, number, number, number, number, number, number, number];
 
 /**
  * 6: rooms have a mode (long toss, fixed distance, big mitt).
@@ -197,8 +197,9 @@ export type SnapEntry = [string, number, number, number, number, number, number,
  * 2: third-person bodies that move (pose carries position + glove point).
  * 3: signature windups (players carry a windup; the ball leaves the hand a
  *    beat after the arm starts forward) and leaps/dives in the pose.
+ * 7: a pose carries the pull (how far back the thumb is: how big the windup is); throws are flatter.
  */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /** Room codes: 4 letters, no ambiguous characters. */
 export const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ';

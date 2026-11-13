@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import { type Hand, type Pose, bodyToWorld, gloveWorld, worldToBody } from '../../shared/pose';
 import { Arm } from '../../shared/protocol';
 import { type Vec3, clamp, wrapAngle } from '../../shared/vec';
-import { DELIVERY_LENGTH, type DeliveryPose, RELEASE_TIME, type Windup, deliveryPose, getWindup, pelvisHeight, windupPose } from '../../shared/windups';
+import { DELIVERY_LENGTH, type DeliveryPose, RELEASE_TIME, type Windup, deliveryPose, exaggerate, getWindup, pelvisHeight, windupPose, windupScale } from '../../shared/windups';
 import { BUILDS, GLOVES, HAIR_COLORS, HATS, type Hat, PANTS, S, SKINS, type Style, TOPS } from '../../shared/style';
 import { buildGlove, buildHand, setGloveClosure } from './gear';
 
@@ -170,6 +170,8 @@ export interface AvatarFrame {
   lift?: number;
   /** A dive: -1..1, toward the body's left/right. */
   dive?: number;
+  /** How far back the thumb is pulled (0..1): the windup is drawn that much bigger. Half is the windup as written. */
+  pull?: number;
   /** How far behind real time this pose is (seconds): a remote player's delivery makes it up. */
   lag?: number;
 }
@@ -235,6 +237,8 @@ export class Avatar {
   /** World position of the eyes (first-person camera). */
   readonly eye = new THREE.Vector3();
   private recoil = 0;
+  /** How big the windup is being drawn right now (1 = as written). */
+  private big = 1;
   private recoilDir = new THREE.Vector3();
   /** Where on the glove the ball struck (about the glove's own x and y axes): a ball off the centre of the pocket turns it. */
   private hinge = new THREE.Vector2();
@@ -493,11 +497,14 @@ export class Avatar {
     const throwing = this.deliveryT >= 0;
     let fade = 1;
     if (throwing) {
-      this.dpose = deliveryPose(this.windup, this.deliveryT, this.deliveryFrom);
+      // (The size of the windup is gone by the time the arm comes through: every throw leaves from the same slot.)
+      this.dpose = exaggerate(this.windup, deliveryPose(this.windup, this.deliveryT, this.deliveryFrom), 1 + (this.big - 1) * (1 - smooth(clamp(this.deliveryT / 0.2, 0, 1))));
       fade = 1 - smooth(clamp((this.deliveryT - 0.74) / (DELIVERY_LENGTH - 0.74), 0, 1));
       this.dw += (1 - this.dw) * (1 - Math.exp(-dt / 0.045));
     } else if (arm === Arm.Windup) {
-      this.dpose = windupPose(this.windup, this.wu);
+      // The further back the thumb, the bigger the windup.
+      this.big += (windupScale(f.pull ?? 0.5) - this.big) * (1 - Math.exp(-dt / 0.12));
+      this.dpose = exaggerate(this.windup, windupPose(this.windup, this.wu), this.big);
       if (this.wu > 0.98) {
         // Balanced at the top: alive, not frozen.
         this.dpose.lead[1] += Math.sin(this.time * 2.3) * 0.012;
