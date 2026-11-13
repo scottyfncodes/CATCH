@@ -483,6 +483,35 @@ export function deliveryPose(w: Windup, t: number, fromU = 1): DeliveryPose {
   return unflat(a.map((v, i) => v + (b[i] - v) * e));
 }
 
+/**
+ * How big a windup is for a pull of the thumb (0..1): a short pull is a
+ * compact, quick-looking motion; a full pull is the whole show.
+ */
+export function windupScale(pull: number): number {
+  return 0.5 + Math.max(0, Math.min(1, pull));
+}
+
+/**
+ * The same windup, bigger or smaller: every part of the pose is moved further
+ * from (or held closer to) the set position by `scale`. Kept inside what a
+ * body can do: the kick, the turn and the hands only go so far.
+ */
+export function exaggerate(w: Windup, pose: DeliveryPose, scale: number): DeliveryPose {
+  if (Math.abs(scale - 1) < 1e-3) return pose;
+  const a = flat(windupPose(w, 0)), b = flat(pose);
+  const p = unflat(a.map((v, i) => v + (b[i] - v) * scale));
+  // More of a kick and a turn, never a different delivery.
+  p.hip = Math.min(p.hip, Math.max(pose.hip, 2.7));
+  p.coil = Math.max(-1.2, Math.min(p.coil, Math.max(pose.coil, 1.1)));
+  p.lean = Math.max(-0.75, Math.min(0.9, p.lean));
+  p.tilt = Math.max(-0.7, Math.min(0.7, p.tilt));
+  p.lead[1] = Math.max(0, Math.min(p.lead[1], Math.max(pose.lead[1], 1.25)));
+  p.pivot[1] = Math.max(0, p.pivot[1]);
+  p.ball[1] = Math.max(0.5, Math.min(p.ball[1], 2.35));
+  p.glove[1] = Math.max(0.5, Math.min(p.glove[1], 2.35));
+  return p;
+}
+
 /** Pitch-frame offset → world-axes offset for a body facing `yaw`. */
 export function pitchToWorld(yaw: number, hand: Hand, p: Vec3): Vec3 {
   const side = hand === 'R' ? 1 : -1;

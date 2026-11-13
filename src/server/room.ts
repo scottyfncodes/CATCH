@@ -89,6 +89,8 @@ export interface Member {
   arm: number;
   /** How far through the windup (0..1). */
   charge: number;
+  /** How far back the thumb is pulled (0..1): how big the windup is drawn. */
+  pull: number;
   /** A leap's height off the grass, and a dive (-1..1), as streamed. */
   lift: number;
   dive: number;
@@ -178,7 +180,7 @@ export class Room {
   snapEntries(): SnapEntry[] {
     const r = (x: number, k = 1000) => Math.round(x * k) / k;
     return [...this.members.values()].map((m) => [
-      m.id, r(m.pose.x), r(m.pose.z), r(m.pose.yaw), r(m.pose.g[0]), r(m.pose.g[1]), r(m.pose.g[2]), m.arm, r(m.charge, 100), r(m.lift, 100), r(m.dive, 100),
+      m.id, r(m.pose.x), r(m.pose.z), r(m.pose.yaw), r(m.pose.g[0]), r(m.pose.g[1]), r(m.pose.g[2]), m.arm, r(m.charge, 100), r(m.lift, 100), r(m.dive, 100), r(m.pull, 100),
     ]);
   }
 
@@ -228,7 +230,7 @@ export class Room {
       id: o.bot ? 'coach' : newId(), guest: o.guest, name: o.name, hand: o.hand, bot: o.bot,
       joinOrder: this.joinCounter++, style: o.style, conn: o.conn, connected: true, disconnectedAt: 0,
       pose: { x: 0, z: 0, yaw: 0, g: gloveReady(0, o.hand) }, poseAt: this.now(), joinedAt: this.now(),
-      arm: Arm.Idle, charge: 0, lift: 0, dive: 0, speed: 0, windup: o.windup, catches: 0, drops: 0, perfects: 0, saves: 0, seat: 0, pos: [0, 0, 0], facing: 0,
+      arm: Arm.Idle, charge: 0, pull: 0.5, lift: 0, dive: 0, speed: 0, windup: o.windup, catches: 0, drops: 0, perfects: 0, saves: 0, seat: 0, pos: [0, 0, 0], facing: 0,
     };
     this.members.set(m.id, m);
     return m;
@@ -364,6 +366,7 @@ export class Room {
         m.pose = pose;
         m.arm = finite(p[6], 0, 3) | 0;
         m.charge = finite(p[7], 0, 1);
+        m.pull = finite(p[10], 0, 1, 0.5);
         m.poseAt = t;
         return;
       }

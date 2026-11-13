@@ -105,7 +105,8 @@ export class BotBrain {
       if (home > 0.8) this.throwAt = Math.max(this.throwAt, t + windMs + 250);
       const left = this.throwAt - t;
       if (left > windMs) { coach.arm = Arm.Holding; coach.charge = 0; return null; }
-      if (left > 0) { coach.arm = Arm.Windup; coach.charge = Math.min(1, (windMs - left) / tempo); return null; }
+      // (Coach winds up bigger the further he has to throw.)
+      if (left > 0) { coach.arm = Arm.Windup; coach.charge = Math.min(1, (windMs - left) / tempo); coach.pull = Math.min(0.9, 0.4 + Math.hypot(human.pose.x - coach.pos[0], human.pose.z - coach.pos[2]) * 0.008); return null; }
       coach.arm = Arm.Release;
       coach.charge = 0;
       this.pending = { ...this.aimAt(coach, human, streak), at: t + RELEASE_MS };
@@ -251,7 +252,7 @@ export class BotBrain {
     const target: Vec3 = [glove[0] + rx * ox, high || Math.max(0.25, glove[1] + oy), glove[2] + rz * ox];
     // Thrown as hard as the distance takes; a little flatter and quicker once you're warm.
     const d = dist(p, target);
-    const zip = warm ? 1.15 : 1.1 - this.rng() * Math.min(0.3, 0.1 + streak * 0.01);
+    const zip = warm ? 1.3 : 1.35 - this.rng() * Math.min(0.3, 0.1 + streak * 0.01);
     return { p, v: solveArc(p, target, throwElevation(d) * zip).v0 };
   }
 }

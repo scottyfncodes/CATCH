@@ -32,7 +32,7 @@ import { CatchGuide, type GuideState, TRAIL, Tier, type TierId } from './scene/g
 import { type World, buildWorld } from './scene/world';
 import { prefs, raiseRecord, recordFor, save } from './storage';
 
-interface Snap { t: number; x: number; z: number; yaw: number; g: Vec3; arm: number; charge: number; lift: number; dive: number }
+interface Snap { t: number; x: number; z: number; yaw: number; g: Vec3; arm: number; charge: number; lift: number; dive: number; pull: number }
 
 interface Remote {
   info: PlayerInfo;
@@ -42,6 +42,7 @@ interface Remote {
   pose: Pose;
   arm: number;
   charge: number;
+  pull: number;
   lift: number;
   dive: number;
 }
@@ -130,6 +131,8 @@ export class Game {
   /** The windup you throw with, and how far through it you are (0..1). */
   windup: number;
   private windU = 0;
+  /** How far back your thumb is (0..1), kept through the delivery: the size of your windup. */
+  private pull = 0.5;
   /** You've let go: the delivery is on its way and the ball leaves the hand at `at`. */
   private pending: { p0: Vec3; v0: Vec3; at: number; power: number; traj: Trajectory; ring: Vec3 } | null = null;
   /** The hand's offset from the true release point at release: eased out over the first frames of flight. */
@@ -453,7 +456,7 @@ export class Game {
       seen.add(info.id);
       let p = this.players.get(info.id);
       if (!p) {
-        p = { info, avatar: null, snaps: [], label: null, pose: { x: info.pos[0], z: info.pos[2], yaw: info.facing, g: gloveReady(info.facing, info.hand) }, arm: 0, charge: 0, lift: 0, dive: 0 };
+        p = { info, avatar: null, snaps: [], label: null, pose: { x: info.pos[0], z: info.pos[2], yaw: info.facing, g: gloveReady(info.facing, info.hand) }, arm: 0, charge: 0, pull: 0.5, lift: 0, dive: 0 };
         this.players.set(info.id, p);
       }
       const moved = p.info.pos[0] !== info.pos[0] || p.info.pos[2] !== info.pos[2];
@@ -494,7 +497,7 @@ export class Game {
     for (const e of entries) {
       const p = this.players.get(e[0]);
       if (!p || e[0] === this.me) continue;
-      p.snaps.push({ t, x: e[1], z: e[2], yaw: e[3], g: [e[4], e[5], e[6]], arm: e[7], charge: e[8], lift: e[9] ?? 0, dive: e[10] ?? 0 });
+      p.snaps.push({ t, x: e[1], z: e[2], yaw: e[3], g: [e[4], e[5], e[6]], arm: e[7], charge: e[8], lift: e[9] ?? 0, dive: e[10] ?? 0, pull: e[11] ?? 0.5 });
       if (p.snaps.length > 30) p.snaps.shift();
     }
   }
@@ -667,7 +670,7 @@ export class Game {
     // high arc for a long one. Pull harder and it goes flatter and quicker.
     // The arc depends on the distance and your pull, never on the windup.
     const p0 = releasePointFor(this.windup, me, yawTo, this.hand);
-    const { v0, T } = solveArc(p0, target, throwElevation(depth) * lerp(1.3, 0.75, a.power));
+    const { v0, T } = solveArc(p0, target, throwElevation(depth) * lerp(1.2, 0.65, a.power));
     return { p0, v0, speed: Math.hypot(...v0), ring: target, T };
   }
 
@@ -1180,6 +1183,7 @@ export class Game {
     };
     p.arm = k < 0.5 ? a.arm : bb.arm;
     p.charge = lerp(a.charge, bb.charge, k);
+    p.pull = lerp(a.pull, bb.pull, k);
     p.lift = lerp(a.lift, bb.lift, k);
     p.dive = lerp(a.dive, bb.dive, k);
     while (s.length > 2 && s[1].t < rt - 200) s.shift();
@@ -1205,7 +1209,7 @@ export class Game {
       if (this.ball.phase === 'held' && this.ball.holder === p.info.id && arm === Arm.Idle) arm = Arm.Holding;
       const gloved = this.catchShow?.by === p.info.id && performance.now() - this.catchShow.perf < 320;
       const ready = this.ball.phase === 'flight' && this.ball.live && this.ball.thrower !== p.info.id;
-      p.avatar.update(dt, { pose: p.pose, arm, charge: p.charge, look: this.lookTarget(p.info.id, this.lastBallPos), gloved, ready, lift: p.lift, dive: p.dive, lag: INTERP_MS / 1000 });
+      p.avatar.update(dt, { pose: p.pose, arm, charge: p.charge, pull: p.pull, look: this.lookTarget(p.info.id, this.lastBallPos), gloved, ready, lift: p.lift, dive: p.dive, lag: INTERP_MS / 1000 });
     }
   }
 
@@ -1222,11 +1226,12 @@ export class Game {
     // The windup runs at its own tempo while you hold the aim, rests at the top
     // until you let go, and comes back down if you ease off.
     const tempo = getWindup(this.windup).params.tempo;
+    if (this.controls.aiming && this.aim) this.pull += (this.aim.power - this.pull) * (1 - Math.exp(-dt / 0.06));
     if (this.controls.aiming && this.aim?.armed && this.canThrow()) this.windU = Math.min(1, this.windU + dt / tempo);
     else if (this.controls.aiming) this.windU = Math.max(0, this.windU - dt * 2.2);
     else if (!this.pending) this.windU = 0;
     const gloved = !!this.localCatch || (this.catchShow?.by === this.me && now < this.holdReadyAt - 200);
-    this.myAvatar.update(dt, { pose: this.myPose(), arm: this.myArm(now), charge: this.windU, look: this.lookTarget(this.me, this.lastBallPos), gloved, ready: this.incoming(), lift: this.lift, dive: this.diveAmt });
+    this.myAvatar.update(dt, { pose: this.myPose(), arm: this.myArm(now), charge: this.windU, pull: this.pull, look: this.lookTarget(this.me, this.lastBallPos), gloved, ready: this.incoming(), lift: this.lift, dive: this.diveAmt });
   }
 
   private updateBall(dt: number, now: number, sNow: number): Vec3 | null {
@@ -1534,7 +1539,7 @@ export class Game {
     this.lastSent = now;
     const r = (x: number) => Math.round(x * 1000) / 1000;
     const r2 = (x: number) => Math.round(x * 100) / 100;
-    this.net.send({ t: 'st', p: [r(this.pos[0]), r(this.pos[2]), r(this.yaw), r(this.glove[0]), r(this.glove[1]), r(this.glove[2]), this.myArm(now), r2(this.windU), r2(this.lift), r2(this.diveAmt)] });
+    this.net.send({ t: 'st', p: [r(this.pos[0]), r(this.pos[2]), r(this.yaw), r(this.glove[0]), r(this.glove[1]), r(this.glove[2]), this.myArm(now), r2(this.windU), r2(this.lift), r2(this.diveAmt), r2(this.pull)] });
   }
 
   /** Snapshot for tests and debugging. */
