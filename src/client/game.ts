@@ -191,6 +191,8 @@ export class Game {
   autoMove = false;
   /** Test hook: no hand tremor on the aim. */
   steadyAim = false;
+  /** Test hook: throw a loftier, slower arc (so a test has time to do something under it). */
+  arcScale = 1;
   /** Test hook: skip drawing (software-GL CI is too slow for real-time touch input). */
   renderEnabled = true;
   /** Test hook: hold this frame on screen (for a still), without advancing anything. */
@@ -670,7 +672,7 @@ export class Game {
     // high arc for a long one. Pull harder and it goes flatter and quicker.
     // The arc depends on the distance and your pull, never on the windup.
     const p0 = releasePointFor(this.windup, me, yawTo, this.hand);
-    const { v0, T } = solveArc(p0, target, throwElevation(depth) * lerp(1.2, 0.65, a.power));
+    const { v0, T } = solveArc(p0, target, throwElevation(depth) * lerp(1.2, 0.65, a.power) * this.arcScale);
     return { p0, v0, speed: Math.hypot(...v0), ring: target, T };
   }
 
@@ -688,7 +690,8 @@ export class Game {
     this.releasedAt = now;
     this.net.send({ t: 'go' });
     const side = this.hand === 'R' ? 1 : -1;
-    setTimeout(() => audio.armSwish(a.power, side), Math.max(0, RELEASE_MS - 110));
+    // (On the audio clock, not a timer: it lands on the release exactly.)
+    audio.armSwish(a.power, side, RELEASE_MS / 1000);
   }
 
   /** The release point of the delivery: the ball is away. */

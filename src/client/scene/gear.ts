@@ -393,6 +393,9 @@ export function buildBall(): THREE.Mesh {
     new THREE.MeshStandardMaterial({ map: ballTex, roughness: 0.55, emissive: '#ffffff', emissiveMap: ballTex, emissiveIntensity: 0.22 }),
   );
   m.castShadow = false;
+  // A thin dark edge, so a white ball still reads against a bright evening sky and the haze under it.
+  const edge = new THREE.Mesh(new THREE.SphereGeometry(BALL_RADIUS * 1.1, 16, 10), new THREE.MeshBasicMaterial({ color: '#2b1c14', side: THREE.BackSide, fog: false, toneMapped: false }));
+  m.add(edge);
   return m;
 }
 

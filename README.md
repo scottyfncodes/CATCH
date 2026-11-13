@@ -200,7 +200,8 @@ The free Render plan sleeps after ~15 idle minutes; the first visit then waits
 ~30–60 s while it wakes (the home screen pings it early and the game shows
 "Warming up the field…"). Render Starter (~$7/mo) removes the wait.
 
-See [docs/AUDIO.md](docs/AUDIO.md) for the sound design and what's still open,
+See [docs/LOOK.md](docs/LOOK.md) for the art direction (light, haze, the forest) and how to change it,
+[docs/AUDIO.md](docs/AUDIO.md) for the sound design and what's still open,
 and [docs/WINDUPS.md](docs/WINDUPS.md) for the windup library: how to add one,
 the authoring filmstrip, and the **legal-review note** to read before any
 public commercial release.

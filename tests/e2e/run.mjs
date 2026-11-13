@@ -435,7 +435,10 @@ try {
   await waitCanThrow(T1);
   await aimAt(T1, r1Id);
   const from0 = (await R1.state()).pos.slice();
+  // (A lofted throw: there has to be time to run under it.)
+  await T1.page.evaluate(() => { window.__catch.game.arcScale = 2.2; });
   await throwGesture(T1, { pull: 60, side: 150 });
+  await T1.page.evaluate(() => { window.__catch.game.arcScale = 1; });
   const w0 = await waitFor(() => crossOf(R1), 3000, 8);
   const turns = R1.page.evaluate(() => new Promise((res) => { const g = window.__catch.game; let m = 0; const f = () => { const s = g.debugState(); m = Math.max(m, Math.abs(s.turn)); if (s.ball.phase === 'flight') requestAnimationFrame(f); else res(m); }; f(); }));
   await R1.touch('touchStart', [[195, 480]]);
@@ -474,7 +477,10 @@ try {
   await waitCanThrow(T1);
   await aimAt(T1, r1Id);
   const before1b = (await T1.state()).score.streak;
+  // (Lofted, so that there is such a thing as too early.)
+  await T1.page.evaluate(() => { window.__catch.game.arcScale = 2.2; });
   await throwGesture(T1, { pull: 60, side: 160 });
+  await T1.page.evaluate(() => { window.__catch.game.arcScale = 1; });
   const wide2 = await waitFor(() => crossOf(R1), 3000, 8);
   // (Early enough that the ball arrives while they're still down on the grass.)
   wide2.tta = await untilTta(R1, 0.78);

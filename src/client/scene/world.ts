@@ -4,18 +4,40 @@
 
 import * as THREE from 'three';
 import { skyEnvironment } from './light';
+import { SUN_DIR, buildMotes, buildShafts, dappled, installLook } from './look';
+
+export { SUN_DIR };
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
-export const SUN_DIR = new THREE.Vector3(-0.62, 0.24, -0.75).normalize();
 
 export const PALETTE = {
-  horizon: new THREE.Color('#f5b27a'),
-  zenith: new THREE.Color('#4f86c6'),
+  horizon: new THREE.Color('#f7b680'),
+  zenith: new THREE.Color('#3f66b4'),
   sun: new THREE.Color('#ffd7a8'),
   grassA: '#5f8a3a',
   grassB: '#6e9a42',
-  fog: new THREE.Color('#e7bf95'),
+  // Haze away from the sun (toward it, the shaders turn it gold).
+  fog: new THREE.Color('#bcb3c8'),
 };
+
+/** Painted once, shared by every world built on this page (the home screen's and the game's). */
+const painted = new Map<string, THREE.CanvasTexture>();
+function once(key: string, paint: () => THREE.CanvasTexture): THREE.CanvasTexture {
+  let t = painted.get(key);
+  if (!t) painted.set(key, (t = paint()));
+  return t;
+}
+
+/** Fine grain over a whole canvas in one pass (thousands of one-pixel rectangles are slow to draw). */
+function grain(g: CanvasRenderingContext2D, w: number, h: number, r: () => number, amount: number) {
+  const img = g.getImageData(0, 0, w, h);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const k = 1 + (r() - 0.5) * amount;
+    d[i] *= k; d[i + 1] *= k; d[i + 2] *= k;
+  }
+  g.putImageData(img, 0, 0);
+}
 
 function rand(seed: number) {
   let s = seed;
@@ -33,27 +55,162 @@ export function roadX(z: number): number {
   return 0;
 }
 
+/**
+ * The road, as one long strip across (u) and along (v): worn asphalt with the
+ * tyres' two darker tracks, cracks and tar, a patch, what is left of a yellow
+ * centre line, and redwood needles drifted in along both edges.
+ */
 function asphaltTexture(): THREE.CanvasTexture {
-  const S = 256;
+  const W = 512, H = 1024;
   const cv = document.createElement('canvas');
-  cv.width = cv.height = S;
+  cv.width = W; cv.height = H;
   const g = cv.getContext('2d')!;
-  g.fillStyle = '#56575a';
-  g.fillRect(0, 0, S, S);
+  g.fillStyle = '#5d5b5c';
+  g.fillRect(0, 0, W, H);
   const r = rand(19);
-  // Aggregate speckle and a few darker, damp patches.
-  for (let i = 0; i < 9000; i++) {
-    const l = 26 + r() * 30;
-    g.fillStyle = `hsla(${200 + r() * 40}, 4%, ${l}%, ${0.25 + r() * 0.35})`;
-    g.fillRect(r() * S, r() * S, 1 + r(), 1 + r());
+  // (Everything that could cross the top or bottom edge is drawn three times, so the strip tiles.)
+  const wrap = (draw: (dy: number) => void) => { for (const dy of [-H, 0, H]) draw(dy); };
+  // Aggregate.
+  grain(g, W, H, r, 0.5);
+  for (let i = 0; i < 5000; i++) {
+    const l = 30 + r() * 40;
+    g.fillStyle = `hsla(${20 + r() * 220}, ${3 + r() * 6}%, ${l}%, ${0.3 + r() * 0.4})`;
+    g.fillRect(r() * W, r() * H, 1.5 + r() * 1.6, 1.5 + r() * 1.6);
   }
-  for (let i = 0; i < 18; i++) {
-    const x = r() * S, y = r() * S, rad = 10 + r() * 40;
-    const gr = g.createRadialGradient(x, y, 0, x, y, rad);
-    gr.addColorStop(0, 'rgba(30,32,36,0.28)');
-    gr.addColorStop(1, 'rgba(30,32,36,0)');
+  // Broad wear: lighter down the crown, darker in the two tyre tracks.
+  for (const [u, col, wd] of [[0.5, 'rgba(120,116,112,0.2)', 0.2], [0.27, 'rgba(34,34,38,0.26)', 0.1], [0.73, 'rgba(34,34,38,0.26)', 0.1]] as const) {
+    const gr = g.createLinearGradient((u - wd) * W, 0, (u + wd) * W, 0);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.5, col); gr.addColorStop(1, 'rgba(0,0,0,0)');
     g.fillStyle = gr;
-    g.fillRect(0, 0, S, S);
+    g.fillRect(0, 0, W, H);
+  }
+  // Damp, darker blotches.
+  for (let i = 0; i < 26; i++) {
+    const x = r() * W, y = r() * H, rad = 30 + r() * 90;
+    wrap((dy) => {
+      const gr = g.createRadialGradient(x, y + dy, 0, x, y + dy, rad);
+      gr.addColorStop(0, 'rgba(28,30,36,0.26)'); gr.addColorStop(1, 'rgba(28,30,36,0)');
+      g.fillStyle = gr;
+      g.fillRect(x - rad, y + dy - rad, rad * 2, rad * 2);
+    });
+  }
+  // A repair: a squarer, darker patch.
+  g.fillStyle = 'rgba(46,46,50,0.38)';
+  g.fillRect(W * 0.56, H * 0.18, W * 0.2, H * 0.1);
+  g.strokeStyle = 'rgba(20,20,22,0.55)'; g.lineWidth = 2;
+  g.strokeRect(W * 0.56, H * 0.18, W * 0.2, H * 0.1);
+  // Cracks, some of them sealed with tar.
+  for (let i = 0; i < 9; i++) {
+    let x = r() * W, y = r() * H;
+    const tar = r() < 0.3;
+    const pts: [number, number][] = [[x, y]];
+    const a0 = r() * 6.28;
+    for (let k = 0; k < 9 + r() * 9; k++) { x += Math.cos(a0 + (r() - 0.5) * 1.6) * (8 + r() * 16); y += Math.sin(a0 + (r() - 0.5) * 1.6) * (8 + r() * 16); pts.push([x, y]); }
+    wrap((dy) => {
+      g.beginPath();
+      pts.forEach(([px, py], k) => (k ? g.lineTo(px, py + dy) : g.moveTo(px, py + dy)));
+      g.strokeStyle = tar ? 'rgba(24,24,27,0.6)' : 'rgba(26,26,29,0.5)';
+      g.lineWidth = tar ? 2.2 : 0.9;
+      g.lineJoin = 'round';
+      g.stroke();
+    });
+  }
+  // What is left of the centre line: one dash a tile, most of its paint gone.
+  const dash = { x: W * 0.5 - 4.5, y: H * 0.36, w: 9, h: H * 0.26 };
+  g.fillStyle = 'rgba(222,190,98,0.8)';
+  g.fillRect(dash.x, dash.y, dash.w, dash.h);
+  for (let i = 0; i < 420; i++) {
+    const l = 33 + r() * 9;
+    g.fillStyle = `hsla(300, 2%, ${l}%, ${0.6 + r() * 0.4})`;
+    g.fillRect(dash.x - 1 + r() * (dash.w + 2), dash.y + r() * dash.h, 1 + r() * 3, 1 + r() * 7);
+  }
+  // Needles and duff drifted in from the shoulders: thick at the very edge, thinning out.
+  for (let i = 0; i < 11000; i++) {
+    const d = Math.pow(r(), 2.4) * 0.17;
+    const u = r() < 0.5 ? d : 1 - d;
+    const a = r() * Math.PI;
+    const x = u * W, y = r() * H, len = 2 + r() * 5;
+    g.strokeStyle = `hsla(${14 + r() * 16}, ${45 + r() * 20}%, ${20 + r() * 20}%, ${0.5 + r() * 0.4})`;
+    g.lineWidth = 1.2 + r() * 1.2;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); g.stroke();
+  }
+  for (const u of [0, 1]) {
+    const gr = g.createLinearGradient(u * W, 0, (u ? 1 - 0.07 : 0.07) * W, 0);
+    gr.addColorStop(0, 'rgba(98,58,36,0.95)'); gr.addColorStop(1, 'rgba(98,58,36,0)');
+    g.fillStyle = gr;
+    g.fillRect(u ? W * 0.93 : 0, 0, W * 0.07, H);
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.wrapS = THREE.ClampToEdgeWrapping; t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+/** The shoulders: red-brown redwood duff, needles and the odd cone, thinning out raggedly into the forest floor (u = 1). */
+function duffTexture(): THREE.CanvasTexture {
+  const W = 256, H = 512;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const g = cv.getContext('2d')!;
+  const r = rand(31);
+  g.fillStyle = '#62391f';
+  g.fillRect(0, 0, W, H);
+  for (let i = 0; i < 4200; i++) {
+    const a = r() * Math.PI, x = r() * W, y = r() * H, len = 3 + r() * 8;
+    g.strokeStyle = `hsla(${12 + r() * 20}, ${40 + r() * 25}%, ${16 + r() * 26}%, ${0.5 + r() * 0.4})`;
+    g.lineWidth = 0.8 + r();
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); g.stroke();
+  }
+  for (let i = 0; i < 60; i++) { g.fillStyle = `hsla(22, 30%, ${12 + r() * 10}%, 0.8)`; g.beginPath(); g.ellipse(r() * W, r() * H, 2 + r() * 3, 1.5 + r() * 2, r() * 3, 0, 7); g.fill(); }
+  // Ragged, fading outer edge.
+  const img = g.getImageData(0, 0, W, H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const u = x / (W - 1);
+    const edge = 0.42 + 0.14 * Math.sin(y * 0.049) + 0.1 * Math.sin(y * 0.171 + 2) + 0.06 * Math.sin(y * 0.61 + 1);
+    const a = 1 - Math.min(1, Math.max(0, (u - edge) / 0.4 + (r() - 0.5) * 0.35));
+    img.data[(y * W + x) * 4 + 3] = Math.round(255 * a * a);
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(cv);
+  t.wrapS = THREE.ClampToEdgeWrapping; t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
+/** Redwood bark: deep, wandering vertical furrows, fibrous ridges between them. Tinted per tree. */
+function barkTexture(): THREE.CanvasTexture {
+  const W = 256, H = 512;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const g = cv.getContext('2d')!;
+  const r = rand(53);
+  g.fillStyle = '#c9c0b8';
+  g.fillRect(0, 0, W, H);
+  // Fibres.
+  for (let i = 0; i < 1100; i++) {
+    const x = r() * W, y = r() * H, len = 18 + r() * 60;
+    g.strokeStyle = `rgba(${r() < 0.5 ? '255,244,232' : '96,80,70'},${0.08 + r() * 0.16})`;
+    g.lineWidth = 0.7 + r() * 1.2;
+    for (const dy of [-H, 0, H]) { g.beginPath(); g.moveTo(x, y + dy); g.lineTo(x + (r() - 0.5) * 5, y + dy + len); g.stroke(); }
+  }
+  // Furrows: dark, wandering, joining and parting.
+  for (let i = 0; i < 26; i++) {
+    let x = (i / 26) * W + (r() - 0.5) * 8;
+    const wide = 2.2 + r() * 4.5, y0 = r() * H, len = H * (0.5 + r() * 0.9);
+    for (const dx of [-W, 0, W]) for (const dy of [-H, 0, H]) {
+      g.beginPath();
+      let xx = x;
+      const rr = rand(1000 + i);
+      g.moveTo(xx + dx, y0 + dy);
+      for (let y = 0; y < len; y += 14) { xx += (rr() - 0.5) * 9; g.lineTo(xx + dx, y0 + dy + y); }
+      g.strokeStyle = 'rgba(38,24,20,0.7)'; g.lineWidth = wide; g.lineCap = 'round'; g.lineJoin = 'round';
+      g.stroke();
+      g.strokeStyle = 'rgba(20,12,10,0.6)'; g.lineWidth = wide * 0.4;
+      g.stroke();
+    }
+    x += 0;
   }
   const t = new THREE.CanvasTexture(cv);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
@@ -72,23 +229,42 @@ function colorize(geo: THREE.BufferGeometry, color: THREE.Color, vary = 0, r = M
   return geo;
 }
 
+/** The forest floor: moss and sorrel, patches of bare duff, fallen needles. No two metres the same. */
 function grassTexture(): THREE.CanvasTexture {
   const S = 512;
   const cv = document.createElement('canvas');
   cv.width = cv.height = S;
   const g = cv.getContext('2d')!;
-  // Mowing stripes.
-  g.fillStyle = PALETTE.grassA;
+  g.fillStyle = '#4d6a34';
   g.fillRect(0, 0, S, S);
-  g.fillStyle = PALETTE.grassB;
-  g.fillRect(0, 0, S / 2, S);
-  // Blade speckle.
   const r = rand(7);
-  for (let i = 0; i < 26000; i++) {
+  const blot = (col: string, n: number, lo: number, hi: number) => {
+    for (let i = 0; i < n; i++) {
+      const x = r() * S, y = r() * S, rad = lo + r() * (hi - lo);
+      for (const ox of [-S, 0, S]) for (const oy of [-S, 0, S]) {
+        const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, rad);
+        gr.addColorStop(0, col); gr.addColorStop(1, col.replace(/[\d.]+\)$/, '0)'));
+        g.fillStyle = gr;
+        g.fillRect(x + ox - rad, y + oy - rad, rad * 2, rad * 2);
+      }
+    }
+  };
+  blot('rgba(104,66,38,0.5)', 14, 30, 90);    // bare duff
+  blot('rgba(118,150,58,0.42)', 22, 20, 70);  // moss in the light
+  blot('rgba(40,62,34,0.45)', 18, 30, 80);    // deep green
+  // Leaf and blade speckle.
+  grain(g, S, S, r, 0.45);
+  for (let i = 0; i < 6000; i++) {
     const x = r() * S, y = r() * S;
-    const l = 22 + r() * 22;
-    g.fillStyle = `hsla(${84 + r() * 22}, ${38 + r() * 20}%, ${l}%, ${0.18 + r() * 0.25})`;
-    g.fillRect(x, y, 1 + r() * 1.5, 2 + r() * 4);
+    g.fillStyle = `hsla(${76 + r() * 40}, ${34 + r() * 26}%, ${18 + r() * 26}%, ${0.25 + r() * 0.3})`;
+    g.fillRect(x, y, 1.5 + r() * 2, 2 + r() * 4);
+  }
+  // Fallen needles.
+  for (let i = 0; i < 1500; i++) {
+    const a = r() * Math.PI, x = r() * S, y = r() * S, len = 2 + r() * 5;
+    g.strokeStyle = `hsla(${16 + r() * 14}, 50%, ${24 + r() * 18}%, ${0.35 + r() * 0.35})`;
+    g.lineWidth = 0.8;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); g.stroke();
   }
   const t = new THREE.CanvasTexture(cv);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
@@ -97,18 +273,18 @@ function grassTexture(): THREE.CanvasTexture {
   return t;
 }
 
+/**
+ * The evening sky, painted: gold at the horizon through rose and lavender to
+ * a deep blue overhead, warmer on the sun's side, high streaks of cloud lit
+ * from underneath, and the sun with its glow.
+ */
 function skyMaterial() {
   return new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
     fog: false,
     toneMapped: false,
-    uniforms: {
-      uHorizon: { value: PALETTE.horizon },
-      uZenith: { value: PALETTE.zenith },
-      uSun: { value: PALETTE.sun },
-      uSunDir: { value: SUN_DIR },
-    },
+    uniforms: { uSunDir: { value: SUN_DIR }, uT: { value: 0 } },
     vertexShader: /* glsl */`
       varying vec3 vDir;
       void main() {
@@ -117,40 +293,42 @@ function skyMaterial() {
         gl_Position = p.xyww;
       }`,
     fragmentShader: /* glsl */`
-      uniform vec3 uHorizon, uZenith, uSun, uSunDir;
+      uniform vec3 uSunDir;
+      uniform float uT;
       varying vec3 vDir;
+      float hash(vec2 p) { vec3 q3 = fract( vec3( p.xyx ) * 0.1031 ); q3 += dot( q3, q3.yzx + 33.33 ); return fract( ( q3.x + q3.y ) * q3.z ); }
+      float noise(vec2 p) {
+        vec2 i = floor(p), f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+      }
+      float fbm(vec2 p) {
+        float a = 0.5, s = 0.0;
+        for (int i = 0; i < 3; i++) { s += a * noise(p); p = p * 2.03 + 11.7; a *= 0.5; }
+        s *= 1.07;
+        return s;
+      }
       void main() {
         vec3 d = normalize(vDir);
         float h = max(d.y, 0.0);
-        vec3 col = mix(uHorizon, uZenith, pow(h, 0.42));
-        // warm band just above the horizon
-        col = mix(col, vec3(1.0, 0.72, 0.48), exp(-h * 18.0) * 0.5);
         float s = max(dot(d, uSunDir), 0.0);
-        col += uSun * (pow(s, 900.0) * 3.0 + pow(s, 24.0) * 0.35 + pow(s, 4.0) * 0.12);
-        // below horizon fades toward the haze colour
-        if (d.y < 0.0) col = mix(uHorizon, vec3(0.72, 0.62, 0.5), min(1.0, -d.y * 4.0));
+        vec3 col = mix(vec3(0.99, 0.74, 0.52), vec3(0.74, 0.62, 0.76), smoothstep(0.0, 0.2, h));
+        col = mix(col, vec3(0.24, 0.38, 0.69), smoothstep(0.1, 0.7, h));
+        // The whole sky is warmer on the sun's side.
+        col = mix(col, vec3(1.0, 0.8, 0.5), pow(s, 3.0) * 0.6 * (1.0 - 0.6 * smoothstep(0.0, 0.6, h)));
+        // High cloud, combed out by the wind, drifting.
+        vec2 cp = d.xz / (d.y + 0.2);
+        float n = fbm(vec2(cp.x * 0.8 + uT * 0.003, cp.y * 2.4));
+        float cl = smoothstep(0.46, 0.74, n) * smoothstep(0.03, 0.22, h);
+        vec3 cloud = mix(vec3(0.95, 0.7, 0.68), vec3(1.0, 0.88, 0.62), pow(s, 2.0));
+        cloud = mix(cloud * 0.82, cloud, smoothstep(0.5, 0.8, n));
+        col = mix(col, cloud, cl * 0.85);
+        col += vec3(1.0, 0.84, 0.56) * (pow(s, 1400.0) * 4.0 + pow(s, 70.0) * 0.55 + pow(s, 9.0) * 0.2);
+        // Below the horizon it is all haze.
+        if (d.y < 0.0) col = mix(vec3(0.99, 0.74, 0.52), mix(vec3(0.74, 0.7, 0.78), vec3(1.0, 0.79, 0.5), pow(s, 4.0)), min(1.0, -d.y * 5.0));
         gl_FragColor = vec4(col, 1.0);
-        #include <colorspace_fragment>
       }`,
   });
-}
-
-function cloudTexture() {
-  const cv = document.createElement('canvas');
-  cv.width = 256; cv.height = 128;
-  const g = cv.getContext('2d')!;
-  const r = rand(11);
-  for (let i = 0; i < 16; i++) {
-    const x = 40 + r() * 176, y = 50 + r() * 40, rad = 24 + r() * 34;
-    const gr = g.createRadialGradient(x, y, 0, x, y, rad);
-    gr.addColorStop(0, 'rgba(255,240,228,0.55)');
-    gr.addColorStop(1, 'rgba(255,240,228,0)');
-    g.fillStyle = gr;
-    g.fillRect(0, 0, 256, 128);
-  }
-  const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
 }
 
 export interface World {
@@ -162,24 +340,27 @@ export interface World {
 }
 
 export function buildWorld(lowSpec: boolean, renderer?: THREE.WebGLRenderer): World {
+  installLook();
   const scene = new THREE.Scene();
+  // (The haze itself is in the shaders: see look.ts. This switches it on and gives it its colour.)
   scene.fog = new THREE.Fog(PALETTE.fog, 80, 280);
 
   // Sky dome.
-  const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), skyMaterial());
+  const skyMat = skyMaterial();
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), skyMat);
   sky.frustumCulled = false;
   sky.renderOrder = -1;
   scene.add(sky);
 
   // Light: low sun + sky fill.
-  const hemi = new THREE.HemisphereLight('#cfe0f5', '#5b4a2e', renderer ? 0.62 : 1.25);
+  const hemi = new THREE.HemisphereLight('#b9c9f2', '#4f4233', renderer ? 0.56 : 1.15);
   scene.add(hemi);
   // The sky itself lights things too: warm from the sun's side, blue from above (see light.ts).
   if (renderer) {
     scene.environment = skyEnvironment(renderer, { zenith: PALETTE.zenith, horizon: PALETTE.horizon, ground: '#66703c', sun: PALETTE.sun, sunDir: SUN_DIR });
     scene.environmentIntensity = 0.62;
   }
-  const sun = new THREE.DirectionalLight('#ffd2a1', 2.6);
+  const sun = new THREE.DirectionalLight('#ffc88c', 3.1);
   sun.position.copy(SUN_DIR).multiplyScalar(40);
   sun.target.position.set(0, 0, 0);
   if (!lowSpec) {
@@ -193,11 +374,11 @@ export function buildWorld(lowSpec: boolean, renderer?: THREE.WebGLRenderer): Wo
   scene.add(sun, sun.target);
 
   // Lawn.
-  const tex = grassTexture();
+  const tex = once('floor', grassTexture);
   tex.repeat.set(36, 36);
   const ground = new THREE.Mesh(
     new THREE.CircleGeometry(260, 48),
-    new THREE.MeshLambertMaterial({ map: tex }),
+    dappled(new THREE.MeshLambertMaterial({ map: tex })),
   );
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
@@ -206,10 +387,10 @@ export function buildWorld(lowSpec: boolean, renderer?: THREE.WebGLRenderer): Wo
   // The road: you play catch down the middle of a quiet back road that runs
   // out of the redwoods at one end and bends past an old barn at the other.
   {
-    const W = 5.6, SH = 1.7;
+    const W = 5.6, SH = 2.6;
     const zs: number[] = [];
     for (let z = -200; z <= 200; z += 2) zs.push(z);
-    const ribbon = (inner: number, outer: number, y: number) => {
+    const ribbon = (inner: number, outer: number, y: number, vScale: number, flip = false) => {
       const pos: number[] = [], uv: number[] = [], idx: number[] = [];
       zs.forEach((z, k) => {
         const x = roadX(z);
@@ -217,7 +398,7 @@ export function buildWorld(lowSpec: boolean, renderer?: THREE.WebGLRenderer): Wo
         const nl = Math.hypot(1, d);
         const nx = 1 / nl, nz = -d / nl;
         for (const o of [inner, outer]) pos.push(x + nx * o, y, z + nz * o);
-        uv.push(0, z / 6, 1, z / 6);
+        uv.push(flip ? 1 : 0, z / vScale, flip ? 0 : 1, z / vScale);
         if (k) { const a = (k - 1) * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
       });
       const g = new THREE.BufferGeometry();
@@ -228,12 +409,12 @@ export function buildWorld(lowSpec: boolean, renderer?: THREE.WebGLRenderer): Wo
       if (g.attributes.normal.getY(0) < 0) { for (let i = 0; i < idx.length; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; } g.setIndex(idx); g.computeVertexNormals(); }
       return g;
     };
-    const road = new THREE.Mesh(ribbon(-W / 2, W / 2, 0.012), new THREE.MeshStandardMaterial({ map: asphaltTexture(), roughness: 0.62, metalness: 0.0, color: '#ffffff' }));
+    const road = new THREE.Mesh(ribbon(-W / 2, W / 2, 0.012, 12), dappled(new THREE.MeshStandardMaterial({ map: once('road', asphaltTexture), roughness: 0.56, metalness: 0.0, color: '#ffffff' })));
     road.receiveShadow = true;
     // Soft shoulders of red-brown redwood duff.
-    const duff = new THREE.MeshLambertMaterial({ color: '#6f4430' });
-    const shL = new THREE.Mesh(ribbon(-W / 2 - SH, -W / 2, 0.008), duff);
-    const shR = new THREE.Mesh(ribbon(W / 2, W / 2 + SH, 0.008), duff);
+    const duff = dappled(new THREE.MeshLambertMaterial({ map: once('duff', duffTexture), transparent: true, depthWrite: false }));
+    const shL = new THREE.Mesh(ribbon(-W / 2 - SH, -W / 2 + 0.1, 0.008, 5, true), duff);
+    const shR = new THREE.Mesh(ribbon(W / 2 - 0.1, W / 2 + SH, 0.008, 5), duff);
     shL.receiveShadow = shR.receiveShadow = true;
     scene.add(road, shL, shR);
     // A dry, golden clearing around the barn.
@@ -357,45 +538,101 @@ export function buildWorld(lowSpec: boolean, renderer?: THREE.WebGLRenderer): Wo
       if (Math.abs(x - roadX(z)) < 7) continue;
       trees.push({ x, z, rad: 0.4 + r() * 0.5, h: 24 + r() * 16 });
     }
-    const trunkGeo = new THREE.CylinderGeometry(0.62, 1, 1, 9, 1, true);
-    trunkGeo.translate(0, 0.5, 0);
-    const trunks = new THREE.InstancedMesh(trunkGeo, new THREE.MeshLambertMaterial({ color: '#ffffff' }), trees.length);
-    const crownGeo = new THREE.ConeGeometry(1, 1, 7);
+    // A trunk that spreads into the ground, furrowed bark, darker where it meets the duff.
+    const profile: [number, number][] = [[1.8, 0], [1.34, 0.01], [1.1, 0.03], [1, 0.07], [0.94, 0.3], [0.8, 0.62], [0.62, 1]];
+    const trunkGeo = new THREE.LatheGeometry(profile.map(([x, y]) => new THREE.Vector2(x, y)), 8);
+    {
+      const pos = trunkGeo.attributes.position, uv = trunkGeo.attributes.uv;
+      const col = new Float32Array(pos.count * 3);
+      for (let i = 0; i < pos.count; i++) {
+        const y = pos.getY(i);
+        uv.setXY(i, uv.getX(i) * 4, y * 13);
+        // Root flare: the buttresses are not round.
+        if (y < 0.05) { const a = Math.atan2(pos.getZ(i), pos.getX(i)); const k = 1 + 0.16 * Math.sin(a * 5.0 + 1.3) * (1 - y / 0.05); pos.setX(i, pos.getX(i) * k); pos.setZ(i, pos.getZ(i) * k); }
+        const shade = 0.5 + 0.5 * Math.min(1, y / 0.06) - 0.25 * Math.max(0, (y - 0.35) / 0.65);
+        col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = shade;
+      }
+      trunkGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      trunkGeo.computeVertexNormals();
+    }
+    const trunks = new THREE.InstancedMesh(trunkGeo, new THREE.MeshLambertMaterial({ color: '#ffffff', map: once('bark', barkTexture), vertexColors: true }), trees.length);
+    // Crowns: tiers of drooping boughs, dark inside, lit along their edges.
+    const crownGeo = new THREE.ConeGeometry(1, 1, 8, 2).toNonIndexed();
     crownGeo.translate(0, 0.5, 0);
+    {
+      const pos = crownGeo.attributes.position;
+      const col = new Float32Array(pos.count * 3);
+      const jr = rand(5);
+      const jit = new Map<string, number>();
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+        const key = `${x.toFixed(3)},${y.toFixed(3)},${z.toFixed(3)}`;
+        if (!jit.has(key)) jit.set(key, jr());
+        const j = jit.get(key)!;
+        const rimK = Math.hypot(x, z);
+        // The skirt droops and is ragged.
+        if (y < 0.01) { pos.setY(i, -0.1 - j * 0.22 * rimK); pos.setX(i, x * (0.86 + j * 0.3)); pos.setZ(i, z * (0.86 + j * 0.3)); }
+        else if (y < 0.99) { pos.setX(i, x * (0.9 + j * 0.3)); pos.setZ(i, z * (0.9 + j * 0.3)); }
+        const lit = y < 0.01 ? 1.25 : y > 0.99 ? 1.05 : 0.72;
+        col[i * 3] = lit * 1.04; col[i * 3 + 1] = lit; col[i * 3 + 2] = lit * 0.82;
+      }
+      crownGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      crownGeo.computeVertexNormals();
+    }
     const LAYERS = 4;
-    const crowns = new THREE.InstancedMesh(crownGeo, new THREE.MeshLambertMaterial({ flatShading: true }), trees.length * LAYERS);
+    const crowns = new THREE.InstancedMesh(crownGeo, new THREE.MeshLambertMaterial({ flatShading: true, vertexColors: true }), trees.length * LAYERS);
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), c = new THREE.Color();
     trees.forEach((t, i) => {
       q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), r() * 6.28);
       m.compose(new THREE.Vector3(t.x, 0, t.z), q, new THREE.Vector3(t.rad, t.h, t.rad));
       trunks.setMatrixAt(i, m);
-      trunks.setColorAt(i, c.setHSL(0.03 + r() * 0.025, 0.42 + r() * 0.15, 0.27 + r() * 0.08));
+      trunks.setColorAt(i, c.setHSL(0.028 + r() * 0.03, 0.5 + r() * 0.15, 0.36 + r() * 0.1));
       for (let k = 0; k < LAYERS; k++) {
         const y = t.h * (0.42 + k * 0.15);
         const w = t.rad * (5.2 - k * 0.9) * (0.85 + r() * 0.3);
         m.compose(new THREE.Vector3(t.x + (r() - 0.5), y, t.z + (r() - 0.5)), q, new THREE.Vector3(w, t.h * 0.24, w));
         crowns.setMatrixAt(i * LAYERS + k, m);
-        crowns.setColorAt(i * LAYERS + k, c.setHSL(0.3 + r() * 0.06, 0.32 + r() * 0.15, 0.17 + r() * 0.08));
+        crowns.setColorAt(i * LAYERS + k, c.setHSL(0.27 + r() * 0.07, 0.36 + r() * 0.16, 0.2 + r() * 0.09));
       }
     });
     trunks.castShadow = false; crowns.castShadow = false;
     scene.add(trunks, crowns);
 
-    // Undergrowth: ferns and young growth along the shoulders, sunlit lime greens.
-    const bush = new THREE.IcosahedronGeometry(1, 0);
-    const count = lowSpec ? 360 : 900;
-    const bushes = new THREE.InstancedMesh(bush, new THREE.MeshLambertMaterial({ flatShading: true }), count);
+    // Undergrowth: sword ferns along the shoulders and back among the trunks,
+    // each a rosette of arching fronds, dark at the heart and bright at the tips.
+    const frond: number[] = [], fcol: number[] = [];
+    const FRONDS = 5, SEG = 2;
+    for (let f = 0; f < FRONDS; f++) {
+      const a = (f / FRONDS) * Math.PI * 2 + (f % 2) * 0.3;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const at = (t: number, sgn: number): [number, number, number] => {
+        const rad = 0.08 + t * 0.95, y = Math.sin(Math.PI * t * 0.82) * 0.5, wd = 0.17 * Math.sin(Math.PI * (t * 0.88 + 0.12)) * sgn;
+        return [ca * rad - sa * wd, y, sa * rad + ca * wd];
+      };
+      for (let k = 0; k < SEG; k++) {
+        const t0 = k / SEG, t1 = (k + 1) / SEG;
+        const quad = [at(t0, -1), at(t0, 1), at(t1, -1), at(t1, -1), at(t0, 1), at(t1, 1)];
+        const ts = [t0, t0, t1, t1, t0, t1];
+        quad.forEach((p, i) => { frond.push(...p); const l = 0.42 + 0.78 * ts[i]; fcol.push(l * 0.92, l, l * 0.7); });
+      }
+    }
+    const fernGeo = new THREE.BufferGeometry();
+    fernGeo.setAttribute('position', new THREE.Float32BufferAttribute(frond, 3));
+    fernGeo.setAttribute('color', new THREE.Float32BufferAttribute(fcol, 3));
+    fernGeo.computeVertexNormals();
+    const count = lowSpec ? 260 : 600;
+    const bushes = new THREE.InstancedMesh(fernGeo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }), count);
     for (let i = 0; i < count; i++) {
-      const z = -150 + r() * 170;
+      const z = -150 + r() * 172;
       const side = r() < 0.5 ? -1 : 1;
-      const off = 5.4 + Math.pow(r(), 1.5) * 16;
-      const s2 = (0.22 + r() * 0.5) * (off < 8 ? 0.8 : 1.2);
-      q.setFromEuler(new THREE.Euler(r(), r() * 6, r()));
-      m.compose(new THREE.Vector3(roadX(z) + side * off, s2 * 0.3, z), q, new THREE.Vector3(s2 * 1.6, s2 * 0.7, s2 * 1.4));
+      const off = 4.6 + Math.pow(r(), 1.5) * 17;
+      const s2 = (0.55 + r() * 0.75) * (off < 7 ? 0.75 : 1.15);
+      q.setFromEuler(new THREE.Euler((r() - 0.5) * 0.25, r() * 6.28, (r() - 0.5) * 0.25));
+      m.compose(new THREE.Vector3(roadX(z) + side * off, 0, z), q, new THREE.Vector3(s2, s2 * (0.8 + r() * 0.5), s2));
       bushes.setMatrixAt(i, m);
-      // Sunlit young growth, mostly muted with the odd bright fern.
-      const bright = r() < 0.18;
-      bushes.setColorAt(i, c.setHSL(0.21 + r() * 0.07, bright ? 0.55 : 0.38 + r() * 0.12, bright ? 0.36 : 0.2 + r() * 0.1));
+      // Mostly deep green; here and there one standing in the sun.
+      const bright = r() < 0.22;
+      bushes.setColorAt(i, c.setHSL(0.24 + r() * 0.07, bright ? 0.62 : 0.42 + r() * 0.14, bright ? 0.5 : 0.27 + r() * 0.12));
     }
     scene.add(bushes);
   }
@@ -455,21 +692,12 @@ export function buildWorld(lowSpec: boolean, renderer?: THREE.WebGLRenderer): Wo
     scene.add(new THREE.Mesh(em, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true })));
   }
 
-  // Soft clouds drifting.
-  const clouds: THREE.Sprite[] = [];
-  {
-    const tex2 = cloudTexture();
-    const r = rand(5);
-    for (let i = 0; i < 7; i++) {
-      const mat = new THREE.SpriteMaterial({ map: tex2, transparent: true, depthWrite: false, fog: false, opacity: 0.75 });
-      const s = new THREE.Sprite(mat);
-      const a = r() * Math.PI * 2;
-      s.position.set(Math.sin(a) * 220, 55 + r() * 50, Math.cos(a) * 220);
-      s.scale.set(110 + r() * 80, 40 + r() * 20, 1);
-      clouds.push(s);
-      scene.add(s);
-    }
-  }
+  // Light coming down through the trees, and what drifts in it.
+  const shafts = buildShafts(lowSpec, roadX);
+  const motes = buildMotes(lowSpec, roadX);
+  (motes.points.material as THREE.ShaderMaterial).uniforms.uPx.value = renderer ? renderer.getPixelRatio() : 1;
+  scene.add(shafts.mesh, motes.points);
+  let clock = 0;
 
   return {
     scene,
@@ -483,11 +711,10 @@ export function buildWorld(lowSpec: boolean, renderer?: THREE.WebGLRenderer): Wo
       sun.target.updateMatrixWorld();
     },
     update(dt) {
-      for (const c of clouds) {
-        const a = Math.atan2(c.position.x, c.position.z) + dt * 0.002;
-        const d = Math.hypot(c.position.x, c.position.z);
-        c.position.x = Math.sin(a) * d; c.position.z = Math.cos(a) * d;
-      }
+      clock += dt;
+      skyMat.uniforms.uT.value = clock;
+      shafts.update(clock);
+      motes.update(clock);
     },
   };
 }
