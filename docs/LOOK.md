@@ -35,6 +35,10 @@ pieces (`src/client/scene/body.ts`, each shape built once and shared):
 - thighs and calves, trousers that stop above the ankle, a sock, a sneaker with a gum sole;
 - a head with a jaw, a nose, ears and eyes, a touch larger than life so a face and a cap read from across the road.
 
+Where two pieces meet at a knee, elbow or shoulder they both end exactly on
+the joint at the same radius, with a ball of (almost) that radius in it: however
+far it bends, the outline stays one curve.
+
 Stripes and two-tone shirts follow the trunk's shape. Hats, hair, gloves and
 colours are the same items as before. To look at them: `/tests/visual/people.html`.
 
@@ -51,12 +55,12 @@ colours are the same items as before. To look at them: `/tests/visual/people.htm
 Measured with two players in Chromium's software renderer at 390×664 (a CPU
 rasteriser, not a phone GPU: these say what changed, not how a phone runs it).
 
-| | Before this pass | After |
-| --- | --- | --- |
-| Draw calls a frame | 123 | 117 |
-| Triangles a frame | 71 thousand | about 90 thousand |
-| Software render time a frame | 177 ms | about 230 ms |
-| Building the world (first / second time on a page) | 99 ms / 98 ms | 133 ms / 10 ms |
+| | Before the art pass | After it | With the new players |
+| --- | --- | --- | --- |
+| Draw calls a frame | 123 | 117 | 119 to 127 |
+| Triangles a frame | 71 thousand | about 82 thousand | about 91 thousand |
+| Software render time a frame | 177 ms | about 230 ms | about 265 ms |
+| Building the world (first / second time on a page) | 99 ms / 98 ms | 133 ms / 10 ms | the same |
 
 A vignette was tried as a full-screen overlay and taken out: it made the
 browser composite a full-screen blend every frame, which showed up as CPU

@@ -40,21 +40,34 @@ export function limbGeo(key: string, profile: [number, number][], radial = 10): 
   return once('limb:' + key, () => lathe(profile, radial));
 }
 
+/**
+ * How big round a joint is (m, for a medium build). The two pieces that meet
+ * at a joint both end exactly on it at this radius, and a ball of the same
+ * radius sits there: however far it bends, the outline stays one smooth curve.
+ */
+export const KNEE = 0.063, ELBOW = 0.04, SHOULDER = 0.053;
+
+/** The ball in a joint. */
+export function jointGeo(r: number): THREE.BufferGeometry {
+  // (A hair inside the pieces it joins: two surfaces in exactly the same place shimmer.)
+  return once('joint:' + r.toFixed(4), () => new THREE.SphereGeometry(r * 0.965, 14, 10));
+}
+
 /** The limbs of one build (`w` scales thickness only: joints stay where they are). */
 export function limbs(w: number) {
   const k = w.toFixed(2);
   const s = (p: [number, number][]) => p.map(([r, y]) => [r * w, y] as [number, number]);
   return {
     // Hip to knee: full at the top, tapering to the knee.
-    thigh: limbGeo('thigh' + k, s([[0.07, -0.04], [0.09, 0.04], [0.092, 0.22], [0.082, 0.55], [0.066, 0.9], [0.062, 1.03]])),
+    thigh: limbGeo('thigh' + k, s([[0.07, -0.04], [0.09, 0.04], [0.092, 0.22], [0.082, 0.55], [0.067, 0.88], [KNEE, 1]])),
     // Knee to just above the ankle: the calf, then a trouser leg that hangs straight to its cuff (the sock shows below it).
-    shin: limbGeo('shin' + k, s([[0.058, -0.04], [0.066, 0.06], [0.069, 0.3], [0.061, 0.6], [0.056, 0.8], [0.058, 0.86], [0.05, 0.868]])),
+    shin: limbGeo('shin' + k, s([[KNEE, 0], [0.067, 0.1], [0.069, 0.3], [0.061, 0.6], [0.056, 0.8], [0.058, 0.86], [0.05, 0.868]])),
     // Shoulder to just above the elbow: a T-shirt sleeve, a little loose, with a hem.
-    sleeve: limbGeo('sleeve' + k, s([[0.04, -0.035], [0.052, 0.04], [0.055, 0.2], [0.054, 0.48], [0.056, 0.58], [0.05, 0.595]])),
+    sleeve: limbGeo('sleeve' + k, s([[SHOULDER, 0], [0.055, 0.18], [0.054, 0.48], [0.056, 0.58], [0.05, 0.595]])),
     // The arm coming out of it, down to the elbow.
-    upperArm: limbGeo('upper' + k, s([[0.043, 0.3], [0.047, 0.5], [0.044, 0.8], [0.039, 1.03]])),
+    upperArm: limbGeo('upper' + k, s([[0.043, 0.3], [0.047, 0.5], [0.044, 0.8], [ELBOW, 1]])),
     // Elbow to wrist: fuller below the elbow, fine at the wrist.
-    forearm: limbGeo('fore' + k, s([[0.037, -0.04], [0.044, 0.12], [0.043, 0.35], [0.034, 0.8], [0.029, 1.0], [0.027, 1.02]])),
+    forearm: limbGeo('fore' + k, s([[ELBOW, 0], [0.044, 0.14], [0.043, 0.35], [0.034, 0.8], [0.029, 1.0], [0.027, 1.02]])),
   };
 }
 
