@@ -2,6 +2,7 @@
 
 import * as THREE from 'three';
 import { BALL_RADIUS } from '../../shared/constants';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /** The leathers a glove is made of. */
 export interface GloveColors { leather: string; dark: string; pocket: string; lace: string }
@@ -259,8 +260,36 @@ export function buildGlove(colors: GloveColors = TAN): THREE.Group {
   g.add(patch);
   g.add(stitches([V(-0.058, -0.074, 0.066), V(0, -0.0735, 0.068), V(0.058, -0.074, 0.066)], 16, laceMat));
 
+  bake(g);
   g.traverse((o) => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = true; });
   return g;
+}
+
+/**
+ * Many small parts drawn one at a time cost more than their triangles do. Each
+ * part of the glove that moves as one piece (the shell, the fingers, the
+ * fingertips, the thumb, the web) is welded into one mesh per leather.
+ */
+function bake(group: THREE.Group) {
+  const byMat = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  const done: THREE.Mesh[] = [];
+  for (const o of [...group.children]) {
+    if ((o as THREE.Group).isGroup) { bake(o as THREE.Group); continue; }
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || (m as unknown as THREE.InstancedMesh).isInstancedMesh || m.name || m.geometry.getAttribute('color')) continue;
+    m.updateMatrix();
+    const geo = m.geometry.clone().applyMatrix4(m.matrix);
+    const list = byMat.get(m.material as THREE.Material) ?? [];
+    list.push(geo);
+    byMat.set(m.material as THREE.Material, list);
+    done.push(m);
+  }
+  for (const m of done) { group.remove(m); m.geometry.dispose(); }
+  for (const [mat, list] of byMat) {
+    const merged = mergeGeometries(list, false);
+    for (const geo of list) geo.dispose();
+    if (merged) group.add(new THREE.Mesh(merged, mat));
+  }
 }
 
 /**

@@ -57,6 +57,32 @@ export interface EyeShot {
   landing?: number;
   /** Sideways lean of the body (rad): the horizon tips a little with it. */
   lean: number;
+  /**
+   * How far away the person you're watching is (metres), while you wait for
+   * their throw. Far off, you watch them down a longer lens: someone fifty
+   * metres away is still a person winding up, not a speck.
+   */
+  watch?: number;
+}
+
+/**
+ * The lens for watching someone `dist` metres away so that they stand about a
+ * tenth of the screen tall (vertical field of view, degrees). Never wider than
+ * the ordinary view, and never so long that it stops feeling like your own eyes.
+ */
+export function watchFov(dist: number, ordinary: number): number {
+  const fov = (2 * Math.atan(1.8 / Math.max(1, dist) / (2 * 0.095)) * 180) / Math.PI;
+  return clamp(fov, 24, ordinary);
+}
+
+/**
+ * How much further back (and on how much longer a lens) the third-person
+ * camera stands when your friend is `dist` metres off. Everything about the
+ * shot scales together, so you stay the same size in the frame and they get
+ * bigger: the flattening a long lens does at a ballgame. 1 = the close shot.
+ */
+export function standBack(dist: number): number {
+  return 1 + clamp((dist - 16) / 30, 0, 1.3);
 }
 
 /** How long the move between the two views takes (seconds). */
@@ -79,6 +105,7 @@ export class CameraRig {
   private t = Math.random() * 100;
   private wind = 0;
   private fl = 0;
+  private far = 1;
   /** 0 = third person, 1 = first person; `blend` is the eased version the camera uses. */
   private k = 0;
   blend = 0;
@@ -93,6 +120,8 @@ export class CameraRig {
   /** Skip the travel between views (prefers-reduced-motion): the game dips the screen instead. */
   instant = false;
   aspect = 0.5;
+  /** Stand back on a longer lens when your friend is far off (off: the close shot at every distance, for comparison). */
+  longLens = true;
 
   constructor() {
     this.camera.rotation.order = 'YXZ';
@@ -130,7 +159,10 @@ export class CameraRig {
     // aim ring) in the clear above it, even on a tall, narrow phone.
     this.wind = this.init ? damp(this.wind, s.windup ?? 0, s.windup ? 0.32 : 0.5, dt) : (s.windup ?? 0);
     const w = this.wind * this.wind * (3 - 2 * this.wind);
-    const back = (portrait ? 2.5 : 3.1) + w * (portrait ? 3.4 : 2.4);
+    // A friend a long way off: stand further back on a longer lens (see standBack).
+    const wantFar = this.longLens ? standBack(Math.hypot(ax, az)) : 1;
+    this.far = this.init ? damp(this.far, wantFar, 1.1, dt) : wantFar;
+    const back = ((portrait ? 2.5 : 3.1) + w * (portrait ? 3.4 : 2.4)) * this.far;
     const sideOff = ((portrait ? 0.95 : 1.5) - w * (portrait ? 0.4 : 0.3)) * s.side;
     const height = (portrait ? 1.74 : 1.72) + w * (portrait ? 2.1 : 1.3);
     // A hand-held camera: tiny, slow drift (no shake).
@@ -173,7 +205,7 @@ export class CameraRig {
     const top = portrait ? 0.42 : 0.6, bottom = portrait ? -0.98 : -0.98, sideB = portrait ? 0.84 : 0.8;
     const hV = (pHi - pLo) / (top - bottom);
     const hH = Math.atan(Math.tan(ySpan / sideB) / this.aspect);
-    const minHalf = (portrait ? 0.34 - 0.06 * w : 0.28 - 0.06 * w) * (1 - fl) + 0.055 * fl;
+    const minHalf = ((portrait ? 0.34 - 0.06 * w : 0.28 - 0.06 * w) / this.far) * (1 - fl) + 0.055 * fl;
     let half = clamp(Math.max(hV * 1.02, hH), minHalf, portrait ? 0.7 : 0.6);
     const midP = (pHi + pLo) / 2;
     const wantPitch = midP - ((top + bottom) / 2) * half;
@@ -231,7 +263,9 @@ export class CameraRig {
     };
     const far = ang(s.far), near = ang(s.near);
     // Watching the thrower: a longer lens. A throw on its way: the view opens up.
-    const wantFov = portrait ? 60 + 20 * s.wide : 46 + 28 * s.wide;
+    const open = clamp(s.wide, 0, 1);
+    const ordinary = portrait ? 60 : 46;
+    const wantFov = (s.watch ? ordinary + (watchFov(s.watch, ordinary) - ordinary) * (1 - open) : ordinary) + (portrait ? 20 : 28) * s.wide;
     // Look between the two, but never so far toward your hands that what you're
     // watching leaves the frame: the ball always stays in view.
     const vHalf = ((this.eInit ? this.eFov : wantFov) * Math.PI) / 360;
@@ -242,7 +276,9 @@ export class CameraRig {
     const dy = wrapAngle(near.yaw - far.yaw) * s.yawK;
     const wantYaw = s.yaw + clamp(clamp(far.yaw, -EYE_TURN, EYE_TURN) + clamp(dy, -0.5 * hHalf, 0.5 * hHalf), -EYE_TURN, EYE_TURN);
     const dp = (near.pitch - far.pitch) * s.pitchK;
-    const wantPitch = clamp(far.pitch + clamp(dp, -(0.62 + 0.64 * (s.landing ?? 0)) * vHalf, 0.5 * vHalf), -1.2, 0.9);
+    // (Down a long lens your hands are out of the picture anyway: who you're watching sits just above the middle, clear of the scoreboard.)
+    const long = s.watch ? clamp((ordinary - watchFov(s.watch, ordinary)) / (ordinary - 24), 0, 1) * (1 - open) : 0;
+    const wantPitch = clamp(far.pitch + clamp(dp, -(0.62 - 0.44 * long + 0.64 * (s.landing ?? 0)) * vHalf, 0.5 * vHalf), -1.2, 0.9);
     const wantRoll = clamp(-s.lean * 0.3, -0.13, 0.13);
     if (!this.eInit) {
       this.eInit = true;
@@ -254,7 +290,8 @@ export class CameraRig {
     this.ePos.y = damp(this.ePos.y, eye.y, 0.09, dt);
     this.eYaw += wrapAngle(wantYaw - this.eYaw) * ky;
     this.ePitch = damp(this.ePitch, wantPitch, 0.11, dt);
-    this.eFov = damp(this.eFov, wantFov, 0.22, dt);
+    // (Opening up for a throw is quick; settling back onto the long lens is unhurried.)
+    this.eFov = damp(this.eFov, wantFov, wantFov > this.eFov ? 0.22 : 0.6, dt);
     this.eRoll = damp(this.eRoll, wantRoll, 0.14, dt);
     // A little behind the eyes (where a cap-cam would sit), so your glove and
     // arm are in the picture and the catch isn't jammed against the lens.
