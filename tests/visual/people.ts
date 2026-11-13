@@ -1,7 +1,7 @@
 // Authoring tool: the players up close, in the game's own light and grade.
 // A few different looks, each from the front, three-quarter, back and side.
 //
-//   npm run dev:client, then open /tests/visual/people.html   (&pose=ready for the catching stance)
+//   npm run dev:client, then open /tests/visual/people.html   (&pose=ready for the catching stance, &set=hats for the other hats)
 
 import * as THREE from 'three';
 import { type Style } from '../../src/shared/style';
@@ -14,7 +14,10 @@ installLook();
 const canvas = document.getElementById('c') as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
 // [skin, build, hair, hair colour, hat, glove, top, pants]
-const looks: Style[] = [[1, 1, 1, 1, 0, 0, 1, 0], [4, 0, 2, 0, 4, 1, 2, 1], [2, 2, 4, 3, 3, 0, 4, 2], [5, 1, 3, 0, 1, 1, 6, 5]];
+const looks: Style[] = q.get('set') === 'hats'
+  // Every other hat, and bare heads with each kind of hair.
+  ? [[1, 1, 1, 2, 5, 2, 7, 3], [3, 1, 3, 1, 6, 3, 8, 4], [0, 0, 5, 4, 7, 4, 9, 0], [4, 2, 1, 0, 4, 5, 0, 1]]
+  : [[1, 1, 1, 1, 0, 0, 1, 0], [4, 0, 2, 0, 4, 1, 2, 1], [2, 2, 4, 3, 3, 0, 4, 2], [5, 1, 3, 0, 1, 1, 6, 5]];
 const views: number[] = [0, 0.75, Math.PI, -Math.PI / 2];
 const CW = 300, CH = 420, cols = views.length, rows = looks.length;
 renderer.setPixelRatio(Number(q.get('dpr') ?? 2));

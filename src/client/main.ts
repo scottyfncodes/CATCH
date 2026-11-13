@@ -592,6 +592,16 @@ function toast(text: string) {
   t.className = 'chip toast';
   t.textContent = text;
   hud.appendChild(t);
+  // One thing to read at a time: if a tip is up (or comes up a moment later), the toast goes under it, not on it.
+  const place = () => {
+    const card = document.querySelector<HTMLElement>('.coach');
+    if (!card || !t.isConnected || !hud) return;
+    const r = card.getBoundingClientRect();
+    if (r.height > 0 && getComputedStyle(card).display !== 'none') t.style.top = `${Math.round(r.bottom - hud.getBoundingClientRect().top + 8)}px`;
+  };
+  place();
+  requestAnimationFrame(place);
+  setTimeout(place, 220);
   setTimeout(() => t.remove(), 2700);
 }
 
