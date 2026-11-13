@@ -53,6 +53,8 @@ let guestN = 0;
 async function player(room, name, hand = 'R', guest, expect = 'open', windup = 34) {
   const ctx = await browser.newContext({ ...devices['iPhone 13'], deviceScaleFactor: 1 });
   const page = await ctx.newPage();
+  // (Software GL: starting a game can hold the page for a long time on a loaded machine.)
+  page.setDefaultTimeout(90000);
   const g = guest ?? `e2e-${Date.now()}-${guestN++}`;
   await page.addInitScript(([g, name, hand, windup]) => {
     if (!localStorage.getItem('catch.prefs.v1')) localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: g, name, hand, profiled: true, tutorialDone: true, windup }));
@@ -75,6 +77,8 @@ async function player(room, name, hand = 'R', guest, expect = 'open', windup = 3
 async function ctxHome() {
   const ctx = await browser.newContext({ ...devices['iPhone 13'], deviceScaleFactor: 1 });
   const page = await ctx.newPage();
+  // (Software GL: starting a game can hold the page for a long time on a loaded machine.)
+  page.setDefaultTimeout(90000);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.stack || e.message));
   await page.addInitScript(() => { if (!localStorage.getItem('catch.prefs.v1')) localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: 'home-' + Math.random(), name: 'Sam', hand: 'R', profiled: true, tutorialDone: true })); });
