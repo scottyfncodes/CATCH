@@ -1376,6 +1376,7 @@ export class Game {
       let far: Vec3 = pav ? [pav.chestPos.x, pav.chestPos.y + 0.1, pav.chestPos.z] : [partner[0], 1.3, partner[2]];
       // Waiting: your friend up top, your glove along the bottom of the view.
       let near = g, pitchK = this.rig.aspect < 1 ? 0.3 : 0.22, yawK = 0.25, wide = 0, landing = 0;
+      const watch = Math.hypot(partner[0] - me[0], partner[2] - me[2]);
       if (this.localCatch || (this.catchShow?.by === this.me && now < this.eyesUntil)) {
         // Caught it: your eyes stay up, and the glove comes up into them with the ball.
         pitchK = 0.6; yawK = 0.5; wide = 0.3;
@@ -1393,9 +1394,12 @@ export class Game {
         this.steep = Math.max(this.steep * (this.steepTid === this.ball.tid ? 1 : 0), smooth01((up - 0.25) / 0.4));
         this.steepTid = this.ball.tid;
         landing = smooth01(1 - tta / 0.7) * this.steep;
-        pitchK = 0.5 + 0.4 * landing; yawK = 0.5; wide = 1 + 0.5 * this.steep;
+        // A long throw is watched off the hand down the long lens; the view has opened right up
+        // well before it gets to you (and from the start, for a throw that isn't in the air long).
+        const opening = smooth01((2.6 - tta) / 1.2);
+        pitchK = (0.5 + 0.4 * landing) * opening + pitchK * (1 - opening); yawK = 0.25 + 0.25 * opening; wide = (1 + 0.5 * this.steep) * opening;
       }
-      eyes = { eye: [av.eye.x, av.eye.y, av.eye.z], yaw: this.yaw, far, near, pitchK, yawK, wide, landing, lean: av.sideLean };
+      eyes = { eye: [av.eye.x, av.eye.y, av.eye.z], yaw: this.yaw, far, near, pitchK, yawK, wide, landing, lean: av.sideLean, watch };
     }
     // A long throw of yours in the air: the shot lets go of you and goes with the ball.
     const mine = this.ball.phase === 'flight' && this.ball.live && this.ball.thrower === this.me;
@@ -1495,12 +1499,31 @@ export class Game {
     }
   }
 
+  private hudAt = 0;
+  private hudY = 0;
+  /** The bottom edge of whatever is written across the top of the screen (measured a few times a second, not every frame). */
+  private hudBottom(): number {
+    const now = performance.now();
+    if (now - this.hudAt > 250) {
+      this.hudAt = now;
+      let y = 0;
+      for (const el of document.querySelectorAll<HTMLElement>('.streak, .coach')) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && getComputedStyle(el).opacity !== '0') y = Math.max(y, r.bottom);
+      }
+      this.hudY = y;
+    }
+    return this.hudY;
+  }
+
   private updateLabels() {
     const w = this.root.clientWidth, h = this.root.clientHeight;
     for (const p of this.players.values()) {
       if (!p.label || !p.avatar) continue;
       tmpV.copy(p.avatar.headTop).project(this.rig.camera);
-      const on = tmpV.z < 1 && Math.abs(tmpV.x) < 1.1 && Math.abs(tmpV.y) < 1.1;
+      // A name never sits on top of the scoreboard or a tip: up there it steps aside.
+      const y = (-tmpV.y * 0.5 + 0.5) * h;
+      const on = tmpV.z < 1 && Math.abs(tmpV.x) < 1.1 && Math.abs(tmpV.y) < 1.1 && y - 22 > this.hudBottom();
       p.label.style.opacity = on ? '' : '0';
       if (on) p.label.style.transform = `translate(${((tmpV.x * 0.5 + 0.5) * w).toFixed(1)}px, ${((-tmpV.y * 0.5 + 0.5) * h).toFixed(1)}px) translate(-50%, -100%)`;
     }
@@ -1521,6 +1544,8 @@ export class Game {
       players: [...this.players.values()].map((p) => ({ id: p.info.id, name: p.info.name, connected: p.info.connected, catches: p.info.catches, drops: p.info.drops, bot: p.info.bot })),
       pos: this.pos, home: this.home, yaw: this.yaw, glove: this.glove, gloveSet: this.gloveSet, partner: this.partnerId, partnerPos: this.feetOf(this.partnerId), controls: this.controls.stats, canThrow: this.canThrow(),
       audio: audio.log.slice(-40), zipPeak: Math.max(audio.zipPeak, audio.lastZipPeak), audioState: audio.ctx?.state ?? 'none', rtt: this.net.rtt, pixelRatio: this.pixelRatio,
+      // What the last frame cost to draw (shadow pass included).
+      draw: { calls: this.renderer.info.render.calls, tris: this.renderer.info.render.triangles },
       fov: this.rig.camera.fov,
       // Which view you're in (and how far the camera is into it), your windup and your delivery.
       first: this.first, view: this.rig.blend, windup: this.windup, windU: this.windU, pending: !!this.pending,

@@ -680,6 +680,17 @@ try {
     await new Promise((r) => { const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(); }; requestAnimationFrame(f); });
     return n;
   });
+  // Readability and cost of a frame, on a phone that is in a game right now.
+  const frame = await A.page.evaluate(async () => {
+    const g = window.__catch.game;
+    g.renderEnabled = true;
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const hud = Math.max(0, ...[...document.querySelectorAll('.streak, .coach')].map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0).map((r) => r.bottom));
+    const over = [...document.querySelectorAll('.label')].filter((e) => getComputedStyle(e).opacity !== '0').map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0 && r.top < hud - 1).length;
+    return { draw: g.debugState().draw, over, hud };
+  });
+  check('no name label sits on top of the scoreboard or a tip', frame.over === 0, `${frame.over} overlapping (top band ends at ${Math.round(frame.hud)} px)`);
+  check('a frame stays inside its drawing budget', frame.draw.calls > 0 && frame.draw.calls <= 140 && frame.draw.tris < 120000, `${frame.draw.calls} draw calls, ${frame.draw.tris} triangles`);
   check('single animation loop (frame count sane)', loops > 0 && loops < 200, `${loops} rAF/s`);
 } catch (e) {
   console.error(e);
