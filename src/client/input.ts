@@ -32,11 +32,13 @@ export interface InputHandlers {
   /** Glove drag: movement since the last event in CSS px (x right, y up), and its speed in px/ms. */
   onGlove(dx: number, dy: number, speed: number): void;
   onGloveActive(active: boolean): void;
+  /** A quick tap with no pull (CSS px from the top left), while you have the ball: maybe a person you want to throw to. */
+  onTap?(x: number, y: number): void;
 }
 
 type Role = 'aim' | 'glove';
 
-interface Track { role: Role; id: number; ox: number; oy: number; x: number; y: number; t: number }
+interface Track { role: Role; id: number; ox: number; oy: number; x: number; y: number; t: number; t0: number }
 
 /** Pull (as a fraction of the screen height) for a full-strength throw. */
 export const FULL_PULL = 0.27;
@@ -82,7 +84,7 @@ export class Controls {
     const { x, y } = this.local(e);
     const role: Role = this.h.canThrow() ? 'aim' : 'glove';
     try { this.el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-    this.track = { role, id: e.pointerId, ox: x, oy: y, x, y, t: e.timeStamp };
+    this.track = { role, id: e.pointerId, ox: x, oy: y, x, y, t: e.timeStamp, t0: e.timeStamp };
     if (role === 'aim') { this.stats.aims++; this.h.onAimStart(); }
     else { this.stats.gloves++; this.h.onGloveActive(true); }
     this.draw();
@@ -122,7 +124,11 @@ export class Controls {
     if (t.role === 'glove') { this.h.onGloveActive(false); return; }
     const a = this.aimOf(t);
     if (a.armed && this.h.canThrow()) { this.stats.throws++; this.h.onThrow(a); }
-    else { this.stats.cancels++; this.h.onAimCancel(); }
+    else {
+      this.stats.cancels++; this.h.onAimCancel();
+      // A tap (barely moved, quickly up) rather than a pull.
+      if (Math.hypot(t.x - t.ox, t.y - t.oy) < 12 && e.timeStamp - t.t0 < 350) this.h.onTap?.(t.ox, t.oy);
+    }
   };
 
   private cancel = (e: Event) => {
