@@ -721,12 +721,15 @@ try {
     check('…and can see them on the pause screen, but only the host can change them', JSON.stringify(jRules) === JSON.stringify([['back', 'false', true], ['speed', 'true', true], ['wild', 'false', true], ['mitt', 'true', true]]) && /Sam sets how this room plays/.test(jNote), `${JSON.stringify(jRules)} · "${jNote}"`);
     await J.page.locator('#resume').tap();
     // The host changes the game from their pause screen: everyone plays the new rules, and is told who changed them.
+    // (Every notice is recorded as it appears: one lasts under three seconds, and this machine is slow.)
+    await J.page.evaluate(() => { window.__toasts = []; new MutationObserver(() => { const t = document.querySelector('.toast'); if (t && window.__toasts.at(-1) !== t.textContent) window.__toasts.push(t.textContent); }).observe(document.body, { childList: true, subtree: true }); });
     await G.page.locator('#pauseBtn').tap();
     const gEnabled = await G.page.locator('.sheet [data-rule]').evaluateAll((els) => els.every((e) => !e.disabled));
     await G.page.locator('.sheet [data-rule=wild]').tap();
     const jw = await waitFor(async () => { const s = await J.state(); return s.score.traits.wild ? s : null; }, 8000);
-    const jToast = await J.page.locator('.toast').textContent().catch(() => '');
-    check('the host can change how the room plays from the pause screen, and everyone plays it', gEnabled && !!jw && jw.score.traits.speed && jw.score.traits.mitt && /Sam changed the game: Speed up · Wild throws · Big mitt/.test(jToast), `"${jToast}"`);
+    const jToasts = await J.page.evaluate(() => window.__toasts);
+    const told = jToasts.find((x) => /changed the game/.test(x)) ?? '';
+    check('the host can change how the room plays from the pause screen, and everyone plays it', gEnabled && !!jw && jw.score.traits.speed && jw.score.traits.mitt && /Sam changed the game: Speed up · Wild throws · Big mitt/.test(told), `host switches ${gEnabled ? 'live' : 'disabled'} · friend ${JSON.stringify(jw?.score.traits)} · told "${told}"`);
     await G.page.locator('.sheet [data-rule=wild]').tap();
     const jw2 = await waitFor(async () => { const s = await J.state(); return !s.score.traits.wild ? s : null; }, 8000);
     check('…and change it back', !!jw2, JSON.stringify(jw2?.score.traits));
