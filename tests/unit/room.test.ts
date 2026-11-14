@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CATCH_BOBBLE, CATCH_GRACE_MS, DIST_MAX, MITT_MIN, MITT_START, SPEED_MAX, SPEED_STEP, WILD_MAX, EYE_HEIGHT, LEAP_HEIGHT, MAX_PLAYERS, RECOVER_DELAY_MS, THROW_SPEED_LIMIT } from '../../src/shared/constants';
 import { positionAt, simulateFlight, solveArc, solveElevation, solveThrowTo, throwElevation, velocityAt } from '../../src/shared/physics';
-import { type Pose, bodyToWorld, clampReach, eyePosition, gloveReady, gloveWorld, interceptPlan, lookAngles, maxSteps, reachNorm, ringSpread, seatLayout } from '../../src/shared/pose';
+import { type Pose, bodyToWorld, clampReach, eyePosition, gloveReady, gloveWorld, interceptPlan, lookAngles, maxSteps, reachNorm, ringSpread, seatLayout, throwNeighbours, worldToBody } from '../../src/shared/pose';
 import { Arm, DEFAULT_TRAITS, type ServerMsg, TRAIT_KEYS, type Traits, catchGrade, catchStyle, classifyCatch, gloveSize, groupKeyFor, isGreatCatch, speedFactor, toTraits, traitBits, wildOffset } from '../../src/shared/protocol';
 import { type Vec3, dist, len } from '../../src/shared/vec';
 import { DEFAULT_WINDUP, HOUSE_WINDUP, RELEASE_TIME, WINDUP_IDS, getWindup, releasePointFor } from '../../src/shared/windups';
@@ -1032,6 +1032,39 @@ describe('room', () => {
     expect(left / 2000).toBeLessThan(0.6);
     expect(sum / 2000).toBeGreaterThan(0.45);
     expect(sum / 2000).toBeLessThan(0.9);
+  });
+
+  // ---------------------------------------------------------------- choosing who to throw to
+
+  it('in a ring, the people either side of the one you face are who you can turn to, and turning either way reaches everyone', () => {
+    for (const n of [3, 4, 5]) {
+      const { room, ids } = setup(n);
+      const at = (id: string) => room.members.get(id)!.pos;
+      const me = ids[0];
+      const step = (cur: string) => {
+        const others = ids.filter((x) => x !== me && x !== cur).map((id) => ({ id, at: at(id) }));
+        const nb = throwNeighbours(at(me), at(cur), others);
+        // Whoever is on your right really is to your right as you face them, and the left on the left.
+        const yaw = lookAngles(at(me), at(cur)).yaw;
+        const side = (id: string) => worldToBody(yaw, [at(id)[0] - at(me)[0], 0, at(id)[2] - at(me)[2]])[0];
+        if (nb.right) expect(side(nb.right), `n=${n}`).toBeGreaterThan(0);
+        if (nb.left) expect(side(nb.left), `n=${n}`).toBeLessThan(0);
+        return nb;
+      };
+      const start = ids[1];
+      const first = step(start);
+      // There is always someone to turn to (facing a neighbour, everyone else is on one side); with three, just the one.
+      const sides = [first.left, first.right].filter(Boolean).length;
+      expect(sides, `n=${n}`).toBeGreaterThanOrEqual(1);
+      if (n === 3) expect(sides).toBe(1);
+      const seen = new Set([start]);
+      for (const way of ['left', 'right'] as const) {
+        let cur = start;
+        for (let k = 0; k < n; k++) { const nx = step(cur)[way]; if (!nx) break; expect(seen.has(nx) && nx !== start, `n=${n} ${way}: went back`).toBe(false); seen.add(nx); cur = nx; }
+      }
+      // All the way left and all the way right between them reach everyone but you.
+      expect(seen.size, `n=${n}`).toBe(n - 1);
+    }
   });
 
   // ---------------------------------------------------------------- changing the rules mid-game

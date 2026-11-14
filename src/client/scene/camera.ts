@@ -28,6 +28,8 @@ export interface Shot {
   side: number;
   /** Where you're aiming (the ring on your partner's glove plane): kept in the frame. */
   aim?: Vec3 | null;
+  /** You just chose who to throw to: turn to them quickly (a deliberate turn, not a drift). */
+  turnFast?: boolean;
   /** You're winding up or delivering (0..1): crane up and keep all of you in the frame. */
   windup?: number;
   /**
@@ -143,7 +145,7 @@ export class CameraRig {
     const ax = s.partner[0] - s.me[0], az = s.partner[2] - s.me[2];
     const wantAxis = Math.atan2(-ax, -az);
     if (!this.init) { this.axis = wantAxis; this.me.set(s.me[0], 0, s.me[2]); }
-    this.axis += wrapAngle(wantAxis - this.axis) * (this.init ? 1 - Math.exp(-dt / 1.4) : 1);
+    this.axis += wrapAngle(wantAxis - this.axis) * (this.init ? 1 - Math.exp(-dt / (s.turnFast ? 0.2 : 1.4)) : 1);
     // Follow you, but loosely: a person turning their head, not a dolly on rails.
     const k = this.init ? 1 - Math.exp(-dt / 0.55) : 1;
     this.me.x += (s.me[0] - this.me.x) * k;
@@ -212,7 +214,7 @@ export class CameraRig {
     const wantYaw = this.axis + centreYaw;
     if (!this.init) { this.half = half; this.pitchC = wantPitch; this.yawC = wantYaw; this.init = true; }
     // Breathe slowly; pan a little quicker so the ball never escapes.
-    const quick = w > 0.02 && w < 0.98 ? 0.45 : 1;
+    const quick = s.turnFast ? 0.38 : w > 0.02 && w < 0.98 ? 0.45 : 1;
     this.half = damp(this.half, half, (s.ball ? 0.55 : 0.9) * quick, dt);
     this.pitchC = damp(this.pitchC, wantPitch, 0.45 * quick, dt);
     this.yawC += wrapAngle(wantYaw - this.yawC) * (1 - Math.exp(-dt / (0.5 * quick)));

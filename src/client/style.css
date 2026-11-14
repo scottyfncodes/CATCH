@@ -285,6 +285,13 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
   font-size: 13px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; height: 36px;
 }
 .company u { text-decoration: none; color: #ffe1a8; }
+/* Holding the ball in a ring of three or more: who you could turn to, at either edge, out of the way of the pull. */
+.target {
+  position: absolute; top: 44%; height: 44px; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 15px; letter-spacing: 0.02em; padding: 0 16px;
+}
+.target.left { left: calc(10px + var(--sa-l)); }
+.target.right { right: calc(10px + var(--sa-r)); }
 .toast {
   position: absolute; left: 50%; top: calc(var(--sa-t) + 136px); transform: translateX(-50%);
   max-width: calc(100% - 48px); text-align: center; letter-spacing: 0.01em; font-size: 14px; height: auto; min-height: 38px; padding: 9px 16px; line-height: 1.3;

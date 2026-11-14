@@ -142,6 +142,24 @@ export function seatLayout(n: number, steps = 0): { pos: Vec3; yaw: number }[] {
 }
 
 /** Yaw/pitch that looks from `from` at `to`. */
+/**
+ * In a ring of three or more, who you would throw to next if you turned: the nearest
+ * person on your left and on your right, as you face `current`. (`others` leaves out
+ * the one you are facing.)
+ */
+export function throwNeighbours(me: Vec3, current: Vec3, others: { id: string; at: Vec3 }[]): { left: string | null; right: string | null } {
+  const yaw = lookAngles(me, current).yaw;
+  let left: string | null = null, right: string | null = null, bl = Infinity, br = Infinity;
+  for (const o of others) {
+    const l = worldToBody(yaw, [o.at[0] - me[0], 0, o.at[2] - me[2]]);
+    // Angle off the way you're facing: + to your right.
+    const a = Math.atan2(l[0], l[2]);
+    if (a > 0 && a < br) { br = a; right = o.id; }
+    if (a <= 0 && -a < bl) { bl = -a; left = o.id; }
+  }
+  return { left, right };
+}
+
 export function lookAngles(from: Vec3, to: Vec3): { yaw: number; pitch: number } {
   const dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
   const h = Math.sqrt(dx * dx + dz * dz);
