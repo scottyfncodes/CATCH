@@ -24,9 +24,10 @@ function buildHair(kind: number, mat: THREE.Material, hat: Hat['shape']): THREE.
   // A close crop over the top and back of the head (a hat hides the top of it).
   // (Round enough, and far enough off the skull, that the scalp never shows through its facets.)
   const crop = new THREE.Mesh(new THREE.SphereGeometry(0.119, 22, 12, 0, Math.PI * 2, 0, Math.PI * (covered ? 0.62 : 0.56)), mat);
-  // (Tall enough over the crown that the top of the skull never shows through, tipped back or not.)
-  crop.scale.set(0.94, 1.08, 1.02);
-  crop.position.set(0, 0.018, 0.006);
+  // (Tall enough over the crown that the top of the skull never shows through.)
+  // (Bare, it comes further forward over the top of the forehead; under a hat it sits back, inside the crown.)
+  if (covered) { crop.scale.set(0.94, 1.08, 1.02); crop.position.set(0, 0.018, 0.006); }
+  else { crop.scale.set(0.94, 1.08, 1.1); crop.position.set(0, 0.022, -0.006); }
   crop.rotation.x = 0.32;
   g.add(crop);
   const ball = (r: number, x: number, y: number, z: number) => { const b = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), mat); b.position.set(x, y, z); g.add(b); };

@@ -144,67 +144,62 @@ function buildCap(hat: Hat, mat: Mat): THREE.Group {
   // Worn level-ish: the band rides a little higher at the forehead than at the back of the head.
   crown.rotation.x = 0.13;
   g.add(crown);
-  const cloth = mat(hat.color, 0.92);
-  cloth.side = THREE.DoubleSide;
-  crown.add(new THREE.Mesh(surface(36, 10, (u, v, o) => capPoint(u * Math.PI * 2, v, o)), cloth));
-  // Seams, eyelets and the bill's stitching: thread a shade darker than the cloth.
-  const thread: THREE.BufferGeometry[] = [];
+  // (Every piece is welded into one of two meshes, told apart by vertex colour: the cloth, which
+  // catches the low sun like the rest of a person, and the thread and trim, which don't. Two draw calls a cap.)
+  const lit: THREE.BufferGeometry[] = [], trim: THREE.BufferGeometry[] = [];
+  const o = new THREE.Object3D();
+  const put = (list: THREE.BufferGeometry[], geo: THREE.BufferGeometry, color: string | null, place?: (o: THREE.Object3D) => void) => {
+    o.position.set(0, 0, 0); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1);
+    place?.(o);
+    o.updateMatrix();
+    const placed = geo.clone().applyMatrix4(o.matrix);
+    if (color) list.push(paint(placed, color));
+    else { const n = placed.index ? placed.toNonIndexed() : placed; if (n.getAttribute('uv')) n.deleteAttribute('uv'); list.push(n); }
+  };
+  const facing = (at: THREE.Vector3, n: THREE.Vector3, off: number) => (x: THREE.Object3D) => { x.position.copy(at).addScaledVector(n, off); x.lookAt(tmpV.copy(x.position).add(n)); };
+  put(lit, surface(36, 10, (u, v, out) => capPoint(u * Math.PI * 2, v, out)), hat.color);
+  // Seams down every panel, and rows of stitching on the bill: thread a shade darker than the cloth.
+  const thread = shade(hat.color, 0.55);
   const p = new THREE.Vector3(), n = new THREE.Vector3();
   for (let k = 0; k < 6; k++) {
     const az = (k * Math.PI) / 3;
     const pts: THREE.Vector3[] = [];
     for (let i = 0; i <= 10; i++) { const t = (i / 10) * 0.97; capPoint(az, t, p); capNormal(az, t, n); pts.push(p.clone().addScaledVector(n, 0.0012)); }
-    thread.push(cord(pts, 0.0016));
+    put(trim, cord(pts, 0.0016), thread);
   }
   const b = bill(0.098, 0.084, hat.color, shade(hat.color, 0.5));
+  put(lit, b.geo, null);
   for (const v of [0.42, 0.66, 0.9]) {
     const pts: THREE.Vector3[] = [];
     for (let i = 0; i <= 16; i++) pts.push(b.at(((i / 16) * 2 - 1) * 0.092 * (1 - v * 0.15), v));
-    thread.push(cord(pts, 0.0009));
+    put(trim, cord(pts, 0.0009), thread);
   }
-  crown.add(new THREE.Mesh(mergeGeometries(thread.map((x) => x.toNonIndexed()))!, matte(mat(shade(hat.color, 0.55), 0.9))));
-  const billMat = mat('#ffffff', 0.9);
-  billMat.vertexColors = true;
-  crown.add(new THREE.Mesh(b.geo, billMat));
   // Eyelets: a little vent near the top of each panel.
-  const holes: THREE.BufferGeometry[] = [];
   for (let k = 0; k < 6; k++) {
     const az = ((k + 0.5) * Math.PI) / 3;
     capPoint(az, 0.72, p); capNormal(az, 0.72, n);
-    const ring = new THREE.TorusGeometry(0.0042, 0.0016, 4, 10);
-    ring.lookAt(n);
-    ring.translate(p.x + n.x * 0.001, p.y + n.y * 0.001, p.z + n.z * 0.001);
-    holes.push(ring.toNonIndexed());
+    put(trim, new THREE.TorusGeometry(0.0042, 0.0016, 4, 10), shade(hat.color, 0.45), facing(p, n, 0.001));
   }
-  crown.add(new THREE.Mesh(mergeGeometries(holes)!, matte(mat(shade(hat.color, 0.45), 0.9))));
   // The button.
-  const button = new THREE.Mesh(new THREE.SphereGeometry(0.011, 10, 6), cloth);
-  button.scale.y = 0.5;
-  capPoint(0, 1, button.position);
-  crown.add(button);
+  put(lit, new THREE.SphereGeometry(0.011, 10, 6), hat.color, (x) => { x.scale.y = 0.5; capPoint(0, 1, x.position); });
   // The letter on the front: a C, embroidered, raised a little off the cloth.
-  const logoMat = mat(hat.accent ?? '#efe6d2', 0.85);
-  const logo = new THREE.Mesh(new THREE.TorusGeometry(0.023, 0.0062, 6, 22, Math.PI * 1.55), logoMat);
-  logo.geometry.rotateZ(Math.PI * 0.225);
-  logo.geometry.scale(1, 1.08, 0.5);
-  capPoint(0, 0.42, logo.position);
-  capNormal(0, 0.42, n);
-  logo.position.addScaledVector(n, 0.003);
-  logo.lookAt(tmpV.copy(logo.position).add(n));
-  crown.add(logo);
+  const letter = new THREE.TorusGeometry(0.023, 0.0062, 6, 22, Math.PI * 1.55);
+  letter.rotateZ(Math.PI * 0.225);
+  letter.scale(1, 1.08, 0.5);
+  capPoint(0, 0.42, p); capNormal(0, 0.42, n);
+  put(trim, letter, hat.accent ?? '#efe6d2', facing(p, n, 0.003));
   // The back: an arched opening over an adjustable strap.
   capNormal(Math.PI, 0.05, n);
-  const arch = new THREE.Mesh(new THREE.CircleGeometry(0.036, 14, 0, Math.PI), mat('#14100d', 1));
-  arch.scale.y = 1.05;
-  capPoint(Math.PI, 0.0, arch.position);
-  arch.position.addScaledVector(n, 0.0016);
-  arch.lookAt(tmpV.copy(arch.position).add(n));
-  crown.add(arch);
-  const strap = new THREE.Mesh(new THREE.BoxGeometry(0.078, 0.012, 0.003), cloth);
-  capPoint(Math.PI, 0.05, strap.position);
-  strap.position.addScaledVector(n, 0.003);
-  strap.lookAt(tmpV.copy(strap.position).add(n));
-  crown.add(strap);
+  capPoint(Math.PI, 0.0, p);
+  put(trim, new THREE.CircleGeometry(0.036, 14, 0, Math.PI), '#14100d', (x) => { facing(p, n, 0.0016)(x); x.scale.y = 1.05; });
+  capPoint(Math.PI, 0.05, p);
+  put(lit, new THREE.BoxGeometry(0.078, 0.012, 0.003), hat.color, facing(p, n, 0.003));
+  const cloth = mat('#ffffff', 0.92);
+  cloth.vertexColors = true;
+  cloth.side = THREE.DoubleSide;
+  const thr = matte(mat('#ffffff', 0.85));
+  thr.vertexColors = true;
+  crown.add(new THREE.Mesh(mergeGeometries(lit)!, cloth), new THREE.Mesh(mergeGeometries(trim)!, thr));
   if (hat.shape === 'back') g.rotation.y = Math.PI;
   return g;
 }
