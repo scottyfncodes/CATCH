@@ -39,8 +39,40 @@ Where two pieces meet at a knee, elbow or shoulder they both end exactly on
 the joint at the same radius, with a ball of (almost) that radius in it: however
 far it bends, the outline stays one curve.
 
-Stripes and two-tone shirts follow the trunk's shape. Hats, hair, gloves and
-colours are the same items as before. To look at them: `/tests/visual/people.html`.
+To look at them: `/tests/visual/people.html` (`&zoom=head` for close-ups,
+`&set=silly` for everything you can earn).
+
+## What people wear (`src/client/scene/wear.ts`)
+
+**The free caps** are made the way a baseball cap is: six panels sewn into a
+crown with a seam down each and an eyelet in each, a button on top, a stiffened
+front with an embroidered C, a bill that curves down at the sides with rows of
+stitching on it and a darker underside, and an adjustable strap across an arched
+opening at the back. Worn level-ish, the band a little higher at the forehead.
+"Backwards" is the same cap turned round.
+
+**What you earn is meant to be absurd**, more so the longer the streak:
+
+| Streak | Reward | What it does |
+| --- | --- | --- |
+| 10 | Googly eyes (glove) | three on the back of the glove; the pupils rattle round as it moves (they stare at you while you wait for a throw) |
+| 25 | Propeller beanie | four colours and a propeller that spins faster when you run |
+| 50 | Hawaiian shirt and lei | hibiscus print on the shirt and the sleeves, a garland of flowers round the neck |
+| 100 | Shark (glove) | the pocket is a pink mouth full of teeth, a fin on the back, eyes |
+| 250 | Rubber duck | sits on your head, bobs, rocks when you run, looks about |
+| 500 | Tuxedo with tails | shirt front, studs, satin lapels, an oversized red bow tie, a rose, coat tails |
+| 750 | Disco ball (glove) | every piece of the glove mirror tiles, and it glitters |
+| 1000 | Ten-gallon hat | about 70 cm across, creased crown, brim curled up hard |
+| 1500 | Superhero cape | a C in a diamond on the chest, a belt, a red cape that streams out when you run |
+| 2000 | On fire (glove) | flames off the back, the fingertips and the heel, always going up |
+| 3000 | Crown | gold, jewels, pearls on the points, velvet, an orb and a cross; it twinkles; worn at an angle |
+| 5000 | Royal robe | red velvet with gold braid, an ermine mantle, a train to the ground |
+
+None of it touches the glove's size or where its pocket is
+(`tests/unit/wear.test.ts` checks that for every glove). Capes and tails are a
+few dozen points worked out on the CPU each frame: they hang straight down
+however the body leans and stream out behind with speed. Flames and sparkles
+are sprites, so they cost a draw call each, only for the people wearing them.
 
 ## Changing it
 

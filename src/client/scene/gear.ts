@@ -53,6 +53,9 @@ const POCKET_DEPTH = 0.034;
 /** The face of the glove, centre (0) to edge seam (1): down in the pocket, out to the padded rim, rolled back to the seam. */
 const pocketZ = (r: number) => POCKET_DEPTH - (POCKET_DEPTH + 0.014) * smooth01(r / 0.86) + (r > 0.86 ? 0.026 * smooth01((r - 0.86) / 0.14) : 0);
 
+/** The glove's own measurements, for things that are added to it (see wear.ts). */
+export const GLOVE_SHAPE = { palmHalf, PALM_Y0, PALM_Y1, pocketZ };
+
 /**
  * The body of the glove: one closed shell. The front is a real pocket (a bowl
  * a ball sits down into, with a rolled rim), the back is the rounded shell

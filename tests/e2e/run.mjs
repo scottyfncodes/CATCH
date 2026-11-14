@@ -626,14 +626,14 @@ try {
     // Put it on, mid-game: the other phone sees it.
     await U.page.locator('#pauseBtn').tap();
     const hint = await U.page.locator('.sheet').innerText();
-    check('the pause sheet says what the next reward is', /Next reward: Bucket hat at 25/.test(hint), (hint.match(/Next reward[^\n]*/) || [''])[0]);
+    check('the pause sheet says what the next reward is', /Next reward: Propeller beanie at 25/.test(hint), (hint.match(/Next reward[^\n]*/) || [''])[0]);
     await U.page.locator('#lk').tap();
     await U.page.locator('[data-tab=glove]').tap();
     const newTag = await U.page.locator('.item[data-set="5:2"]').innerText();
     await U.page.locator('.item[data-set="5:2"]').tap();
     await U.page.locator('#done').tap();
     const worn = await waitFor(() => V.page.evaluate((id) => window.__catch.game.players.get(id).avatar.style[5] === 2, uId), 4000);
-    check('the earned glove can be put on mid-game, and the other player sees it', !!worn && /Black/.test(newTag), newTag.replace(/\s+/g, ' '));
+    check('the earned glove can be put on mid-game, and the other player sees it', !!worn && /Googly/.test(newTag), newTag.replace(/\s+/g, ' '));
     // Once only: reload, come back, drop and climb past ten again, and nothing is handed out twice.
     check('a reward is given once', eu.filter((m) => m === 10).length === 1);
     errsExtra.push(...P.errors, ...U.errors, ...V.errors);

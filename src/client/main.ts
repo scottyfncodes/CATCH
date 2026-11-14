@@ -530,9 +530,12 @@ function lookSheet(onClose?: () => void) {
     const body = el.querySelector<HTMLElement>('#lkbody')!;
     body.innerHTML = tab === 'body'
       ? swatches('Skin', S.skin, SKINS) + chips('Build', S.build, BUILDS.map((b) => b.name)) + chips('Hair', S.hair, HAIRS) + swatches('Hair colour', S.hairColor, HAIR_COLORS)
-      : tab === 'hat' ? items('hat', S.hat, HATS, (k) => HATS[k].shape === 'none' ? 'transparent' : HATS[k].color)
-      : tab === 'glove' ? items('glove', S.glove, GLOVES, (k) => GLOVES[k].leather)
-      : items('top', S.top, TOPS, (k) => TOPS[k].color) + swatches('Trousers', S.pants, PANTS);
+      : tab === 'hat' ? items('hat', S.hat, HATS, (k) => HATS[k].shape === 'none' ? 'transparent' : HATS[k].swatch ?? HATS[k].color)
+      : tab === 'glove' ? items('glove', S.glove, GLOVES, (k) => GLOVES[k].swatch ?? GLOVES[k].leather)
+      : items('top', S.top, TOPS, (k) => TOPS[k].swatch ?? TOPS[k].color) + swatches('Trousers', S.pants, PANTS);
+    // Open each list on what you're wearing (the things you earn are further along it).
+    const list = body.querySelector<HTMLElement>('.items'), on = list?.querySelector<HTMLElement>('[aria-checked="true"]');
+    if (list && on) list.scrollLeft = Math.max(0, on.offsetLeft - list.offsetLeft - (list.clientWidth - on.offsetWidth) / 2);
     body.querySelectorAll<HTMLButtonElement>('[data-set]').forEach((b) => b.addEventListener('click', () => {
       const [i, v] = b.dataset.set!.split(':').map(Number);
       set(i, v);

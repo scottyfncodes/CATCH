@@ -92,9 +92,12 @@ export function torsoGeo(): THREE.BufferGeometry {
   return once('torso', () => {
     // (Open at the hem: it hangs over the hips, it does not close under them.)
     const g = lathe(TORSO, 18, true);
-    const p = g.attributes.position;
+    const p = g.attributes.position, uv = g.attributes.uv;
+    const y0 = TORSO[0][1], y1 = TORSO[TORSO.length - 1][1];
     for (let i = 0; i < p.count; i++) {
       const y = p.getY(i);
+      // (Round the body, and up it by height: a shirt's pattern is painted on that, u = 0.5 straight ahead.)
+      uv.setY(i, (y - y0) / (y1 - y0));
       let x = p.getX(i) * torsoSpread(y), z = p.getZ(i);
       // Chest forward (-Z), shoulder blades back, a hollow at the small of the back.
       const chest = smooth01((y - 0.2) / 0.16) * (1 - smooth01((y - 0.46) / 0.12));
@@ -107,6 +110,21 @@ export function torsoGeo(): THREE.BufferGeometry {
     g.computeVertexNormals();
     return g;
   });
+}
+
+/**
+ * A point on the outside of the shirt, in the trunk's frame (0 at the belt),
+ * at height `y` and angle `a` round the body (0 = straight ahead, π/2 = the
+ * wearer's right), for a build of width `w`. For things worn over it: a lei,
+ * a bow tie, a cape.
+ */
+export function torsoSurface(y: number, a: number, w: number, out = new THREE.Vector3()): THREE.Vector3 {
+  const r = torsoRadius(y);
+  const chest = smooth01((y - 0.2) / 0.16) * (1 - smooth01((y - 0.46) / 0.12));
+  const slope = smooth01((y - 0.48) / 0.1);
+  const front = -Math.cos(a);
+  const zk = front < 0 ? 1 + 0.1 * chest : 1 - 0.08 * smooth01((0.26 - y) / 0.2) + 0.04 * chest;
+  return out.set(Math.sin(a) * r * torsoSpread(y) * (1 + 0.22 * slope * (1 - slope) * 2) * 1.18 * w, y, front * r * zk * 0.7 * w);
 }
 
 /** A band of the shirt at a height (a stripe, or the lower half of a two-tone), lying just proud of the cloth. */
