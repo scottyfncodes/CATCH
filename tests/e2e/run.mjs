@@ -50,6 +50,16 @@ await waitFor(async () => { try { return (await fetch(BASE)).ok; } catch { retur
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required'] });
 let guestN = 0;
 
+/** Haptics, as they happen: how long, when, and which event (if any) was being handled at the time. */
+async function recordHaptics(page) {
+  await page.addInitScript(() => {
+    window.__vib = [];
+    navigator.vibrate = (ms) => { window.__vib.push({ ms, t: performance.now(), ev: window.event?.type ?? null }); return true; };
+  });
+}
+/** What a throw makes you hear and feel (counted since `from`). */
+const feedbackOf = (page) => (from) => page.evaluate((f) => ({ grips: window.__catch.game.debugState().audio.filter((x) => x.k === 'grip' && x.t > f), vib: window.__vib.filter((x) => x.t > f), now: performance.now() }), from ?? -1);
+
 async function player(room, name, hand = 'R', guest, expect = 'open', windup = 34) {
   const ctx = await browser.newContext({ ...devices['iPhone 13'], deviceScaleFactor: 1 });
   const page = await ctx.newPage();
@@ -59,6 +69,7 @@ async function player(room, name, hand = 'R', guest, expect = 'open', windup = 3
   await page.addInitScript(([g, name, hand, windup]) => {
     if (!localStorage.getItem('catch.prefs.v1')) localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: g, name, hand, profiled: true, tutorialDone: true, windup }));
   }, [g, name, hand, windup]);
+  await recordHaptics(page);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.stack || e.message));
   await page.goto(`${BASE}/r/${room}?server=${encodeURIComponent(WS)}`);
@@ -69,6 +80,7 @@ async function player(room, name, hand = 'R', guest, expect = 'open', windup = 3
   const cdp = await ctx.newCDPSession(page);
   const p = { ctx, page, cdp, name, guest: g, errors };
   p.state = () => page.evaluate(() => window.__catch.game.debugState());
+  p.feedback = feedbackOf(page);
   p.touch = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((q) => ({ x: q[0], y: q[1], id: q[2] ?? 0 })) });
   return p;
 }
@@ -82,6 +94,7 @@ async function ctxHome() {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.stack || e.message));
   await page.addInitScript(() => { if (!localStorage.getItem('catch.prefs.v1')) localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: 'home-' + Math.random(), name: 'Sam', hand: 'R', profiled: true, tutorialDone: true })); });
+  await recordHaptics(page);
   await page.goto(`${BASE}/?server=${encodeURIComponent(WS)}`);
   await page.locator('[data-act=play]').waitFor();
   return { ctx, page, errors };
@@ -271,15 +284,19 @@ try {
   // The holder pulls *up* (the wrong way) and lets go: never a throw.
   await waitCanThrow(T);
   const hs = await T.state();
+  const fbw = await T.feedback();
   await T.touch('touchStart', [[200, 500]]);
   for (let i = 1; i <= 8; i++) { await T.touch('touchMove', [[200 + i * 3, 500 - i * 22]]); await sleep(12); }
   await T.touch('touchEnd', []);
   await sleep(200);
   const hs2 = await T.state();
   check('pulling the wrong way does not throw', hs2.ball.phase === 'held' && hs2.ball.holder === tId && hs2.controls.throws === hs.controls.throws, `throws=${hs2.controls.throws}`);
+  const fbw1 = await T.feedback(fbw.now);
+  check('…and makes no throw sound and no haptic', fbw1.grips.length === 0 && fbw1.vib.length === 0, `grips=${fbw1.grips.length} haptics=${fbw1.vib.length}`);
 
   // Pull back, then slide back to where you started and let go = cancel.
   const before2 = (await T.state()).controls.throws;
+  const fb0 = await T.feedback();
   await T.touch('touchStart', [[200, 420]]);
   for (let i = 1; i <= 6; i++) { await T.touch('touchMove', [[200, 420 + i * 18]]); await sleep(16); }
   for (let i = 5; i >= 0; i--) { await T.touch('touchMove', [[200, 420 + i * 18]]); await sleep(16); }
@@ -287,6 +304,8 @@ try {
   await sleep(150);
   const ts = await T.state();
   check('pull back then return to the start cancels (no throw)', ts.controls.throws === before2 && ts.ball.phase === 'held');
+  const fb1 = await T.feedback(fb0.now);
+  check('…and a cancelled pull makes no throw sound and no haptic', fb1.grips.length === 0 && fb1.vib.length === 0, `grips=${fb1.grips.length} haptics=${fb1.vib.length}`);
 
   // Someone without the ball drags: that's their glove, and nothing is thrown.
   const mover = others.find((x) => x !== T && x !== E);
@@ -660,6 +679,7 @@ try {
     const gcdp = await G.ctx.newCDPSession(G.page);
     G.touch = (type, pts) => gcdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((q) => ({ x: q[0], y: q[1], id: q[2] ?? 0 })) });
     G.state = () => G.page.evaluate(() => window.__catch.game.debugState());
+    G.feedback = feedbackOf(G.page);
     const g0 = await waitFor(async () => { const s = await G.state(); return s.score.traits?.mitt && s.players.length === 2 ? s : null; }, 5000);
     check('the room plays what was picked', !!g0 && g0.score.traits.mitt && g0.score.traits.speed && !g0.score.traits.back && !g0.score.traits.wild, JSON.stringify(g0?.score.traits));
     const lab0 = await G.page.locator('#streakLabel').textContent();
@@ -671,6 +691,7 @@ try {
     // A throw 45 cm off Coach's glove: a miss with a regular glove, a catch with this one.
     const pa = await G.page.evaluate(() => window.__catch.game.pullFor('coach'));
     const relBefore = (await G.state()).audio.filter((x) => x.k === 'release').length;
+    const fbFrom = (await G.feedback()).now;
     await throwGesture(G, { pull: pa.pull, side: pa.side + 38, x: 195 - (pa.side + 38) / 2, y: 330 });
     const gc = await waitFor(async () => { const s = await G.state(); return s.ball.holder === 'coach' ? s : s.ball.phase === 'loose' ? { fail: true } : null; }, 6000);
     await sleep(300);
@@ -683,6 +704,12 @@ try {
     check('speed up: one catch in, every throw is 3% faster, and the scoreboard says so', Math.abs(g1.score.speed - 1.03) < 1e-9 && /\+3% speed/.test(lab1), `×${g1.score.speed} · "${lab1}"`);
     const rel = g1.audio.filter((x) => x.k === 'release');
     check('the throw has its own sound: a snap as the ball leaves the hand', rel.length === relBefore + 1 && rel[rel.length - 1].power > 0, `power=${rel[rel.length - 1]?.power?.toFixed(2)}`);
+    // Letting go is answered at once: one quiet grip and one light tap, in the touch itself; the snap and the firm tap come at the release.
+    const fbt = await G.feedback(fbFrom);
+    const relT = rel[rel.length - 1]?.t ?? 0, grip = fbt.grips[0];
+    check('letting go is answered at once: one grip sound, before the arm whoosh and the snap', fbt.grips.length === 1 && grip.t < relT && relT - grip.t > 200, `grips=${fbt.grips.length}, snap ${Math.round(relT - (grip?.t ?? 0))} ms later`);
+    const [light, firm] = fbt.vib;
+    check('…and a light haptic fired inside the touch itself, then the firm one at the release', fbt.vib.length === 2 && light.ms === 10 && light.ev === 'pointerup' && firm.ms === 22 && Math.abs(light.t - grip.t) < 30 && firm.t > light.t + 200, JSON.stringify(fbt.vib.map((v) => [v.ms, v.ev, Math.round(v.t - (grip?.t ?? 0))])));
     // A friend joins by the link: they're playing the same game, and can see which. (Coach steps out when they do: so this comes last.)
     const J = await player(new URL(G.page.url()).pathname.split('/').pop(), 'Joy', 'R');
     const js = await waitFor(async () => { const s = await J.state(); return s.score.traits?.mitt ? s : null; }, 5000);

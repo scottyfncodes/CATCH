@@ -19,7 +19,7 @@ score and every player hears the same one:
 
 | Grade | Distance from pocket centre | What you hear |
 |---|---|---|
-| perfect (g ≳ 0.78) | ≤ 4.5 cm | full-band crack + tight body + tonal pocket **ring** + the **report** (dry: nothing comes back off the houses) |
+| perfect (g ≳ 0.78) | ≤ 4.5 cm | the **whip crack** on top + full-band crack + tight body + tonal pocket **ring** + the **report** (dry: nothing comes back off the houses) |
 | pocket | ≤ 9.5 cm | solid crack, full body, a little ring |
 | web | ≤ 15.5 cm | crack low-passed away, dull body, more leather shuffle |
 | bobble | ≤ 20.5 cm | muffled impact, then a second squeeze 130 ms later |
@@ -28,8 +28,15 @@ Within the clean range it is continuous: crack level ∝ g^1.6, crack low-pass
 2.2 kHz → 17 kHz, body pitch/tightness and ring amount all follow g. Ball speed
 sets loudness and weight. `docs/pop-grades.wav` is an offline render of the
 ladder (perfect hard, perfect soft toss, pocket, web, bobble). Measured on that
-render: peak 0.82 / 0.61 / 0.52 / 0.37 / 0.27, high-frequency content ~7× higher
-for a perfect hard catch than a web catch.
+render: peak 1.00 / 0.78 / 0.88 / 0.49 / 0.32 (perfect hard, perfect soft, pocket,
+web, bobble), energy above 3 kHz 8.8× higher for a perfect hard catch than a web
+catch. Balance of a perfect hard catch (first 80 ms): about 12% below 200 Hz,
+14% at 200–800 Hz, 38% at 0.8–3 kHz, 35% at 3–12 kHz: a pop with a crack on it,
+not a thud. (Tuned from a listening test on a phone: "too much thud, not enough
+pop, needs a crack like a whip". It had been 80% below 200 Hz.)
+
+The transient layers (whip, crack, shot) are faded in over two samples, not a
+millisecond: their first-sample click is the attack.
 
 The master bus uses a transparent soft clip (linear below about -3 dBFS) instead
 of a DynamicsCompressor; the compressor was flattening the crack transient.
@@ -40,9 +47,10 @@ Layered per catch from pre-rendered variations (picked at random):
 
 | Layer | Model | Driven by |
 |---|---|---|
+| Whip | the crack of a whip: a single N-shaped pressure wave under a millisecond long (what a whip tip breaking the sound barrier makes), then a 2 ms tear of air above 3 kHz; nothing low, no tail | how centred (g²) and how hard: the leading edge of a clean catch |
 | Crack | 4 ms broadband slap, peaks at 2.5 kHz and 5 kHz, initial click | ball speed (^1.25), only strong on clean pocket catches |
-| Shot | the report: full-band burst (11 ms), a bark at ≈950 Hz (24 ms), a 190→62 Hz punch, hard-clipped; over in about 50 ms with no tail | how centred the catch is (^1.3) and ball speed (^1.4): a hard one in the middle of the pocket goes off like a shot |
-| Body | mid "slap" band (≈430 Hz) + hand thump (170→82 Hz glide) + two leather resonances (≈760 Hz, ≈1.33 kHz) + early reflection, soft-saturated | speed sets level and playback rate; soft tosses are low-passed |
+| Shot | the report: full-band burst (11 ms, peak ≈2.5 kHz), a bark at ≈1.25 kHz (24 ms), a small, short 210→90 Hz punch, hard-clipped; over in about 50 ms with no tail | how centred the catch is (^1.3) and ball speed (^1.4): a hard one in the middle of the pocket goes off like a shot |
+| Body | mid "slap" band (≈560 Hz) + a small, short hand thump (190→100 Hz glide) + two leather resonances (≈760 Hz, ≈1.33 kHz) + early reflection, soft-saturated | speed sets level and playback rate; soft tosses are low-passed |
 | Settle | stick-slip micro-clicks + low squeeze, 35–250 ms after impact | always, subtle |
 
 Quality changes the mix: **pocket** = crisp crack + full body; **web** = dulled
