@@ -127,6 +127,8 @@ export interface AvatarFrame {
  * this long a step (s), and both feet down this long between steps (s).
  */
 const WALK_SPREAD = 0.76, WALK_STEP = 0.36, WALK_GAP = 0.05;
+/** By this long after letting go, every delivery has walked back and is standing on the spot (s). */
+export const RECOVERY_TIME = 2.4;
 
 export class Avatar {
   root = new THREE.Group();

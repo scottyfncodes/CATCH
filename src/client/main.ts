@@ -13,7 +13,7 @@ import { haptic } from './haptics';
 import type { NetStatus } from './net';
 import { serverHttpUrl } from './net';
 import { BUILDS, GLOVES, HAIRS, HAIR_COLORS, HATS, type Kind, MILESTONES, PANTS, S, SKINS, type Style, TOPS, defaultStyle, nextMilestone, owns, rewardAt } from '../shared/style';
-import { Avatar } from './scene/avatar';
+import { Avatar, RECOVERY_TIME } from './scene/avatar';
 import { buildBall } from './scene/gear';
 import { CameraRig } from './scene/camera';
 import { buildWorld } from './scene/world';
@@ -132,7 +132,8 @@ class Backdrop {
     const yaw = lookAngles(seat.pos, other.pos).yaw;
     if (s.look) { this.frameLook(dt, s, av, yaw, w, h); return; }
     const wu = getWindup(s.id);
-    const SET = 0.55, top = SET + wu.params.tempo, go = top + 0.3, rel = go + RELEASE_TIME, end = go + 1.9;
+    // (It starts again only once they have walked back and stood a beat: never mid-step.)
+    const SET = 0.55, top = SET + wu.params.tempo, go = top + 0.3, rel = go + RELEASE_TIME, end = go + RECOVERY_TIME + 0.4;
     s.t += dt;
     if (s.t > end) { s.t = 0; this.traj = null; }
     let arm: number = Arm.Holding, charge = 0;
