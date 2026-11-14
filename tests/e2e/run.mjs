@@ -50,6 +50,16 @@ await waitFor(async () => { try { return (await fetch(BASE)).ok; } catch { retur
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required'] });
 let guestN = 0;
 
+/** Haptics, as they happen: how long, when, and which event (if any) was being handled at the time. */
+async function recordHaptics(page) {
+  await page.addInitScript(() => {
+    window.__vib = [];
+    navigator.vibrate = (ms) => { window.__vib.push({ ms, t: performance.now(), ev: window.event?.type ?? null }); return true; };
+  });
+}
+/** What a throw makes you hear and feel (counted since `from`). */
+const feedbackOf = (page) => (from) => page.evaluate((f) => ({ grips: window.__catch.game.debugState().audio.filter((x) => x.k === 'grip' && x.t > f), vib: window.__vib.filter((x) => x.t > f), now: performance.now() }), from ?? -1);
+
 async function player(room, name, hand = 'R', guest, expect = 'open', windup = 34) {
   const ctx = await browser.newContext({ ...devices['iPhone 13'], deviceScaleFactor: 1 });
   const page = await ctx.newPage();
@@ -59,11 +69,7 @@ async function player(room, name, hand = 'R', guest, expect = 'open', windup = 3
   await page.addInitScript(([g, name, hand, windup]) => {
     if (!localStorage.getItem('catch.prefs.v1')) localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: g, name, hand, profiled: true, tutorialDone: true, windup }));
   }, [g, name, hand, windup]);
-  // Haptics, as they happen: how long, when, and which event (if any) was being handled at the time.
-  await page.addInitScript(() => {
-    window.__vib = [];
-    navigator.vibrate = (ms) => { window.__vib.push({ ms, t: performance.now(), ev: window.event?.type ?? null }); return true; };
-  });
+  await recordHaptics(page);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.stack || e.message));
   await page.goto(`${BASE}/r/${room}?server=${encodeURIComponent(WS)}`);
@@ -74,8 +80,7 @@ async function player(room, name, hand = 'R', guest, expect = 'open', windup = 3
   const cdp = await ctx.newCDPSession(page);
   const p = { ctx, page, cdp, name, guest: g, errors };
   p.state = () => page.evaluate(() => window.__catch.game.debugState());
-  /** What a throw makes you hear and feel (counted since `from`). */
-  p.feedback = (from) => page.evaluate((f) => ({ grips: window.__catch.game.debugState().audio.filter((x) => x.k === 'grip' && x.t > f), vib: window.__vib.filter((x) => x.t > f), now: performance.now() }), from ?? -1);
+  p.feedback = feedbackOf(page);
   p.touch = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((q) => ({ x: q[0], y: q[1], id: q[2] ?? 0 })) });
   return p;
 }
@@ -89,6 +94,7 @@ async function ctxHome() {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.stack || e.message));
   await page.addInitScript(() => { if (!localStorage.getItem('catch.prefs.v1')) localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: 'home-' + Math.random(), name: 'Sam', hand: 'R', profiled: true, tutorialDone: true })); });
+  await recordHaptics(page);
   await page.goto(`${BASE}/?server=${encodeURIComponent(WS)}`);
   await page.locator('[data-act=play]').waitFor();
   return { ctx, page, errors };
@@ -673,6 +679,7 @@ try {
     const gcdp = await G.ctx.newCDPSession(G.page);
     G.touch = (type, pts) => gcdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((q) => ({ x: q[0], y: q[1], id: q[2] ?? 0 })) });
     G.state = () => G.page.evaluate(() => window.__catch.game.debugState());
+    G.feedback = feedbackOf(G.page);
     const g0 = await waitFor(async () => { const s = await G.state(); return s.score.traits?.mitt && s.players.length === 2 ? s : null; }, 5000);
     check('the room plays what was picked', !!g0 && g0.score.traits.mitt && g0.score.traits.speed && !g0.score.traits.back && !g0.score.traits.wild, JSON.stringify(g0?.score.traits));
     const lab0 = await G.page.locator('#streakLabel').textContent();
