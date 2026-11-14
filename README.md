@@ -210,3 +210,6 @@ See [docs/LOOK.md](docs/LOOK.md) for the art direction (light, haze, the forest)
 and [docs/WINDUPS.md](docs/WINDUPS.md) for the windup library: how to add one,
 the authoring filmstrip, and the **legal-review note** to read before any
 public commercial release.
+
+Everything to put in front of counsel before a commercial release is listed in
+[docs/LEGAL-REVIEW.md](docs/LEGAL-REVIEW.md).

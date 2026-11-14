@@ -46,7 +46,7 @@ To look at them: `/tests/visual/people.html` (`&zoom=head` for close-ups,
 
 **The free caps** are made the way a baseball cap is: six panels sewn into a
 crown with a seam down each and an eyelet in each, a button on top, a stiffened
-front with an embroidered C, a bill that curves down at the sides with rows of
+front with the game's own wordmark (CATCH.) embroidered across it, a bill that curves down at the sides with rows of
 stitching on it and a darker underside, and an adjustable strap across an arched
 opening at the back. Worn level-ish, the band a little higher at the forehead.
 "Backwards" is the same cap turned round.

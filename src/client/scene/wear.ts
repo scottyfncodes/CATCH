@@ -182,12 +182,6 @@ function buildCap(hat: Hat, mat: Mat): THREE.Group {
   }
   // The button.
   put(lit, new THREE.SphereGeometry(0.011, 10, 6), hat.color, (x) => { x.scale.y = 0.5; capPoint(0, 1, x.position); });
-  // The letter on the front: a C, embroidered, raised a little off the cloth.
-  const letter = new THREE.TorusGeometry(0.023, 0.0062, 6, 22, Math.PI * 1.55);
-  letter.rotateZ(Math.PI * 0.225);
-  letter.scale(1, 1.08, 0.5);
-  capPoint(0, 0.42, p); capNormal(0, 0.42, n);
-  put(trim, letter, hat.accent ?? '#efe6d2', facing(p, n, 0.003));
   // The back: an arched opening over an adjustable strap.
   capNormal(Math.PI, 0.05, n);
   capPoint(Math.PI, 0.0, p);
@@ -200,8 +194,63 @@ function buildCap(hat: Hat, mat: Mat): THREE.Group {
   const thr = matte(mat('#ffffff', 0.85));
   thr.vertexColors = true;
   crown.add(new THREE.Mesh(mergeGeometries(lit)!, cloth), new THREE.Mesh(mergeGeometries(trim)!, thr));
+  // The front: the game's own wordmark, CATCH., embroidered across the front panels (cream, the dot in stitch red).
+  // (On a red cap a red dot would vanish into the cloth: there it's in the lettering's colour.)
+  const hsl = new THREE.Color(hat.color).getHSL({ h: 0, s: 0, l: 0 });
+  const reddish = (hsl.h < 0.05 || hsl.h > 0.95) && hsl.s > 0.35;
+  const word = wordmark(hat.accent ?? '#efe6d2', reddish ? hat.accent ?? '#efe6d2' : '#c8372d');
+  if (word) {
+    const AZ = 0.6, T0 = 0.27, T1 = 0.5;
+    const patch = surface(16, 4, (u, v, out) => {
+      const az = AZ - u * AZ * 2, t = T1 - v * (T1 - T0);
+      capPoint(az, t, out).addScaledVector(capNormal(az, t, n), 0.0018);
+    });
+    const ink = matte(mat('#ffffff', 0.8));
+    ink.map = word;
+    ink.alphaTest = 0.45;
+    const decal = new THREE.Mesh(patch, ink);
+    // (It lies on the cap: the cap's own shadow is the shadow.)
+    decal.userData.noShadow = true;
+    crown.add(decal);
+  }
   if (hat.shape === 'back') g.rotation.y = Math.PI;
   return g;
+}
+
+/** CATCH. as embroidery: the home screen's wordmark (heavy, tight, the dot in stitch red), on a clear ground. */
+const marks = new Map<string, THREE.CanvasTexture>();
+function wordmark(ink: string, dot: string): THREE.CanvasTexture | null {
+  if (!hasDom()) return null;
+  const hit = marks.get(ink + dot);
+  if (hit) return hit;
+  const W = 512, H = 128;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const g = cv.getContext('2d')!;
+  const font = (px: number) => `900 ${px}px -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif`;
+  let px = 104;
+  g.font = font(px);
+  const ctx = g as CanvasRenderingContext2D & { letterSpacing?: string };
+  ctx.letterSpacing = '-4px';
+  const fit = () => g.measureText('CATCH').width + g.measureText('.').width;
+  while (fit() > W * 0.9 && px > 40) { px -= 4; g.font = font(px); }
+  const w1 = g.measureText('CATCH').width, total = fit();
+  const x0 = (W - total) / 2, y = H * 0.74;
+  // A thin darker edge, the way the stitching sits up off the cloth.
+  g.lineJoin = 'round';
+  g.lineWidth = 6;
+  g.strokeStyle = 'rgba(0,0,0,0.35)';
+  g.strokeText('CATCH', x0, y);
+  g.fillStyle = ink;
+  g.fillText('CATCH', x0, y);
+  g.strokeText('.', x0 + w1, y);
+  g.fillStyle = dot;
+  g.fillText('.', x0 + w1, y);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  marks.set(ink + dot, t);
+  return t;
 }
 
 // ------------------------------------------------------------------ the silly hats

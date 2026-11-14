@@ -17,6 +17,7 @@ import {
 import {
   Arm, type Mode, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, catchStyle, classifyCatch,
 } from '../shared/protocol';
+import { PerfOverlay } from './perf';
 import { type Vec3, clamp, dist, lerp, wrapAngle } from '../shared/vec';
 import { type Style, sameStyle } from '../shared/style';
 import { RELEASE_TIME, getWindup, releasePointFor, windupId } from '../shared/windups';
@@ -187,6 +188,9 @@ export class Game {
   private lastCatchPerf = 0;
   private pixelRatio: number;
   private frameTimes: number[] = [];
+  /** The ?fps=1 readout (null unless asked for). */
+  private perf: PerfOverlay | null = null;
+  private startRatio = 1;
   /** Test hook: run under incoming throws automatically (never set in normal play). */
   autoMove = false;
   /** Test hook: no hand tremor on the aim. */
@@ -207,6 +211,7 @@ export class Game {
     const lowSpec = (navigator.hardwareConcurrency || 4) <= 2;
     this.renderer = renderer;
     this.pixelRatio = renderer.getPixelRatio();
+    this.startRatio = this.pixelRatio;
     this.renderer.shadowMap.enabled = !lowSpec;
     this.world = buildWorld(lowSpec, renderer);
     this.scene = this.world.scene;
@@ -224,6 +229,7 @@ export class Game {
     this.labels = document.createElement('div');
     this.labels.className = 'labels';
     root.appendChild(this.labels);
+    if (PerfOverlay.wanted()) this.perf = new PerfOverlay(root);
     // Points at a throw that's coming in off the edge of your view.
     this.arrow = document.createElement('div');
     this.arrow.className = 'catch-arrow';
@@ -282,6 +288,7 @@ export class Game {
     this.players.clear();
     this.myAvatar?.dispose();
     this.labels.remove();
+    this.perf?.dispose();
     this.aimArc.dispose();
     this.guide.dispose();
     this.scene.traverse((o) => {
@@ -728,6 +735,7 @@ export class Game {
   private frame = (now: number) => {
     if (!this.running) return;
     this.raf = requestAnimationFrame(this.frame);
+    const t0 = performance.now();
     const dt = Math.min(0.05, Math.max(0.001, (now - this.lastFrame) / 1000));
     this.lastFrame = now;
     if (this.frozen) { if (this.renderEnabled) this.renderer.render(this.scene, this.rig.camera); return; }
@@ -756,6 +764,7 @@ export class Game {
     if (this.renderEnabled) this.renderer.render(this.scene, this.rig.camera);
     this.updateLabels();
     this.sendState(now);
+    this.perf?.frame(now, performance.now() - t0, { renderer: this.renderer, startRatio: this.startRatio, shadows: this.renderer.shadowMap.enabled && this.world.sun.castShadow, drawing: this.renderEnabled });
   };
 
   private adaptQuality(dt: number) {
