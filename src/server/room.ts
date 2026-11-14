@@ -36,9 +36,13 @@ import {
   type ServerMsg,
   type SnapEntry,
   type CatchStyle,
-  type Mode,
+  type Traits,
+  DEFAULT_TRAITS,
   gloveSize,
-  toMode,
+  missesCount,
+  speedFactor,
+  toTraits,
+  wildOffset,
   catchGrade,
   catchStyle,
   classifyCatch,
@@ -125,10 +129,11 @@ export class Room {
   traj: Trajectory | null = null;
   streak = 0;
   sessionBest = 0;
-  /** How this room plays (set by whoever opens it). */
-  mode: Mode;
-  /** Catches' worth of progress (steps back in long toss, shrinks of the glove in big mitt), and misses so far. */
+  /** How this room plays: any mix of traits, set by whoever opens it. */
+  traits: Traits;
+  /** Steps back from the start (Step back), times the glove has shrunk (Big mitt), and misses so far. */
   steps = 0;
+  shrinks = 0;
   misses = 0;
   lastActive: number;
   /** A disconnect/leave happened during the current flight: a drop will not reset the streak. */
@@ -140,9 +145,9 @@ export class Room {
     code: string,
     private now: () => number,
     private records: RecordStore,
-    private opts: { practiceBot?: boolean; startSteps?: number; mode?: Mode } = {},
+    private opts: { practiceBot?: boolean; startSteps?: number; traits?: Traits } = {},
   ) {
-    this.mode = opts.mode ?? 'long';
+    this.traits = { ...(opts.traits ?? DEFAULT_TRAITS) };
     this.steps = Math.max(0, Math.floor(opts.startSteps ?? 0));
     this.code = code;
     this.lastActive = now();
@@ -162,7 +167,7 @@ export class Room {
     return {
       streak: this.streak, sessionBest: this.sessionBest, groupBest: this.records.get(key), groupKey: key,
       dist: ringSpread(Math.max(2, this.members.size), this.back()), misses: this.misses,
-      mode: this.mode, glove: this.glove(),
+      traits: { ...this.traits }, glove: this.glove(), speed: this.speed(),
     };
   }
 
@@ -184,10 +189,12 @@ export class Room {
     ]);
   }
 
-  /** Steps back from the start (only long toss moves anyone). */
-  private back(): number { return this.mode === 'long' ? this.steps : 0; }
+  /** Steps back from the start (only Step back moves anyone). */
+  private back(): number { return this.traits.back ? this.steps : 0; }
   /** The size of everyone's glove right now. */
-  glove(): number { return gloveSize(this.mode, this.steps); }
+  glove(): number { return gloveSize(this.traits.mitt, this.shrinks); }
+  /** How much faster than normal every throw is right now (Speed up). */
+  speed(): number { return speedFactor(this.traits.speed, this.streak); }
 
   // ---------------------------------------------------------------- membership
 
@@ -211,7 +218,7 @@ export class Room {
       return existing;
     }
     // Whoever opens the room chooses how it plays.
-    if (this.humans().length === 0 && msg.m !== undefined) this.mode = toMode(msg.m, this.mode);
+    if (this.humans().length === 0 && msg.tr !== undefined) { this.traits = toTraits(msg.tr, this.traits); this.steps = this.traits.back ? this.steps : 0; }
     if (this.humans().length >= MAX_PLAYERS) {
       conn.send({ t: 'full', room: this.code, max: MAX_PLAYERS });
       return null;
@@ -290,7 +297,7 @@ export class Room {
   private relayout() {
     if (this.ball.phase !== 'held') return;
     const list = [...this.members.values()].sort((a, b) => a.joinOrder - b.joinOrder);
-    if (this.mode === 'long') this.steps = Math.min(this.steps, maxSteps(list.length));
+    if (this.traits.back) this.steps = Math.min(this.steps, maxSteps(list.length));
     const seats = seatLayout(list.length, this.back());
     list.forEach((m, i) => {
       const fresh = m.poseAt === m.joinedAt && m.pose.x === 0 && m.pose.z === 0;
@@ -490,9 +497,9 @@ export class Room {
       if (MILESTONES.includes(this.streak)) milestone = this.streak;
       this.sessionBest = Math.max(this.sessionBest, this.streak);
       this.records.raise(this.groupKey(), this.streak);
-      // Caught: everyone takes a step back (long toss), or the gloves get a size smaller (big mitt).
-      if (this.mode === 'long') this.steps = Math.min(maxSteps(this.members.size), this.steps + 1);
-      else if (this.mode === 'mitt') this.steps = Math.min(60, this.steps + 1);
+      // Caught: everyone takes a step back (Step back), and the gloves get a size smaller (Big mitt).
+      if (this.traits.back) this.steps = Math.min(maxSteps(this.members.size), this.steps + 1);
+      if (this.traits.mitt) this.shrinks = Math.min(60, this.shrinks + 1);
     }
     this.relayout();
     this.broadcastBall({ k: 'catch', by: m.id, q, g, speed, at, pos, self, milestone, st: st ?? undefined }, true);
@@ -580,14 +587,16 @@ export class Room {
   }
 
   /**
-   * A miss: a step back in (or the glove a size bigger). Misses are counted
-   * in total; the third starts the distance, or the glove, again.
+   * A miss: a step back in, and the glove a size bigger. Misses are counted
+   * in total; the third starts the distance and the glove again. (Speed up
+   * needs nothing here: it goes with the streak, which a drop has ended.)
    */
   private missed() {
-    if (this.mode === 'fixed') return;
+    if (!missesCount(this.traits)) return;
     this.misses++;
     this.steps = Math.max(0, this.steps - 1);
-    if (this.misses >= MISSES_TO_RESET) { this.steps = 0; this.misses = 0; }
+    this.shrinks = Math.max(0, this.shrinks - 1);
+    if (this.misses >= MISSES_TO_RESET) { this.steps = 0; this.shrinks = 0; this.misses = 0; }
   }
 
   private recover() {
@@ -609,7 +618,7 @@ export class Room {
     if (!coach || !this.bot) return;
     const px = coach.pose.x, pz = coach.pose.z;
     const was = coach.arm;
-    const act = this.bot.update(t, coach, human ?? null, this.ball, this.traj, this.streak, this.glove());
+    const act = this.bot.update(t, coach, human ?? null, this.ball, this.traj, this.streak, this.glove(), this.speed(), this.traits.wild ? wildOffset(this.code, this.ball.tid + 1) : null);
     if (coach.arm === Arm.Release && was !== Arm.Release && this.ball.holder === coach.id) this.broadcast({ t: 'go', by: coach.id, at: t });
     coach.speed = Math.hypot(coach.pose.x - px, coach.pose.z - pz) * SERVER_TICK_HZ;
     if (!act) return;

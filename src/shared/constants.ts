@@ -27,7 +27,24 @@ export const MAX_SIM_TIME = 12;
  * Server-side sanity cap on throw speed (m/s). The longest catch (DIST_MAX)
  * takes about 48 m/s, 107 mph, on a rising arc; a hard, flat one a little more.
  */
-export const THROW_SPEED_LIMIT = 64;
+export const THROW_SPEED_LIMIT = 80;
+
+/**
+ * How much more zip a throw has than the arc alone would give it: every throw
+ * (yours, a friend's, Coach's) is this much faster than the speed its arc
+ * implies, on a flatter line to the same place. Kept under THROW_SPEED_CAP.
+ */
+export const THROW_ZIP = 1.17;
+/** The fastest the game ever throws a ball (m/s), whatever is making it faster. */
+export const THROW_SPEED_CAP = 74;
+
+/** Speed up: each catch in a row adds this much to every throw's speed (a fraction of normal)... */
+export const SPEED_STEP = 0.03;
+/** ...up to this (×normal). With SPEED_STEP at 3% that's 17 catches in. */
+export const SPEED_MAX = 1.5;
+
+/** Wild throws: the furthest a throw is knocked off line, sideways at the receiver (m). A dive gets there. */
+export const WILD_MAX = 1.5;
 
 /**
  * Long toss: the room starts across the road and every catch takes everyone a

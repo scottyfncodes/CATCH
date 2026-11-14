@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { CHEST_HEIGHT } from '../shared/constants';
 import { positionAt, simulateFlight, solveThrowTo, type Trajectory } from '../shared/physics';
 import { type Hand, clampReach, gloveReady, interceptPlan, lookAngles, seatLayout } from '../shared/pose';
-import { Arm, MODES, type Mode, type BallEvent, type PlayerInfo, type ScoreState, isGreatCatch, isRoomCode, randomRoomCode, sanitizeName } from '../shared/protocol';
+import { Arm, TRAIT_KEYS, type Trait, type Traits, missesCount, type BallEvent, type PlayerInfo, type ScoreState, isGreatCatch, isRoomCode, randomRoomCode, sanitizeName } from '../shared/protocol';
 import type { Vec3 } from '../shared/vec';
 import { sameStyle } from '../shared/style';
 import { DEFAULT_WINDUP, HOUSE_WINDUP, RELEASE_TIME, WINDUPS, getWindup, releasePointFor } from '../shared/windups';
@@ -284,7 +284,7 @@ function home(notice?: string) {
     </main>`);
   ui.querySelector('[data-act=play]')!.addEventListener('click', () => {
     audio.unlock();
-    ensureProfile('Before you head out', () => modeSheet((mode) => enterRoom(randomRoomCode(), mode)));
+    ensureProfile('Before you head out', () => traitSheet((traits) => enterRoom(randomRoomCode(), traits)));
   });
   ui.querySelector('[data-act=join]')!.addEventListener('click', () => { audio.unlock(); joinSheet(); });
   ui.querySelector('[data-act=settings]')!.addEventListener('click', () => settingsSheet(() => home()));
@@ -536,6 +536,15 @@ function lookSheet(onClose?: () => void) {
     // Open each list on what you're wearing (the things you earn are further along it).
     const list = body.querySelector<HTMLElement>('.items'), on = list?.querySelector<HTMLElement>('[aria-checked="true"]');
     if (list && on) list.scrollLeft = Math.max(0, on.offsetLeft - list.offsetLeft - (list.clientWidth - on.offsetWidth) / 2);
+    // Rows that scroll say so: they fade out on whichever side there's more.
+    body.querySelectorAll<HTMLElement>('.items, .swatches, .chips').forEach((row) => {
+      const mark = () => {
+        const more = [row.scrollLeft > 2 ? 'l' : '', row.scrollLeft + row.clientWidth < row.scrollWidth - 2 ? 'r' : ''].filter(Boolean).join(' ');
+        if (row.dataset.more !== more) row.dataset.more = more;
+      };
+      row.addEventListener('scroll', mark, { passive: true });
+      mark();
+    });
     body.querySelectorAll<HTMLButtonElement>('[data-set]').forEach((b) => b.addEventListener('click', () => {
       const [i, v] = b.dataset.set!.split(':').map(Number);
       set(i, v);
@@ -608,32 +617,51 @@ function toast(text: string) {
   setTimeout(() => t.remove(), 2700);
 }
 
-const MODE_INFO: Record<Mode, { name: string; line: string }> = {
-  long: { name: 'Long toss', line: 'Every catch is a step further apart.' },
-  fixed: { name: 'Classic', line: 'Stay 46 feet apart. Just play catch.' },
-  mitt: { name: 'Big mitt', line: 'Giant gloves that shrink with every catch.' },
+const TRAIT_INFO: Record<Trait, { name: string; line: string }> = {
+  back: { name: 'Step back', line: 'Every catch, a step further apart. A miss, a step in.' },
+  speed: { name: 'Speed up', line: 'Every catch in a row, the ball comes in a little faster.' },
+  wild: { name: 'Wild throws', line: 'Throws go off line. Run, stretch, dive.' },
+  mitt: { name: 'Big mitt', line: 'Start with a giant glove. It shrinks with every catch.' },
 };
+/** A room's traits in a few words ("Step back · Speed up"), or what it is with none. */
+const traitWords = (t: Traits) => TRAIT_KEYS.filter((k) => t[k]).map((k) => TRAIT_INFO[k].name).join(' · ') || 'Plain catch';
 
-/** Which game to play. Whoever opens the room chooses; friends who join play the same one. */
-function modeSheet(then: (mode: Mode) => void) {
-  const last = prefs().mode;
+/**
+ * How to play: any of the traits, or none. Whoever opens the room chooses;
+ * friends who join play the same. Remembers what you chose last time.
+ */
+function traitSheet(then: (traits: Traits) => void) {
+  const t: Traits = { ...prefs().traits };
   const el = sheet(`
-    <h2>Pick a game</h2>
-    <p class="sub">Friends who join your room play the same one.</p>
-    <div class="modes" role="group" aria-label="Game">
-      ${MODES.map((m) => `<button type="button" class="mode" data-mode="${m}" ${m === last ? 'data-last' : ''}>
-        <b>${MODE_INFO[m].name}</b><span>${MODE_INFO[m].line}</span></button>`).join('')}
-    </div>`);
-  el.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => b.addEventListener('click', () => {
-    const mode = b.dataset.mode as Mode;
-    save({ mode });
+    <h2>How do you want to play?</h2>
+    <p class="sub">Pick any, or none. Friends who join your room play the same.</p>
+    <div class="traits" role="group" aria-label="How to play">
+      ${TRAIT_KEYS.map((k) => `<button type="button" class="trait" role="switch" data-trait="${k}" aria-checked="${t[k]}">
+        <span class="tick" aria-hidden="true"></span><b>${TRAIT_INFO[k].name}</b><span>${TRAIT_INFO[k].line}</span></button>`).join('')}
+    </div>
+    <p class="hint" id="trnote"></p>
+    <div class="actions"><button class="btn btn-ink" id="go">Play catch</button></div>`);
+  const note = el.querySelector<HTMLElement>('#trnote')!;
+  const sync = () => {
+    el.querySelectorAll<HTMLButtonElement>('[data-trait]').forEach((b) => b.setAttribute('aria-checked', String(t[b.dataset.trait as Trait])));
+    note.textContent = missesCount(t) ? 'The third miss sends you back to the start.' : TRAIT_KEYS.some((k) => t[k]) ? '' : 'Just the two of you and a ball, across the road.';
+  };
+  el.querySelectorAll<HTMLButtonElement>('[data-trait]').forEach((b) => b.addEventListener('click', () => {
+    const k = b.dataset.trait as Trait;
+    t[k] = !t[k];
+    haptic('light');
+    sync();
+  }));
+  sync();
+  el.querySelector('#go')!.addEventListener('click', () => {
+    save({ traits: { ...t } });
     audio.unlock();
     el.remove();
-    then(mode);
-  }));
+    then({ ...t });
+  });
 }
 
-function enterRoom(code: string, mode?: Mode) {
+function enterRoom(code: string, traits?: Traits) {
   backdrop.stop();
   audio.unlock();
   audio.setVolume(prefs().volume);
@@ -667,7 +695,7 @@ function enterRoom(code: string, mode?: Mode) {
         app.classList.remove('cut'); void app.offsetWidth; app.classList.add('cut');
       }
     },
-  }, mode);
+  }, traits);
   (window as unknown as { __catch: unknown }).__catch = { game, tutorial: () => tutorial };
   game.start();
   onStatus('connecting');
@@ -731,19 +759,21 @@ function onScore(s: ScoreState, ev?: BallEvent) {
   }
   // How far apart you are, in feet (it's baseball), beside the streak.
   if (!el.classList.contains('milestone')) label.innerHTML = distLabel(s);
-  const progress = `${s.mode}:${s.dist}:${s.glove}`;
+  label.classList.toggle('dense', [s.traits.back, s.traits.mitt, s.traits.speed && s.speed > 1.001].filter(Boolean).length >= 2);
+  const kind = traitWords(s.traits);
+  const progress = `${kind}:${s.dist}:${s.glove}:${s.speed}`;
   if (progress !== lastProgress) {
-    if (lastProgress.startsWith(s.mode)) { label.classList.remove('step'); void label.offsetWidth; label.classList.add('step'); }
-    else if (hud && !lastProgress && !Tutorial.needed()) toast(`${MODE_INFO[s.mode].name}: ${MODE_INFO[s.mode].line}`); // (not on top of the first-time tips: one thing to read at a time)
+    if (lastProgress.startsWith(kind + ':')) { label.classList.remove('step'); void label.offsetWidth; label.classList.add('step'); }
+    // Arriving (or the room's game changing): say what this room plays. (Not on top of the first-time tips: one thing to read at a time.)
+    else if (hud && !Tutorial.needed()) toast(`This room: ${kind}`);
     lastProgress = progress;
   }
   if ((ev?.k === 'drop' && !ev.void) || ev?.k === 'deflect') {
     // A miss is a step in; three in a row and you start again.
     // Misses are counted in total: the third one starts the distance (or the glove) again.
     const reset = s.misses === 0;
-    const what = s.mode === 'fixed' ? ''
-      : s.mode === 'long' ? (reset ? 'Third miss: back to the start' : `A step in (miss ${s.misses} of 3)`)
-      : reset ? 'Third miss: the big mitt is back' : `Glove a size bigger (miss ${s.misses} of 3)`;
+    const cost = s.traits.back && s.traits.mitt ? 'A step in, the glove a size bigger' : s.traits.back ? 'A step in' : 'Glove a size bigger';
+    const what = !missesCount(s.traits) ? '' : reset ? 'Third miss: back to the start' : `${cost} (miss ${s.misses} of 3)`;
     const said = `${lastStreak >= 5 ? `Dropped at ${lastStreak}. ` : ''}${what}`.trim();
     if (said) toast(said);
   }
@@ -767,9 +797,11 @@ let lastProgress = '';
 const feet = (m: number) => Math.round(m * 3.28084);
 /** Beside the streak: the thing this game is about (how far apart, or how big the glove). */
 function distLabel(s: ScoreState) {
-  if (s.mode === 'long') return `in a row · <em class="ft">${feet(s.dist)} ft</em>`;
-  if (s.mode === 'mitt') return `in a row · <em class="ft">glove ×${s.glove.toFixed(1)}</em>`;
-  return 'in a row';
+  const parts = ['in a row'];
+  if (s.traits.back) parts.push(`<em class="ft">${feet(s.dist)} ft</em>`);
+  if (s.traits.mitt) parts.push(`<em class="ft">glove ×${s.glove.toFixed(1)}</em>`);
+  if (s.traits.speed && s.speed > 1.001) parts.push(`<em class="ft">+${Math.round((s.speed - 1) * 100)}% speed</em>`);
+  return parts.join(' · ');
 }
 
 const GRADE_WORDS: Record<string, string> = { perfect: 'Perfect pop', pocket: 'Pocket', web: 'Off the web', bobble: 'Bobbled', miss: 'Dropped', wild: 'Wild throw' };
@@ -798,7 +830,7 @@ function pauseSheet(code: string) {
       <span class="num">${p.catches} caught${p.perfects ? ` · ${p.perfects} perfect` : ''}${p.saves ? ` · ${p.saves} great` : ''}</span><span class="num">${p.drops} dropped</span></li>`).join('');
   const el = sheet(`
     <h2>Paused</h2>
-    <p class="sub">${s ? `${MODE_INFO[s.mode].name}. ` : ''}The game keeps going for everyone else.</p>
+    <p class="sub">${s ? `This room: ${traitWords(s.traits)}. ` : ''}The game keeps going for everyone else.</p>
     <section>
       <h3>Invite</h3>
       <div class="invite-code"><div><small>Room code</small><b>${code}</b></div><button class="btn btn-ink btn-sm" id="share">Share link</button></div>
@@ -806,9 +838,9 @@ function pauseSheet(code: string) {
     <section>
       <h3>Streaks</h3>
       <div class="stats">
-        ${s?.mode === 'mitt'
+        ${s?.traits.mitt && !s.traits.back
     ? `<div class="stat"><b>×${s.glove.toFixed(1)}</b><span>Glove size right now</span></div>`
-    : `<div class="stat"><b>${s ? feet(s.dist) : 0}<small> ft</small></b><span>Apart${s?.mode === 'long' ? ' right now' : ''}</span></div>`}
+    : `<div class="stat"><b>${s ? feet(s.dist) : 0}<small> ft</small></b><span>Apart${s?.traits.back ? ' right now' : ''}</span></div>`}
         <div class="stat"><b>${s?.streak ?? 0}</b><span>Current</span></div>
         <div class="stat"><b>${s?.sessionBest ?? 0}</b><span>Best this session</span></div>
         <div class="stat"><b>${s?.groupBest ?? 0}</b><span>Best with this group</span></div>

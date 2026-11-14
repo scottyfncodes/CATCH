@@ -639,19 +639,29 @@ try {
     errsExtra.push(...P.errors, ...U.errors, ...V.errors);
   }
 
-  console.log('\nGAMES (long toss, classic, big mitt) AND THE THROW');
+  console.log('\nHOW TO PLAY (traits) AND THE THROW');
   {
     const G = await ctxHome();
     await G.page.locator('[data-act=play]').tap();
-    const names = await G.page.locator('.mode b').allInnerTexts();
-    check('PLAY asks which game: long toss, classic or big mitt', names.join('|') === 'Long toss|Classic|Big mitt', names.join(' · '));
-    await G.page.locator('.mode[data-mode=mitt]').tap();
+    const names = await G.page.locator('.trait b').allInnerTexts();
+    check('PLAY asks how to play: any of step back, speed up, wild throws, big mitt', names.join('|') === 'Step back|Speed up|Wild throws|Big mitt', names.join(' · '));
+    const on = () => G.page.evaluate(() => [...document.querySelectorAll('.trait')].filter((b) => b.getAttribute('aria-checked') === 'true').map((b) => b.dataset.trait).join(','));
+    check('…starting from long toss, as it always was', (await on()) === 'back', await on());
+    // Any mix: step back off, big mitt and speed up on.
+    await G.page.locator('.trait[data-trait=back]').tap();
+    await G.page.locator('.trait[data-trait=mitt]').tap();
+    await G.page.locator('.trait[data-trait=speed]').tap();
+    check('…and any of them can be on at once', (await on()) === 'speed,mitt', await on());
+    const big = await G.page.evaluate(() => Math.min(...[...document.querySelectorAll('.trait')].map((b) => b.getBoundingClientRect().height)));
+    check('…each a comfortable thing to tap', big >= 56, `${Math.round(big)} px tall`);
+    await G.page.locator('#go').tap();
     await waitFor(() => G.page.evaluate(() => window.__catch?.game?.debugState().status === 'open'), 10000, 50);
     await G.page.evaluate(() => { const g = window.__catch.game; g.renderEnabled = false; g.steadyAim = true; });
     const gcdp = await G.ctx.newCDPSession(G.page);
     G.touch = (type, pts) => gcdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((q) => ({ x: q[0], y: q[1], id: q[2] ?? 0 })) });
     G.state = () => G.page.evaluate(() => window.__catch.game.debugState());
-    const g0 = await waitFor(async () => { const s = await G.state(); return s.score.mode === 'mitt' && s.players.length === 2 ? s : null; }, 5000);
+    const g0 = await waitFor(async () => { const s = await G.state(); return s.score.traits?.mitt && s.players.length === 2 ? s : null; }, 5000);
+    check('the room plays what was picked', !!g0 && g0.score.traits.mitt && g0.score.traits.speed && !g0.score.traits.back && !g0.score.traits.wild, JSON.stringify(g0?.score.traits));
     const lab0 = await G.page.locator('#streakLabel').textContent();
     check('big mitt: everyone starts with a giant glove', g0?.score.glove === 3 && /glove ×3\.0/i.test(lab0), `glove ×${g0?.score.glove} · "${lab0}"`);
     const drawn = await G.page.evaluate(() => { const g = window.__catch.game; return [...g.players.values()].map((p) => (p.avatar ?? g.myAvatar)?.glove.scale.y); });
@@ -667,20 +677,36 @@ try {
     const g1 = await G.state();
     check('a throw well off the pocket still finds a giant glove', !!gc && !gc.fail && g1.score.streak === 1, `streak=${g1.score.streak} q=${g1.lastCatch?.q}`);
     check('…and the glove is a size smaller after the catch', g1.score.glove < 3 && g1.score.glove > 2.7 && g1.score.dist === 14, `glove ×${g1.score.glove}, ${g1.score.dist} m apart`);
+    const lab1 = await G.page.locator('#streakLabel').textContent();
+    const lh = await G.page.locator('#streakLabel').evaluate((e) => e.getBoundingClientRect().height);
+    check('…all of it on one line under the streak', lh < 22, `${Math.round(lh)} px tall: "${lab1}"`);
+    check('speed up: one catch in, every throw is 3% faster, and the scoreboard says so', Math.abs(g1.score.speed - 1.03) < 1e-9 && /\+3% speed/.test(lab1), `×${g1.score.speed} · "${lab1}"`);
     const rel = g1.audio.filter((x) => x.k === 'release');
     check('the throw has its own sound: a snap as the ball leaves the hand', rel.length === relBefore + 1 && rel[rel.length - 1].power > 0, `power=${rel[rel.length - 1]?.power?.toFixed(2)}`);
+    // A friend joins by the link: they're playing the same game, and can see which. (Coach steps out when they do: so this comes last.)
+    const J = await player(new URL(G.page.url()).pathname.split('/').pop(), 'Joy', 'R');
+    const js = await waitFor(async () => { const s = await J.state(); return s.score.traits?.mitt ? s : null; }, 5000);
+    check('a friend who joins plays the same traits', !!js && JSON.stringify(js.score.traits) === JSON.stringify(g0.score.traits), JSON.stringify(js?.score.traits));
+    await J.page.locator('#pauseBtn').tap();
+    const jsub = await J.page.locator('.sheet .sub').first().textContent();
+    check('…and can see them', /This room: Speed up · Big mitt/.test(jsub), jsub.trim());
+    await J.ctx.close();
     await G.page.reload();
     await G.page.locator('#go').waitFor();
-    const lastMode = await G.page.evaluate(() => JSON.parse(localStorage.getItem('catch.prefs.v1')).mode);
-    check('the game you picked is remembered for next time', lastMode === 'mitt');
+    const lastTraits = await G.page.evaluate(() => JSON.parse(localStorage.getItem('catch.prefs.v1')).traits);
+    check('what you picked is remembered for next time', !!lastTraits && lastTraits.mitt && lastTraits.speed && !lastTraits.back && !lastTraits.wild, JSON.stringify(lastTraits));
     await G.ctx.close();
 
     const F = await ctxHome();
     await F.page.locator('[data-act=play]').tap();
-    await F.page.locator('.mode[data-mode=fixed]').tap();
-    const fs = await waitFor(async () => { const s = await F.page.evaluate(() => window.__catch?.game?.debugState()); return s?.status === 'open' && s.score.mode === 'fixed' ? s : null; }, 10000, 50);
+    // None at all: plain catch.
+    for (const k of ['back', 'speed', 'wild', 'mitt']) {
+      if ((await F.page.locator(`.trait[data-trait=${k}]`).getAttribute('aria-checked')) === 'true') await F.page.locator(`.trait[data-trait=${k}]`).tap();
+    }
+    await F.page.locator('#go').tap();
+    const fs = await waitFor(async () => { const s = await F.page.evaluate(() => window.__catch?.game?.debugState()); return s?.status === 'open' && s.score.traits && !Object.values(s.score.traits).some(Boolean) ? s : null; }, 10000, 50);
     const flab = await F.page.locator('#streakLabel').textContent();
-    check('classic: a regular glove at a fixed 46 feet, with nothing else on the scoreboard', fs?.score.glove === 1 && fs.score.dist === 14 && flab.trim() === 'in a row', `"${flab}"`);
+    check('no traits: a regular glove at a fixed 46 feet, normal speed, nothing else on the scoreboard', fs?.score.glove === 1 && fs.score.dist === 14 && fs.score.speed === 1 && flab.trim() === 'in a row', `"${flab}"`);
     errsExtra.push(...G.errors, ...F.errors);
     await F.ctx.close();
   }

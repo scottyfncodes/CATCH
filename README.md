@@ -9,19 +9,26 @@ person**, through your own eyes, with the ball coming at you. Two to five
 friends can share a room and keep one streak of consecutive catches alive;
 alone, Coach keeps you company.
 
-**Three games.** Whoever opens the room picks one; friends who join play it.
+**How to play is up to you.** Whoever opens the room picks any mix of these
+(or none); friends who join play the same, and see which.
 
-- **Long toss.** You start 46 feet apart. Every catch takes you both a step
+- **Step back.** You start 46 feet apart. Every catch takes you both a step
   further back, and the throws get longer, higher and harder: at 394 feet (as
-  far as anyone can throw a baseball) it is a 107 mph throw that hangs for
-  five seconds. A miss brings you a step back in. Misses are counted in total:
-  the third one starts the distance again.
-- **Classic.** Stay 46 feet apart and just play catch.
+  far as anyone can throw a baseball) the ball hangs for seconds. A miss
+  brings you a step back in.
+- **Speed up.** Every catch in a row, every throw comes in 3% faster, up to half
+  as fast again. A drop starts it over.
+- **Wild throws.** Every throw is knocked a little off line: most by a hand or
+  two, some by a step, a few by a dive.
 - **Big mitt.** Everyone starts with a giant glove (three times the size), and
   it shrinks with every catch, past a regular glove to a small one. A miss
-  makes it a size bigger; the third miss brings the giant one back.
+  makes it a size bigger.
 
-Nobody is ever out, in any of them.
+With Step back or Big mitt, misses are counted in total, and the third sends
+that progress back to the start. With none of them, it's plain catch across
+the road.
+
+Nobody is ever out, whatever the mix.
 
 No accounts, no installs: open the link, pick a name and a throwing hand, play.
 
@@ -110,11 +117,18 @@ tests/visual/ authoring tools: a filmstrip of any windup, the catching poses, th
   another phone, and the server takes it on trust; that is acceptable only
   because nothing cosmetic affects play. A build changes how thick the limbs
   are drawn, never where the joints are, so reach and release are identical.
-- **Modes** (`Mode` in `src/shared/protocol.ts`). The room carries its mode;
-  `gloveSize(mode, steps)` and the seat layout are both computed from the same
-  `steps`, so one counter drives either the distance or the glove. In Big
-  mitt the catch zones scale with the glove on the client and the server
-  alike; in the other two the glove is always size 1.
+- **Traits** (`Traits` in `src/shared/protocol.ts`). The room carries its
+  traits (set by whoever opens it, sent to everyone with the score). Step back
+  and Big mitt each have their own counter (`steps`, `shrinks`); misses take one
+  off each and the third resets both. Speed up is `speedFactor(streak)`: the
+  streak is the server's, so every phone and Coach throw at the same speed, and
+  a drop resets it with the streak. Wild throws are `wildOffset(room, throwId)`:
+  a hash, so the thrower's phone and the server (for Coach) knock the same throw
+  off line the same way, and everyone simulates the trajectory the server
+  broadcasts. All throws are made by `solveThrow` (the arc's speed, times
+  `THROW_ZIP` and the room's speed factor, on a flatter line to the same spot).
+  In Big mitt the catch zones scale with the glove on the client and the server
+  alike.
 - **The throw has a moment of its own.** As the ball leaves the hand: a snap
   and a hiss that grow with how hard it was thrown, a knock through the shot,
   a haptic tap, a ring off the hand. In flight the ball is drawn at its true

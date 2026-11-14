@@ -1,6 +1,6 @@
 # The camera at distance
 
-Long toss moves the two of you up to 120 m apart. A lens chosen for 14 m turns
+Step back moves the two of you up to 120 m apart. A lens chosen for 14 m turns
 a friend at 50 m into a speck, so both views change lens with distance. Nobody
 is scaled; the code is `standBack` and `watchFov` in `src/client/scene/camera.ts`.
 

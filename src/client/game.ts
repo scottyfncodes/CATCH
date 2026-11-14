@@ -7,15 +7,16 @@ import * as THREE from 'three';
 import {
   BALL_RADIUS, CATCH_PERFECT, CATCH_WEB, CLIENT_STATE_HZ, DIVE_RECOVER, DIVE_SPEED, DIVE_TIME, LEAP_HEIGHT, LEAP_TIME,
   MOVE_RADIUS, RUN_ACCEL, RUN_SPEED, SIM_DT, WALK_SPEED,
+  THROW_ZIP,
 } from '../shared/constants';
 import {
-  type Trajectory, closestApproach, positionAt, simulateFlight, solveArc, sweptMinDistance, throwElevation, velocityAt,
+  type Trajectory, closestApproach, positionAt, simulateFlight, solveThrow, sweptMinDistance, throwElevation, velocityAt,
 } from '../shared/physics';
 import {
   type Hand, type Pose, bodyToWorld, clampReach, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, worldToBody,
 } from '../shared/pose';
 import {
-  Arm, type Mode, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, catchStyle, classifyCatch,
+  Arm, type Traits, DEFAULT_TRAITS, wildOffset, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, catchStyle, classifyCatch,
 } from '../shared/protocol';
 import { PerfOverlay } from './perf';
 import { type Vec3, clamp, dist, lerp, wrapAngle } from '../shared/vec';
@@ -101,7 +102,7 @@ export class Game {
   players = new Map<string, Remote>();
   ball: BallState = { phase: 'held', holder: null, tid: 0, thrower: null, t0: 0, p0: [0, 0, 0], v0: [0, 0, 0], live: false };
   traj: Trajectory | null = null;
-  score: ScoreState = { streak: 0, sessionBest: 0, groupBest: 0, groupKey: '', dist: 14, misses: 0, mode: 'long', glove: 1 };
+  score: ScoreState = { streak: 0, sessionBest: 0, groupBest: 0, groupKey: '', dist: 14, misses: 0, traits: { ...DEFAULT_TRAITS }, glove: 1, speed: 1 };
 
   // Local player: a body on the grass.
   hand: Hand;
@@ -205,7 +206,7 @@ export class Game {
   private releaseGap = -1;
   private releaseClip = -1;
 
-  constructor(private root: HTMLElement, renderer: THREE.WebGLRenderer, touchLayer: HTMLElement, readonly room: string, private ev: GameEvents, mode?: Mode) {
+  constructor(private root: HTMLElement, renderer: THREE.WebGLRenderer, touchLayer: HTMLElement, readonly room: string, private ev: GameEvents, traits?: Traits) {
     this.hand = prefs().hand;
     this.windup = prefs().windup;
     const lowSpec = (navigator.hardwareConcurrency || 4) <= 2;
@@ -253,7 +254,7 @@ export class Game {
       onGloveActive: (a) => { this.gloveDragging = a; this.lastInputAt = performance.now(); },
     });
 
-    this.net = new Net(room, () => ({ guest: prefs().guest, name: prefs().name, hand: prefs().hand, windup: prefs().windup, style: prefs().style, mode }));
+    this.net = new Net(room, () => ({ guest: prefs().guest, name: prefs().name, hand: prefs().hand, windup: prefs().windup, style: prefs().style, traits }));
     this.net.onMessage = (m) => this.onMessage(m);
     this.net.onStatus = (s) => this.ev.status(s);
 
@@ -645,7 +646,7 @@ export class Game {
    * which breathes a little with your hand; the throw is solved to arrive
    * exactly there, so the aim ring is the truth.
    */
-  private planThrow(a: Aim): { p0: Vec3; v0: Vec3; speed: number; ring: Vec3; T: number } {
+  private planThrow(a: Aim, off: [number, number] | null = null): { p0: Vec3; v0: Vec3; speed: number; ring: Vec3; T: number } {
     const me = this.pos;
     const pid = this.aimPartnerId && this.players.has(this.aimPartnerId) ? this.aimPartnerId : this.partner();
     const pf = this.feetOf(pid);
@@ -679,7 +680,10 @@ export class Game {
     // high arc for a long one. Pull harder and it goes flatter and quicker.
     // The arc depends on the distance and your pull, never on the windup.
     const p0 = releasePointFor(this.windup, me, yawTo, this.hand);
-    const { v0, T } = solveArc(p0, target, throwElevation(depth) * lerp(1.2, 0.65, a.power) * this.arcScale);
+    // Wild throws: where it actually goes is knocked off line from where you aimed (the ring stays where you aimed).
+    const to: Vec3 = off ? [target[0] + rx * off[0], Math.max(0.25, target[1] + off[1]), target[2] + rz * off[0]] : target;
+    // Every throw has the room's zip, and as much more as Speed up says (the server's number, the same for everyone).
+    const { v0, T } = solveThrow(p0, to, throwElevation(depth) * lerp(1.2, 0.65, a.power) * this.arcScale, THROW_ZIP * this.score.speed);
     return { p0, v0, speed: Math.hypot(...v0), ring: target, T };
   }
 
@@ -690,10 +694,10 @@ export class Game {
   private release(a: Aim) {
     this.aim = null;
     if (!this.canThrow() || !this.me) return;
-    const { p0, v0, T } = this.planThrow(a);
+    const { p0, v0, ring } = this.planThrow(a, this.score.traits.wild ? wildOffset(this.room, this.ball.tid + 1) : null);
     const traj = simulateFlight(p0, v0);
     const now = performance.now();
-    this.pending = { p0, v0, at: now + RELEASE_MS, power: a.power, traj, ring: positionAt(traj, T) };
+    this.pending = { p0, v0, at: now + RELEASE_MS, power: a.power, traj, ring };
     this.releasedAt = now;
     this.net.send({ t: 'go' });
     const side = this.hand === 'R' ? 1 : -1;
