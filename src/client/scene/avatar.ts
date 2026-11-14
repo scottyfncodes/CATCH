@@ -450,7 +450,8 @@ export class Avatar {
     if (throwing) {
       // (The size of the windup is gone by the time the arm comes through: every throw leaves from the same slot.)
       this.dpose = exaggerate(this.windup, deliveryPose(this.windup, this.deliveryT, this.deliveryFrom), 1 + (this.big - 1) * (1 - smooth(clamp(this.deliveryT / 0.2, 0, 1))));
-      fade = 1 - smooth(clamp((this.deliveryT - 0.74) / (DELIVERY_LENGTH - 0.74), 0, 1));
+      // (The clip walks back to the spot on its own: the hand-back to the live pose is only the last few hundredths.)
+      fade = 1 - smooth(clamp((this.deliveryT - (DELIVERY_LENGTH - 0.14)) / 0.14, 0, 1));
       this.dw += (1 - this.dw) * (1 - Math.exp(-dt / 0.045));
     } else if (arm === Arm.Windup) {
       // The further back the thumb, the bigger the windup.

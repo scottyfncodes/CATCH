@@ -26,11 +26,13 @@ export const RELEASE_TIME = 0.3;
 /**
  * The furthest from the thrower's eyes a delivery may let go of the ball (m).
  * The server refuses a throw that starts further away than this; the longest
- * stride in the library lets go about 1.45 m out.
+ * stride in the library lets go about 1.8 m out.
  */
-export const RELEASE_REACH = 1.6;
-/** Length of the delivery clip (stride, release, follow-through, recovery). */
-export const DELIVERY_LENGTH = 1.0;
+export const RELEASE_REACH = 2.0;
+/** Length of the delivery clip (stride, release, follow-through, and the steps back to the spot). */
+export const DELIVERY_LENGTH = 1.48;
+/** The arm at its furthest laid back, just before it comes through (s after letting go). */
+const LAYBACK_TIME = 0.265;
 
 /** Avatar proportions the deliveries are authored against (metres). */
 export const RIG = {
@@ -162,6 +164,8 @@ export function shoulderOf(p: DeliveryPose, gloveSide = false): Vec3 {
 const FIELDS = ['hip', 'coil', 'lean', 'tilt'] as const;
 const VECS = ['pelvis', 'lead', 'pivot', 'ball', 'glove'] as const;
 const N = FIELDS.length + VECS.length * 3;
+/** Where the two feet start in a flattened pose. */
+const FEET = [FIELDS.length + 3, FIELDS.length + 6];
 
 function flat(p: DeliveryPose): number[] {
   const o: number[] = [];
@@ -197,6 +201,13 @@ export function sampleKeys(keys: Key[], t: number): DeliveryPose {
     const m2 = i + 2 > n - 1 ? 0 : ((a3[j] - a1[j]) / (k3.t - k1.t)) * h;
     out[j] = (2 * s3 - 3 * s2 + 1) * a1[j] + (s3 - 2 * s2 + s) * m1 + (-2 * s3 + 3 * s2) * a2[j] + (s3 - s2) * m2;
   }
+  // A foot that is in the same place at both keys is planted: it stays exactly there (the curve
+  // through the keys either side would otherwise slide it about on the grass).
+  for (const j of FEET) {
+    if (Math.abs(a1[j] - a2[j]) + Math.abs(a1[j + 1] - a2[j + 1]) + Math.abs(a1[j + 2] - a2[j + 2]) < 1e-6) {
+      out[j] = a1[j]; out[j + 1] = a1[j + 1]; out[j + 2] = a1[j + 2];
+    }
+  }
   return unflat(out);
 }
 
@@ -214,7 +225,7 @@ function applyPatches(keys: Key[], patches: KeyPatch[] | undefined): Key[] {
   return keys;
 }
 
-/** The generated skeleton of a delivery: set, rock, gather, top; drive, plant, release, follow, finish. */
+/** The generated skeleton of a delivery: set, rock, gather, top; drive, plant, layback, release, follow, land, and the jog back. */
 function generate(p: WindupParams): { windup: Key[]; delivery: Key[] } {
   const s = Math.sin(p.slot * DEG), c = Math.cos(p.slot * DEG);
   const handsY = p.hands === 'belt' ? 1.03 : 1.24;
@@ -299,53 +310,100 @@ function generate(p: WindupParams): { windup: Key[]; delivery: Key[] } {
     PLANT.ball = [S[0] + px * out - qx * bk, S[1] + 0.03 + 0.28 * s, S[2] + pz * out - qz * bk];
   }
 
-  // Release: square (and past it), trunk over the front leg, arm through its slot.
+  // Release: square (and past it), the trunk bent out over a front leg that is bracing straight,
+  // the hand well out in front of the head through its slot, the glove pulled in to the chest.
   const RELEASE: DeliveryPose = {
-    hip: -0.18, coil: -0.3, lean: p.flex, tilt: p.tilt, pelvis: [-0.02, 0.14, drive],
-    lead: land, pivot: [0.13, 0.06, Math.min(0.42, drive * 0.6)], ball: [0, 0, 0], glove: [-0.2, 0.98, drive + 0.22],
+    hip: -0.18, coil: -0.3, lean: p.flex, tilt: p.tilt, pelvis: [-0.02, 0.12, drive],
+    lead: land, pivot: [0.13, 0.06, Math.min(0.5, drive * 0.6)], ball: [0, 0, 0], glove: [0, 0, 0],
   };
   const dir = armDir(p.slot);
   {
     const S = shoulderOf(RELEASE);
     RELEASE.ball = [S[0] + dir[0] * RIG.wrist, S[1] + dir[1] * RIG.wrist, S[2] + dir[2] * RIG.wrist];
+    RELEASE.glove = tucked(RELEASE);
   }
 
-  // Follow-through: the arm finishes across the body (low for a high slot, around the waist for a low one).
+  // Layback, a few hundredths before: the trunk has turned to face the target and the arm is
+  // left behind, the elbow out at shoulder height and the forearm laid back behind it.
+  const LAYBACK: DeliveryPose = {
+    hip: -0.06, coil: 0.04, lean: p.flex * 0.45, tilt: p.tilt * 0.6, pelvis: [0, 0.13, drive * 0.94],
+    lead: land, pivot: [0.14, 0.05, Math.min(0.42, drive * 0.52)], ball: [0, 0, 0], glove: [0, 0, 0],
+  };
+  {
+    const S = shoulderOf(LAYBACK);
+    LAYBACK.ball = [S[0] + 0.06 + 0.26 * c, S[1] + 0.1 + 0.18 * s, S[2] - 0.25];
+    LAYBACK.glove = tucked(LAYBACK);
+  }
+
+  // Follow-through: the arm finishes across the body to the far knee, the trunk folds over the
+  // front leg, and the back leg comes up off the ground behind.
   const FOLLOW: DeliveryPose = {
-    hip: -0.45, coil: -0.4, lean: p.flex + 0.18, tilt: p.tilt * 0.5, pelvis: [-0.05, 0.12, drive + 0.07],
-    lead: land, pivot: [0.3, 0.12 + p.finish * 0.75, drive * 0.55 + 0.1],
-    ball: [mix(-0.5, -0.28, s), mix(0.95, 0.55, s), drive + mix(0.3, 0.42, s)],
-    glove: [-0.3, 1.0, drive + 0.1],
+    hip: -0.5, coil: -0.4, lean: p.flex + 0.22, tilt: p.tilt * 0.5, pelvis: [-0.05, 0.12, drive + 0.1],
+    lead: land, pivot: [0.16, 0.1 + p.finish * 0.6, drive * 0.5 + 0.06],
+    ball: [mix(-0.5, -0.3, s), mix(0.9, 0.5, s), land[2] + mix(0.05, 0.12, s)],
+    glove: [-0.32, 1.02, drive + 0.08],
   };
+  // The back leg swings round and comes down beside the front one...
   const FINISH: DeliveryPose = {
-    hip: -0.35, coil: -0.25, lean: p.flex * 0.75, tilt: 0.05, pelvis: [-0.02, 0.1, drive + 0.12],
-    lead: land, pivot: [0.34, 0.05 + p.finish * 0.45, p.stride * 0.75],
-    ball: [-0.2, 0.62, drive + 0.36], glove: [-0.25, 1.0, drive + 0.24],
+    hip: -0.3, coil: -0.2, lean: p.flex * 0.7, tilt: 0.05, pelvis: [0.02, 0.08, p.stride - 0.22],
+    lead: land, pivot: [0.36, 0.06 + p.finish * 0.12, p.stride - 0.08],
+    ball: [-0.12, 0.7, p.stride + 0.12], glove: [-0.26, 1.0, p.stride + 0.2],
   };
+  // ...square to the target in a fielding position, glove up...
   const LAND: DeliveryPose = {
-    hip: 0, coil: 0, lean: 0.2, tilt: 0, pelvis: [0.08, 0.08, p.stride - 0.1],
-    lead: land, pivot: [0.32, 0, p.stride - 0.08],
-    ball: [0.24, 0.85, p.stride + 0.05], glove: [-0.2, 1.1, p.stride + 0.25],
+    hip: 0, coil: 0, lean: 0.22, tilt: 0, pelvis: [0.1, 0.06, p.stride - 0.14],
+    lead: land, pivot: [0.36, 0, p.stride - 0.1],
+    ball: [0.24, 0.88, p.stride + 0.08], glove: [-0.18, 1.08, p.stride + 0.26],
+  };
+  // ...then a jog back to where they threw from: back foot, front foot, back foot.
+  const S = p.stride;
+  const hands = (z: number): Pick<DeliveryPose, 'ball' | 'glove'> => ({ ball: [0.19, 0.94, z + 0.16], glove: [-0.15, 1.02, z + 0.2] });
+  const STEP_A: DeliveryPose = { hip: 0.05, coil: 0, lean: 0.12, tilt: 0, pelvis: [0.05, 0.04, S * 0.74], lead: land, pivot: [0.22, 0.1, S * 0.68], ...hands(S * 0.74) };
+  const DOWN_A: DeliveryPose = { ...STEP_A, pelvis: [0.03, 0.04, S * 0.56], pivot: [0.17, 0, S * 0.48], ...hands(S * 0.56) };
+  const STEP_B: DeliveryPose = { ...DOWN_A, lean: 0.08, pelvis: [0.01, 0.03, S * 0.36], lead: [-0.13, 0.1, S * 0.5], ...hands(S * 0.36) };
+  const DOWN_B: DeliveryPose = { ...STEP_B, pelvis: [0, 0.02, S * 0.2], lead: [-0.15, 0, 0.1], ...hands(S * 0.2) };
+  const STEP_C: DeliveryPose = { ...DOWN_B, lean: 0.05, pelvis: [0, 0.02, 0.08], pivot: [0.16, 0.08, S * 0.24], ...hands(0.08) };
+  const HOME: DeliveryPose = {
+    hip: 0.06, coil: 0, lean: 0.04, tilt: 0, pelvis: [0, 0.01, 0],
+    lead: [-0.15, 0, 0.07], pivot: [0.15, 0, -0.03], ...hands(0),
   };
   const delivery: Key[] = [
     { t: 0, pose: TOP },
     { t: 0.1, pose: DRIVE },
     { t: 0.2, pose: PLANT },
+    { t: LAYBACK_TIME, pose: LAYBACK },
     { t: RELEASE_TIME, pose: RELEASE },
     { t: 0.42, pose: FOLLOW },
     { t: 0.62, pose: FINISH },
-    { t: 0.82, pose: LAND },
-    { t: DELIVERY_LENGTH, pose: { ...LAND, lean: 0.08, pelvis: [0.08, 0.04, p.stride - 0.1] } },
+    { t: 0.8, pose: LAND },
+    { t: 0.86, pose: { ...LAND, lean: 0.18, pelvis: [0.09, 0.05, p.stride - 0.16] } },
+    { t: 0.96, pose: STEP_A },
+    { t: 1.06, pose: DOWN_A },
+    { t: 1.16, pose: STEP_B },
+    { t: 1.26, pose: DOWN_B },
+    { t: 1.37, pose: STEP_C },
+    { t: DELIVERY_LENGTH, pose: HOME },
   ];
   return { windup, delivery };
 }
 
-/** Direction of the throwing arm at release for an arm slot (pitch frame). */
+/**
+ * Direction of the throwing arm at release for an arm slot (pitch frame). The hand lets go
+ * well out in front of the head: about as far forward of the shoulder as it is up (over the
+ * top) or out to the side (sidearm).
+ */
 function armDir(slot: number): Vec3 {
   const s = Math.sin(slot * DEG), c = Math.cos(slot * DEG);
-  const d: Vec3 = [0.82 * c + 0.06, 0.82 * s, 0.57];
+  const d: Vec3 = [0.75 * c + 0.05, 0.62 * s + 0.04, 0.8];
   const l = Math.hypot(d[0], d[1], d[2]);
   return [d[0] / l, d[1] / l, d[2] / l];
+}
+
+/** The glove pulled in to the chest (by the glove-side armpit), for the moment the arm comes through. */
+function tucked(p: DeliveryPose): Vec3 {
+  const G = shoulderOf(p, true), T = shoulderOf(p);
+  const [fx, fz] = fwdOf(p.hip + p.coil);
+  return [mix(T[0], G[0], 0.85) + fx * 0.2, mix(T[1], G[1], 0.5) - 0.2, mix(T[2], G[2], 0.85) + fz * 0.2];
 }
 
 function build(def: WindupDef): Windup {
@@ -370,25 +428,27 @@ const DEFS: WindupDef[] = [
     // The house delivery: compact, from the set. Coach throws like this.
     id: 0,
     blurb: 'Compact and easy, from the set',
-    params: { tempo: 0.75, hands: 'chest', kick: 0.42, kickReach: 0.3, kickTuck: 0, turn: 1.3, coil: 0.1, layback: 0.02, stride: 0.86, closed: 0, drive: 0.5, slot: 55, tilt: 0.18, flex: 0.45, finish: 0.3 },
+    params: { tempo: 0.75, hands: 'chest', kick: 0.42, kickReach: 0.3, kickTuck: 0, turn: 1.3, coil: 0.1, layback: 0.02, stride: 1.05, closed: 0, drive: 0.62, slot: 55, tilt: 0.18, flex: 0.45, finish: 0.3 },
   },
   {
     id: 34,
     blurb: 'Towering leg kick, over the top',
-    params: { tempo: 1.05, hands: 'overhead', kick: 0.94, kickReach: 0.2, kickTuck: 0.13, turn: 1.62, coil: 0.22, layback: 0.1, stride: 1.02, closed: 0.02, drive: 0.6, slot: 66, tilt: 0.3, flex: 0.62, finish: 0.55 },
+    params: { tempo: 1.05, hands: 'overhead', kick: 0.94, kickReach: 0.2, kickTuck: 0.13, turn: 1.62, coil: 0.22, layback: 0.1, stride: 1.28, closed: 0.02, drive: 0.76, slot: 66, tilt: 0.3, flex: 0.62, finish: 0.55 },
     // Standing tall at the top, knee by the front shoulder, hands tucked under the chin.
     windupKeys: [
+      // (The hands go to the top of the cap, elbows out: not a full stretch.)
+      { t: 0.5, pose: { ball: [0.05, 1.9, 0.06], glove: [-0.03, 1.92, 0.08] } },
       { t: 1, pose: { pelvis: [0.1, -0.02, -0.02] } },
     ],
     // Drop and drive: sit deep on the back leg before the stride.
     deliveryKeys: [
-      { t: 0.1, pose: { pelvis: [0.06, 0.2, 0.18] } },
+      { t: 0.1, pose: { pelvis: [0.06, 0.22, 0.24] } },
     ],
   },
   {
     id: 16,
     blurb: 'Hands high, back to the target, then unwind',
-    params: { tempo: 1.3, hands: 'overhead', kick: 0.72, kickReach: 0.26, kickTuck: 0.16, turn: 2.5, coil: 0.35, layback: 0.04, stride: 0.98, closed: 0.05, drive: 0.56, slot: 76, tilt: 0.4, flex: 0.58, finish: 0.42 },
+    params: { tempo: 1.3, hands: 'overhead', kick: 0.72, kickReach: 0.26, kickTuck: 0.16, turn: 2.5, coil: 0.35, layback: 0.04, stride: 1.22, closed: 0.05, drive: 0.72, slot: 76, tilt: 0.4, flex: 0.58, finish: 0.42 },
     windupKeys: [
       // A long reach for the sky, up on the toes, back arched...
       { t: 0.5, pose: { ball: [0.02, 2.2, -0.08], glove: [-0.04, 2.22, -0.06], lean: -0.2, pelvis: [0, -0.04, -0.08] } },
@@ -398,8 +458,8 @@ const DEFS: WindupDef[] = [
   },
   {
     id: 35,
-    blurb: 'Sky-high kick, hands overhead, a low sweeping sling',
-    params: { tempo: 0.9, hands: 'chest', kick: 1.0, kickReach: 0.42, kickTuck: 0.04, turn: 1.95, coil: 0.2, layback: 0.18, stride: 0.96, closed: 0.2, drive: 0.52, slot: 28, tilt: 0, flex: 0.5, finish: 0.5 },
+    blurb: 'Sky-high kick, hands overhead, a sweeping sling',
+    params: { tempo: 0.9, hands: 'chest', kick: 1.0, kickReach: 0.42, kickTuck: 0.04, turn: 1.95, coil: 0.2, layback: 0.18, stride: 1.18, closed: 0.2, drive: 0.68, slot: 36, tilt: 0, flex: 0.5, finish: 0.5 },
     windupKeys: [
       // The hands go up as the knee does: knee to the chest, glove over the head.
       { t: 0.7, pose: { ball: [0.2, 1.62, 0.04], glove: [0.22, 1.66, 0.06] } },
@@ -407,16 +467,18 @@ const DEFS: WindupDef[] = [
     ],
     // Slings across the body and falls away to the glove side.
     deliveryKeys: [
-      { t: 0.42, pose: { pelvis: [-0.2, 0.12, 0.57], hip: -0.75 } },
-      { t: 0.62, pose: { pelvis: [-0.26, 0.1, 0.62], hip: -0.85, pivot: [0.2, 0.26, 0.86] } },
-      { t: 0.82, pose: { pelvis: [-0.2, 0.08, 0.8], lead: [-0.1, 0, 0.96], pivot: [-0.42, 0, 0.9] } },
-      { t: 1, pose: { pelvis: [-0.2, 0.04, 0.8], lead: [-0.1, 0, 0.96], pivot: [-0.42, 0, 0.9] } },
+      { t: 0.42, pose: { pelvis: [-0.2, 0.12, 0.76], hip: -0.75 } },
+      { t: 0.62, pose: { pelvis: [-0.3, 0.1, 0.86], hip: -0.9, pivot: [0.05, 0.24, 1.0] } },
+      { t: 0.8, pose: { pelvis: [-0.3, 0.08, 0.98], hip: -0.4, pivot: [-0.46, 0, 1.1] } },
+      { t: 0.86, pose: { pelvis: [-0.28, 0.06, 0.96], hip: -0.3, pivot: [-0.46, 0, 1.1] } },
+      { t: 0.96, pose: { pelvis: [-0.18, 0.04, 0.86], pivot: [-0.26, 0.1, 0.8] } },
+      { t: 1.06, pose: { pelvis: [-0.04, 0.04, 0.66] } },
     ],
   },
   {
     id: 32,
     blurb: 'Tall and smooth, straight over the top',
-    params: { tempo: 1.1, hands: 'overhead', kick: 0.82, kickReach: 0.3, kickTuck: 0.05, turn: 1.5, coil: 0.15, layback: 0.22, stride: 1.1, closed: 0, drive: 0.64, slot: 85, tilt: 0.5, flex: 0.7, finish: 0.6 },
+    params: { tempo: 1.1, hands: 'overhead', kick: 0.82, kickReach: 0.3, kickTuck: 0.05, turn: 1.5, coil: 0.15, layback: 0.38, stride: 1.36, closed: 0, drive: 0.8, slot: 85, tilt: 0.5, flex: 0.6, finish: 0.6 },
     deliveryKeys: [
       // A long reach back, the front shoulder riding high...
       { t: 0.1, pose: { ball: [0.18, 0.62, -0.5], glove: [-0.05, 1.5, 0.78], tilt: -0.3 } },
@@ -427,25 +489,25 @@ const DEFS: WindupDef[] = [
   {
     id: 51,
     blurb: 'Long stride, low arm, slung from the side',
-    params: { tempo: 1.0, hands: 'belt', kick: 0.55, kickReach: 0.34, kickTuck: 0.02, turn: 1.55, coil: 0.22, layback: 0.03, stride: 1.2, closed: 0.26, drive: 0.64, slot: 16, tilt: -0.12, flex: 0.36, finish: 0.22 },
+    params: { tempo: 1.0, hands: 'belt', kick: 0.55, kickReach: 0.34, kickTuck: 0.02, turn: 1.55, coil: 0.22, layback: 0.03, stride: 1.34, closed: 0.22, drive: 0.78, slot: 24, tilt: -0.12, flex: 0.36, finish: 0.22 },
     // Across the body and off toward the glove side.
     deliveryKeys: [
-      { t: 0.42, pose: { pelvis: [-0.16, 0.12, 0.7], hip: -0.7 } },
-      { t: 0.62, pose: { pelvis: [-0.22, 0.1, 0.76], hip: -0.7 } },
+      { t: 0.42, pose: { pelvis: [-0.16, 0.12, 0.86], hip: -0.7 } },
+      { t: 0.62, pose: { pelvis: [-0.24, 0.08, 0.98], hip: -0.7 } },
     ],
   },
   {
     id: 55,
     blurb: 'Deep load, a giant stride, everything at once',
-    params: { tempo: 0.85, hands: 'chest', kick: 0.8, kickReach: 0.22, kickTuck: 0.14, turn: 1.95, coil: 0.45, layback: 0.3, stride: 1.3, closed: 0, drive: 0.78, slot: 78, tilt: 0.46, flex: 0.74, finish: 0.95 },
+    params: { tempo: 0.85, hands: 'chest', kick: 0.8, kickReach: 0.22, kickTuck: 0.14, turn: 1.95, coil: 0.45, layback: 0.3, stride: 1.58, closed: 0, drive: 0.96, slot: 78, tilt: 0.46, flex: 0.74, finish: 0.95 },
     deliveryKeys: [
       // The arm hangs straight down behind while the glove points at the sky...
-      { t: 0.1, pose: { pelvis: [0.05, 0.22, 0.3], ball: [0.2, 0.46, -0.1], glove: [-0.02, 1.64, 0.8], tilt: -0.38, coil: 0.6 } },
+      { t: 0.1, pose: { pelvis: [0.05, 0.22, 0.36], ball: [0.2, 0.46, -0.1], glove: [-0.02, 1.64, 0.9], tilt: -0.38, coil: 0.6 } },
       // ...the stride goes on and on...
-      { t: 0.2, pose: { pelvis: [0.02, 0.3, 0.6] } },
+      { t: 0.2, pose: { pelvis: [0.02, 0.3, 0.74] } },
       // ...and the back leg comes over the top after it.
-      { t: 0.42, pose: { pivot: [0.25, 1.02, 0.78] } },
-      { t: 0.62, pose: { pivot: [0.4, 0.5, 1.12], pelvis: [-0.1, 0.12, 0.92] } },
+      { t: 0.42, pose: { pivot: [0.25, 1.0, 0.98] } },
+      { t: 0.62, pose: { pivot: [0.42, 0.2, 1.5], pelvis: [-0.06, 0.12, 1.26] } },
     ],
   },
 ];

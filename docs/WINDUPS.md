@@ -35,11 +35,11 @@ an id the library no longer has falls back to the default on its own.
 
 | Preset | The mechanics it is built on |
 |---|---|
-| #34 | Full overhead windup; a towering leg kick with the knee by the front shoulder, standing tall; drop-and-drive; high three-quarter slot; deep finish. |
+| #34 | Full windup with the hands to the top of the cap (elbows out, not a full stretch); a towering leg kick with the knee by the front shoulder, standing tall; drop-and-drive; high three-quarter slot; deep finish. |
 | #16 | A long overhead stretch on the toes; turning the back to the target and a beat of stillness there; a fast unwind; over-the-top slot. |
-| #35 | Hands going up over the head as the knee comes to the chest, foot flared out; closed stride; a low sweeping sling; falling off to the glove side. |
-| #32 | Full overhead windup; smooth high kick with a lean back; a long reach back with the front shoulder high; straight over the top with the trunk tilted; long stride. |
-| #51 | Hands low, a modest kick; a long, closed stride; a low, wide arm slung from the side; finishing across the body. |
+| #35 | Hands going up over the head as the knee comes to the chest, foot flared out; closed stride; a sweeping three-quarter sling; falling off hard to the glove side, the back foot landing over there. |
+| #32 | Full overhead windup; smooth high kick with a pronounced lean back, away from the target; a long reach back with the front shoulder high; straight over the top with the trunk tilted; long stride. |
+| #51 | Hands low, a modest kick; a long, closed stride; a low three-quarter arm, wide and slung from the side; finishing across the body. |
 | #55 | Strong counter-rotation and layback at the top; the arm hanging straight down behind while the glove points up; a giant stride and deep drop; over the top; the back leg whipping over in the finish. |
 
 `#00` (the house delivery, also the fallback) is original and has no reference.
@@ -62,8 +62,9 @@ A delivery is two clips:
 1. **The windup**, parameterised 0..1. It runs at the preset's `tempo` while
    the player holds their aim, rests at the top (1) until they let go, and
    comes back down if they ease off.
-2. **The delivery**, in seconds from letting go: drive, plant, **release at
-   `RELEASE_TIME`**, follow-through, recovery.
+2. **The delivery**, in seconds from letting go: drive, plant, layback,
+   **release at `RELEASE_TIME`**, follow-through, the back leg coming round
+   to a fielding position, and a jog back to the spot (`DELIVERY_LENGTH`).
 
 Each key is a `DeliveryPose`: hip turn, shoulder coil, trunk lean and tilt,
 and positions for the pelvis, both feet, the throwing hand and the glove. The
@@ -93,6 +94,27 @@ existing time overrides parts of the generated pose; a key at a new time is
 inserted (starting from the curve, or from the key at `from`, which is how a
 pose is held). Use them for the moments that make a delivery recognisable; let
 the generator do the rest.
+
+A foot that is in the same place at two neighbouring keys is planted and stays
+exactly there between them; give a stepping foot a key in the air (a few
+centimetres up) between where it lifts and where it lands.
+
+## What every delivery does (the mechanics)
+
+The generator builds every preset on the phases of a real pitch, and
+`tests/unit/windups.test.ts` ("the mechanics are a real pitcher's") holds the
+whole library to them:
+
+| Phase | What happens |
+|---|---|
+| Balance point (the top) | Side-on or further, knee up, hands together at the chest, standing tall over the back leg. |
+| Stride | The hands break; the glove arm reaches for the target while the ball hand swings down and back; the hips lead. Stride length is 60–95% of the body's height. |
+| Foot strike | Front foot down, hips opening, shoulders still closed, the arm cocked up behind with the elbow at shoulder height. |
+| Layback (0.035 s before release) | The trunk has turned to face the target and the arm is left behind it: elbow out at shoulder height, forearm laid back, the ball behind the shoulder. |
+| Release | Out in front of the head (further forward of the shoulder than it is above it) and out over the front foot; the trunk bent forward and tilted to the glove side for the slot; the front leg bracing; the glove pulled in to the chest. |
+| Follow-through | The arm finishes across the body to the far knee, the trunk folds over the front leg, the back leg comes up off the ground behind. |
+| Landing | The back leg comes round and down beside the front one: square to the target, both feet on the grass, glove up, ready to field. |
+| Recovery | A jog back to the spot (back foot, front foot, back foot), so the body is where it started when the clip hands it back. Planted feet never slide. |
 
 ## Adding a windup
 
