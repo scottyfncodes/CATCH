@@ -31,30 +31,35 @@ interface Item {
   name: string;
   /** The streak that earns it (0 = yours from the start). */
   at: number;
+  /** How it shows in the look editor, when one colour won't do (a CSS background). */
+  swatch?: string;
 }
-export interface Hat extends Item { shape: 'none' | 'cap' | 'back' | 'visor' | 'bucket' | 'beanie' | 'straw'; color: string; accent?: string }
-export interface Glove extends Item { leather: string; dark: string; pocket: string; lace: string }
-export interface Top extends Item { color: string; pattern: 'plain' | 'stripes' | 'raglan' | 'block'; accent?: string }
+// What you start with is ordinary. What you earn is not: the further the
+// streak, the more ridiculous the reward. (Still only for looking at: none of
+// it changes how anyone throws or catches.)
+export interface Hat extends Item { shape: 'none' | 'cap' | 'back' | 'propeller' | 'duck' | 'cowboy' | 'crown'; color: string; accent?: string }
+export interface Glove extends Item { leather: string; dark: string; pocket: string; lace: string; extra?: 'eyes' | 'shark' | 'disco' | 'fire' }
+export interface Top extends Item { color: string; pattern: 'plain' | 'hawaiian' | 'tux' | 'hero' | 'robe'; accent?: string }
 
 export const HATS: Hat[] = [
-  { name: 'Navy cap', at: 0, shape: 'cap', color: '#2d2f63' },
-  { name: 'Green cap', at: 0, shape: 'cap', color: '#2f4f3a' },
-  { name: 'Red cap', at: 0, shape: 'cap', color: '#8e2f2a' },
-  { name: 'Backwards', at: 0, shape: 'back', color: '#3a3a3a' },
+  { name: 'Navy cap', at: 0, shape: 'cap', color: '#26295a', accent: '#efe6d2' },
+  { name: 'Green cap', at: 0, shape: 'cap', color: '#2f4f3a', accent: '#e9dcc0' },
+  { name: 'Red cap', at: 0, shape: 'cap', color: '#8e2f2a', accent: '#efe6d2' },
+  { name: 'Backwards', at: 0, shape: 'back', color: '#3a3a3a', accent: '#d9a92b' },
   { name: 'No hat', at: 0, shape: 'none', color: '#000000' },
-  { name: 'Bucket hat', at: 25, shape: 'bucket', color: '#d8c79a' },
-  { name: 'Beanie', at: 250, shape: 'beanie', color: '#b5532f', accent: '#e9dcc0' },
-  { name: 'Straw hat', at: 1000, shape: 'straw', color: '#e2c27a', accent: '#5a3417' },
-  { name: 'Gold cap', at: 3000, shape: 'cap', color: '#d9a92b', accent: '#fff0c2' },
+  { name: 'Propeller beanie', at: 25, shape: 'propeller', color: '#d8402f', swatch: 'conic-gradient(#d8402f 0 25%, #f2c230 0 50%, #2f6fd8 0 75%, #3b9b4a 0)' },
+  { name: 'Rubber duck', at: 250, shape: 'duck', color: '#ffd23a', swatch: 'radial-gradient(circle at 62% 38%, #ff8a1e 0 16%, #ffd23a 18%)' },
+  { name: 'Ten-gallon hat', at: 1000, shape: 'cowboy', color: '#a8743f', accent: '#3b2618', swatch: 'radial-gradient(ellipse 60% 40% at 50% 55%, #a8743f 0 55%, #3b2618 57% 66%, #c99a64 68%)' },
+  { name: 'Crown', at: 3000, shape: 'crown', color: '#e8b923', accent: '#b3122a', swatch: 'conic-gradient(#fff3b0, #e8b923, #a8770f, #e8b923, #fff3b0)' },
 ];
 
 export const GLOVES: Glove[] = [
   { name: 'Tan', at: 0, leather: '#b97a40', dark: '#8d5629', pocket: '#7a4720', lace: '#5a3417' },
   { name: 'Chestnut', at: 0, leather: '#7d4a26', dark: '#5f3519', pocket: '#4b2912', lace: '#2f1a0c' },
-  { name: 'Black', at: 10, leather: '#2b2927', dark: '#1c1a19', pocket: '#141312', lace: '#8d5629' },
-  { name: 'Red and cream', at: 100, leather: '#a8322a', dark: '#e9dcc0', pocket: '#7a231d', lace: '#e9dcc0' },
-  { name: 'Blue', at: 750, leather: '#2f5f9a', dark: '#1f3f6b', pocket: '#172f52', lace: '#d9c9a0' },
-  { name: 'Gold', at: 2000, leather: '#d9a92b', dark: '#a87c16', pocket: '#7d5b10', lace: '#fff0c2' },
+  { name: 'Googly eyes', at: 10, leather: '#c48a4c', dark: '#97632f', pocket: '#7a4720', lace: '#5a3417', extra: 'eyes', swatch: 'radial-gradient(circle at 36% 50%, #111 0 12%, #fff 14% 30%, transparent 32%), radial-gradient(circle at 70% 46%, #111 0 10%, #fff 12% 26%, #c48a4c 28%)' },
+  { name: 'Shark', at: 100, leather: '#7f8c96', dark: '#5f6b74', pocket: '#d9737a', lace: '#f4f1ea', extra: 'shark', swatch: 'linear-gradient(#7f8c96 0 55%, #f4f1ea 55% 62%, #d9737a 62%)' },
+  { name: 'Disco ball', at: 750, leather: '#dfe3e8', dark: '#b9c0c8', pocket: '#cfd5dc', lace: '#ffffff', extra: 'disco', swatch: 'conic-gradient(#fff, #9aa3ad, #fff, #c9d0d8, #fff, #9aa3ad, #fff)' },
+  { name: 'On fire', at: 2000, leather: '#2e231d', dark: '#1c1511', pocket: '#3a2a20', lace: '#ff8a2a', extra: 'fire', swatch: 'radial-gradient(circle at 50% 70%, #fff3b0 0 15%, #ffb02e 30%, #ff4d1f 55%, #2e231d 75%)' },
 ];
 
 export const TOPS: Top[] = [
@@ -64,10 +69,10 @@ export const TOPS: Top[] = [
   { name: 'Green tee', at: 0, color: '#5f8d4e', pattern: 'plain' },
   { name: 'Cream tee', at: 0, color: '#efe6d2', pattern: 'plain' },
   { name: 'Grey tee', at: 0, color: '#8d99ae', pattern: 'plain' },
-  { name: 'Striped tee', at: 50, color: '#efe6d2', pattern: 'stripes', accent: '#b23a48' },
-  { name: 'Raglan', at: 500, color: '#efe6d2', pattern: 'raglan', accent: '#2f4f3a' },
-  { name: 'Two-tone', at: 1500, color: '#e07a3f', pattern: 'block', accent: '#2f3542' },
-  { name: 'Gold jacket', at: 5000, color: '#d9a92b', pattern: 'raglan', accent: '#2b2927' },
+  { name: 'Hawaiian shirt and lei', at: 50, color: '#e2553a', pattern: 'hawaiian', accent: '#ffd25a', swatch: 'radial-gradient(circle at 30% 35%, #ffd25a 0 14%, transparent 16%), radial-gradient(circle at 68% 66%, #ff9ac1 0 14%, transparent 16%), #e2553a' },
+  { name: 'Tuxedo with tails', at: 500, color: '#17171b', pattern: 'tux', accent: '#d81e3a', swatch: 'linear-gradient(90deg, #17171b 0 34%, #f7f4ee 34% 66%, #17171b 66%)' },
+  { name: 'Superhero cape', at: 1500, color: '#2456c9', pattern: 'hero', accent: '#e43a2f', swatch: 'linear-gradient(135deg, #2456c9 0 50%, #e43a2f 50%)' },
+  { name: 'Royal robe', at: 5000, color: '#8e1626', pattern: 'robe', accent: '#f6f3ec', swatch: 'radial-gradient(circle at 30% 30%, #111 0 6%, transparent 7%), radial-gradient(circle at 65% 60%, #111 0 6%, transparent 7%), linear-gradient(#f6f3ec 0 40%, #8e1626 40%)' },
 ];
 
 const TABLE = { hat: HATS, glove: GLOVES, top: TOPS } as const;

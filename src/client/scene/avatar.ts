@@ -12,20 +12,21 @@ import { DELIVERY_LENGTH, type DeliveryPose, RELEASE_TIME, type Windup, delivery
 import { BUILDS, GLOVES, HAIR_COLORS, HATS, type Hat, PANTS, S, SKINS, type Style, TOPS } from '../../shared/style';
 import { buildGlove, buildHand, setGloveClosure } from './gear';
 import { rim } from './look';
-import { ELBOW, KNEE, SHOULDER, collarGeo, eyesGeo, headGeo, jointGeo, limbs, neckGeo, shoeGeo, torsoBand, torsoGeo } from './body';
+import { type Tick, type WearFrame, buildHat, decorateGlove, dress, hatCovers } from './wear';
+import { ELBOW, KNEE, SHOULDER, collarGeo, eyesGeo, headGeo, jointGeo, limbs, neckGeo, shoeGeo, torsoGeo } from './body';
 
-type Mat = (c: string, r?: number) => THREE.MeshStandardMaterial;
 
 /** Hair, drawn so it sits under whatever is on the head. */
 function buildHair(kind: number, mat: THREE.Material, hat: Hat['shape']): THREE.Group {
   const g = new THREE.Group();
   if (kind === 0) return g;
-  const covered = hat !== 'none' && hat !== 'visor';
+  const covered = hatCovers(hat);
   // A close crop over the top and back of the head (a hat hides the top of it).
   // (Round enough, and far enough off the skull, that the scalp never shows through its facets.)
   const crop = new THREE.Mesh(new THREE.SphereGeometry(0.119, 22, 12, 0, Math.PI * 2, 0, Math.PI * (covered ? 0.62 : 0.56)), mat);
-  crop.scale.set(0.94, 1.03, 1.02);
-  crop.position.set(0, 0.022, 0.006);
+  // (Tall enough over the crown that the top of the skull never shows through, tipped back or not.)
+  crop.scale.set(0.94, 1.08, 1.02);
+  crop.position.set(0, 0.018, 0.006);
   crop.rotation.x = 0.32;
   g.add(crop);
   const ball = (r: number, x: number, y: number, z: number) => { const b = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), mat); b.position.set(x, y, z); g.add(b); };
@@ -49,57 +50,6 @@ function buildHair(kind: number, mat: THREE.Material, hat: Hat['shape']): THREE.
   } else if (kind === 5) {
     // Bun: high on the back of the head.
     ball(0.05, 0, covered ? 0.02 : 0.085, covered ? 0.125 : 0.095);
-  }
-  return g;
-}
-
-/** A hat. The brim of a cap is the clearest "where are they looking" cue, so most have one. */
-function buildHat(hat: Hat, mat: Mat): THREE.Group {
-  const g = new THREE.Group();
-  if (hat.shape === 'none') return g;
-  const main = mat(hat.color, 0.7);
-  const accent = hat.accent ? mat(hat.accent, 0.7) : main;
-  const dome = (r: number, sy: number) => { const d = new THREE.Mesh(new THREE.SphereGeometry(r, 22, 8, 0, Math.PI * 2, 0, Math.PI / 2), main); d.position.y = 0.045; d.scale.set(0.95, sy, 1.02); return d; };
-  const brim = (mt: THREE.Material) => {
-    const b = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.012, 16, 1, false, -Math.PI / 2, Math.PI), mt);
-    b.scale.set(1.05, 1, 1.25);
-    b.position.set(0, 0.05, -0.08);
-    b.rotation.x = 0.12;
-    return b;
-  };
-  if (hat.shape === 'cap' || hat.shape === 'back') {
-    g.add(dome(0.123, 0.85), brim(accent));
-    if (hat.accent) { const button = new THREE.Mesh(new THREE.SphereGeometry(0.014, 8, 6), accent); button.position.y = 0.146; g.add(button); }
-    if (hat.shape === 'back') g.rotation.y = Math.PI;
-  } else if (hat.shape === 'visor') {
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.121, 0.121, 0.035, 18, 1, true), main);
-    band.scale.set(0.95, 1, 1.02);
-    band.position.y = 0.06;
-    g.add(band, brim(main));
-  } else if (hat.shape === 'bucket') {
-    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.105, 0.12, 0.085, 16), main);
-    crown.position.y = 0.095;
-    const skirt = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.185, 0.05, 18, 1, true), main);
-    skirt.position.y = 0.03;
-    (skirt.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
-    g.add(crown, skirt);
-  } else if (hat.shape === 'beanie') {
-    const d = dome(0.126, 1.02);
-    d.position.y = 0.03;
-    const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.1275, 0.1275, 0.04, 18, 1, true), accent);
-    cuff.scale.set(0.95, 1, 1.02);
-    cuff.position.y = 0.045;
-    const bobble = new THREE.Mesh(new THREE.SphereGeometry(0.026, 8, 6), accent);
-    bobble.position.y = 0.165;
-    g.add(d, cuff, bobble);
-  } else if (hat.shape === 'straw') {
-    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.102, 0.12, 0.09, 18), main);
-    crown.position.y = 0.1;
-    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.235, 0.235, 0.012, 24), main);
-    disc.position.y = 0.055;
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.1205, 0.1175, 0.026, 18, 1, true), accent);
-    band.position.y = 0.072;
-    g.add(crown, disc, band);
   }
   return g;
 }
@@ -234,6 +184,9 @@ export class Avatar {
   /** World position of the eyes (first-person camera). */
   readonly eye = new THREE.Vector3();
   private recoil = 0;
+  /** Things worn that move (a propeller, googly pupils, flames, a cape): run once a frame, after the body is posed. */
+  private ticks: Tick[] = [];
+  private wearFrame: WearFrame | null = null;
   /** How big the windup is being drawn right now (1 = as written). */
   private big = 1;
   private recoilDir = new THREE.Vector3();
@@ -261,8 +214,7 @@ export class Avatar {
     // out of the way (and keep casting your shadow on the grass).
     const core = (c: string, r = 0.8) => { const x = m(c, r); this.coreMats.push(x); return x; };
     const shirtC = core(top.color), skinC = core(skinHex, 0.6);
-    // A raglan's sleeves are the other colour.
-    const sleeveHex = top.pattern === 'raglan' && top.accent ? top.accent : top.color;
+    const sleeveHex = top.color;
     this.bodyYaw = facing;
     this.windup = getWindup(windup);
 
@@ -292,23 +244,17 @@ export class Avatar {
     this.chest.scale.set(1.18 * w, 1, 0.7 * w);
     this.chest.position.y = 0.3;
     this.torso.add(this.chest);
-    if (top.accent && top.pattern !== 'raglan') {
-      // Stripes are two bands round the chest; a two-tone is one deep one round the waist.
-      const accent = core(top.accent);
-      const bands = top.pattern === 'stripes' ? [[0.37, 0.045], [0.27, 0.045]] : [[0.112, 0.266]];
-      for (const [y, h] of bands) {
-        const band = new THREE.Mesh(torsoBand(y, h), accent);
-        band.scale.set(1.18 * w, 1, 0.7 * w);
-        this.torso.add(band);
-      }
-    }
+    // Anything that isn't a plain tee: the print, and whatever comes with it (a lei, tails, a cape, a robe).
+    const outfit = dress(top, this.torso, shirtC, core, w);
+    this.ticks.push(...outfit.ticks);
     this.shoulderL.position.copy(SHOULDER_L);
     this.shoulderR.position.copy(SHOULDER_R);
     this.torso.add(this.shoulderL, this.shoulderR);
     const shoulderMat = core(sleeveHex);
+    const sleeveMats: THREE.MeshStandardMaterial[] = [shoulderMat];
     for (const sh of [this.shoulderL, this.shoulderR]) sh.add(joint(shoulderMat, SHOULDER * w));
     // A ribbed collar, a shade deeper than the shirt (or in its second colour).
-    const collar = new THREE.Mesh(collarGeo(), core(top.accent ?? `#${new THREE.Color(top.color).multiplyScalar(0.8).getHexString()}`));
+    const collar = new THREE.Mesh(collarGeo(), core(outfit.collar));
     collar.position.y = 0.584;
     this.torso.add(collar);
     const neck = new THREE.Mesh(neckGeo(), skinC);
@@ -322,7 +268,9 @@ export class Avatar {
     // A head with a jaw, a nose and ears (one mesh), and eyes.
     this.head.add(new THREE.Mesh(headGeo(), skinC), new THREE.Mesh(eyesGeo(), core('#2b1d17', 0.35)));
     this.head.add(buildHair(style[S.hair], core(HAIR_COLORS[style[S.hairColor]], 0.9), hat.shape));
-    this.head.add(buildHat(hat, core));
+    const worn = buildHat(hat, core);
+    this.head.add(worn.group);
+    if (worn.tick) this.ticks.push(worn.tick);
 
     // Arms live in world space (IK each frame).
     // In first person the throwing arm's sleeve fades with the head and chest (its
@@ -332,10 +280,16 @@ export class Avatar {
     this.sleeveSkin = m(skinHex, 0.58);
     // An upper arm is a short sleeve with the arm coming out of it.
     const upper = (cloth: THREE.Material, arm: THREE.Material) => { const g = new THREE.Group(); g.add(part(L.sleeve, cloth), part(L.upperArm, arm)); return g; };
-    this.armSegs = [upper(this.sleeve, this.sleeveSkin), part(L.forearm, skin), upper(core(sleeveHex), skinC), part(L.forearm, skin)];
+    const throwSleeve = core(sleeveHex);
+    sleeveMats.push(this.sleeve, throwSleeve);
+    // (A printed shirt's sleeves are printed too.)
+    if (outfit.sleeve) for (const sm of sleeveMats) { sm.map = outfit.sleeve; sm.color.set('#ffffff'); }
+    this.armSegs = [upper(this.sleeve, this.sleeveSkin), part(L.forearm, skin), upper(throwSleeve, skinC), part(L.forearm, skin)];
     this.elbows = [joint(skin, ELBOW * w), joint(skin, ELBOW * w)];
     // A regular glove, at its real size.
     this.glove = buildGlove(GLOVES[style[S.glove]]);
+    const decor = decorateGlove(this.glove, GLOVES[style[S.glove]]);
+    if (decor) this.ticks.push(decor);
     if (hand === 'L') this.glove.scale.x = -1;
     this.handMesh = buildHand(skinHex);
     this.handMesh.scale.setScalar(1.2);
@@ -345,6 +299,7 @@ export class Avatar {
     for (const o of [...this.armSegs, ...this.elbows, this.glove, this.handMesh, ...this.legSegs, ...this.knees, ...this.shoes]) o.matrixAutoUpdate = true;
 
     this.root.traverse((o) => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = true; });
+    if (worn.group.userData.noShadow) worn.group.traverse((o) => { o.castShadow = false; });
     this.feet = [0, 1].map(() => ({ pos: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), t: 1, stepping: false }));
     this.teleport(home, facing);
   }
@@ -888,6 +843,11 @@ export class Avatar {
     this.eye.y += 0.03;
     this.headTop.copy(this.eye).add(new THREE.Vector3(0, 0.27, 0));
     this.chest.getWorldPosition(this.chestPos);
+    if (this.ticks.length) {
+      const wf = (this.wearFrame ??= { dt, t: 0, speed: 0, vel: new THREE.Vector3(), torso: this.torso, glove: this.glove });
+      wf.dt = dt; wf.t = this.time; wf.vel.copy(this.vel); wf.speed = Math.hypot(this.vel.x, this.vel.z);
+      for (const t of this.ticks) t(wf);
+    }
   }
 
   dispose() {

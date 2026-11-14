@@ -120,3 +120,18 @@ describe('every look can be drawn', () => {
     }
   });
 });
+
+describe('what you earn', () => {
+  it('is ridiculous, and the further the streak the more so: everything you start with is ordinary, nothing you earn is', () => {
+    for (const h of HATS) expect(h.at === 0 ? ['cap', 'back', 'none'] : ['propeller', 'duck', 'cowboy', 'crown'], h.name).toContain(h.shape);
+    for (const g of GLOVES) expect(!!g.extra, g.name).toBe(g.at > 0);
+    for (const t of TOPS) expect(t.pattern === 'plain', t.name).toBe(t.at === 0);
+    // The biggest streaks earn the biggest things.
+    expect(rewardAt(3000)!.name).toBe('Crown');
+    expect(rewardAt(5000)!.name).toBe('Royal robe');
+  });
+
+  it('every earned thing has a swatch for the look editor that is more than one colour', () => {
+    for (const it of [...HATS, ...GLOVES, ...TOPS].filter((x) => x.at > 0)) expect(it.swatch, it.name).toMatch(/gradient/);
+  });
+});

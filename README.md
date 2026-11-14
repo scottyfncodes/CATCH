@@ -62,8 +62,13 @@ One thumb, no buttons on screen:
   skin, build, hair, and what you wear. Hats, gloves and tops are **earned**:
   one new thing, once, at 10, 25, 50, 100, 250, 500, 750, 1000, 1500, 2000,
   3000 and 5000 in a row, for everyone in the room when the streak gets
-  there. What you wear changes nothing about how you play: every glove is the
-  same regular-sized glove.
+  there. You start ordinary (a few baseball caps, a couple of gloves, plain
+  tees); what you earn is ridiculous, and more so the longer the streak: a
+  propeller beanie, googly eyes on your glove, a Hawaiian shirt and lei, a
+  shark glove, a rubber duck on your head, a tuxedo with tails, a disco-ball
+  glove, a ten-gallon hat, a superhero cape, a glove on fire, a crown, a royal
+  robe. What you wear changes nothing about how you play: every glove is the
+  same regular-sized glove, its pocket in the same place.
 - **Both jobs make the POP**: a perfect POP needs a throw that finds the pocket
   *and* a glove held still. The grade word under the streak tells you how it went.
 - Desktop: arrow keys / WASD also move you.
