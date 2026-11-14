@@ -288,6 +288,26 @@ describe('the avatar performs the delivery', () => {
     }
   });
 
+  it('holding the ball, standing: hands together in the set (the ball in the glove), and from there straight into the windup', () => {
+    for (const w of WINDUPS) {
+      const av = new Avatar([2, 0, 5], 0.4, 'R', defaultStyle('test'), w.id);
+      const base = { pose: { x: 2, z: 5, yaw: 0.4, g: [-0.3, 1.15, -0.45] as Vec3 }, look: null };
+      for (let i = 0; i < 120; i++) av.update(dt, { ...base, arm: Arm.Holding, charge: 0 });
+      // The ball hand is in the glove.
+      const gap = av.handBall.distanceTo(av.gloveWorldPos);
+      expect(gap, `#${w.id}: ball hand ${gap.toFixed(3)} m from the glove`).toBeLessThan(0.16);
+      // ...and nothing jumps when the windup starts from there.
+      let prev = av.handBall.clone(), prevG = av.gloveWorldPos.clone(), worst = 0;
+      const n = Math.round(w.params.tempo / dt);
+      for (let i = 1; i <= Math.min(n, 30); i++) {
+        av.update(dt, { ...base, arm: Arm.Windup, charge: i / n });
+        worst = Math.max(worst, av.handBall.distanceTo(prev), av.gloveWorldPos.distanceTo(prevG));
+        prev = av.handBall.clone(); prevG = av.gloveWorldPos.clone();
+      }
+      expect(worst, `#${w.id}: largest move of a hand in one frame going into the windup`).toBeLessThan(0.03);
+    }
+  });
+
   it('a remote delivery that starts late catches up, so its release lines up with the real one', () => {
     const av = new Avatar([0, 0, 0], 0, 'R', defaultStyle('test'), 16);
     const base = { pose: { x: 0, z: 0, yaw: 0, g: [0, 1.18, -0.4] as Vec3 }, look: null, lag: 0.11 };

@@ -174,6 +174,8 @@ export class Avatar {
   private recoverW = 0;
   /** How much the glove is carried along with the body while walking back (0..1). */
   private carryW = 0;
+  /** Holding the ball, standing: hands together in the set (0..1, eased). */
+  private holdW = 0;
   private coreMats: THREE.MeshStandardMaterial[] = [];
   private coreAlpha = 1;
   private sleeve!: THREE.MeshStandardMaterial;
@@ -627,6 +629,12 @@ export class Avatar {
     const gloveShoulder = this.hand === 'R' ? this.shoulderL : this.shoulderR;
     const throwShoulder = this.hand === 'R' ? this.shoulderR : this.shoulderL;
     const gp = new THREE.Vector3(gw[0], gw[1], gw[2]);
+    // Holding the ball, standing still: hands together in the set, the ball in the glove: the same
+    // pose the windup starts from, so it goes straight into it. (Not while moving, or about to catch.)
+    const set = windupPose(this.windup, 0);
+    const holdSet = arm === Arm.Holding && !throwing && speed < 0.3 && !f.ready && !f.gloved && this.transferT < 0 ? 1 : 0;
+    this.holdW += (holdSet - this.holdW) * (1 - Math.exp(-dt / 0.12));
+    if (this.holdW > 0.001) gp.lerp(pitch(set.glove), this.holdW);
     // While throwing, the glove belongs to the delivery (it leads the stride, then tucks).
     if (P && dw > 0) gp.lerp(pitch(P.glove), dw);
     // The arm gives with the ball: the glove rides back along its path and returns.
@@ -638,6 +646,8 @@ export class Avatar {
     const pocket = f.look && dw < 0.5 ? tmpB.set(f.look[0] - gp.x, f.look[1] - lift - gp.y, f.look[2] - gp.z).normalize().clone() : fwd.clone();
     if (pocket.dot(fwd) < -0.2) pocket.copy(fwd);
     pocket.addScaledVector(UP, 0.14).addScaledVector(fwd, -0.1).normalize();
+    // In the set the pocket turns in to the throwing hand, which holds the ball inside it.
+    if (this.holdW > 0.001) pocket.lerp(tmpA.copy(right).multiplyScalar(side).addScaledVector(fwd, 0.35).normalize(), this.holdW * 0.75).normalize();
     // Just caught: the pocket turns up toward you, and there's the ball in it.
     this.showK += ((f.gloved && dw < 0.1 ? 1 : 0) - this.showK) * (1 - Math.exp(-dt / (f.gloved ? 0.12 : 0.08)));
     if (this.showK > 0.01) pocket.lerp(tmpA.copy(fwd).multiplyScalar(-0.55).addScaledVector(UP, 0.83), this.showK * 0.85).normalize();
@@ -844,8 +854,12 @@ export class Avatar {
     // arm reaches the pose, which is always unless the body truly can't, that
     // is exactly the pocket the server checks and your friend aims at.)
     const worn = wrist.clone().addScaledVector(fingers, HEEL).addScaledVector(pocket, PALM);
-    if (dw > 0.5) gp.copy(worn);
-    this.glove.position.copy(dw > 0.5 || reachGap < 0.004 ? gp : worn);
+    // (Into a windup the glove goes over from where it was aimed to where the hand holds it; it used to
+    // switch at one frame, a 7 cm hop as every windup began. Now it eases across.)
+    const onHand = smooth(clamp((dw - 0.15) / 0.7, 0, 1));
+    const placed = (reachGap < 0.004 ? gp.clone() : worn.clone()).lerp(worn, onHand);
+    if (onHand > 0) gp.copy(placed);
+    this.glove.position.copy(placed);
     // Orientation: fingers along +Y, pocket out of -Z, built as a rotation (no
     // look-at, no up vector to flip) and eased, so the wrist turns; it never snaps.
     const zAxis = tmpC.copy(pocket).multiplyScalar(-1);
@@ -876,6 +890,8 @@ export class Avatar {
       tgt = gp.clone().addScaledVector(right, side * 0.06).addScaledVector(fwd, 0.04);
     } else if (arm === Arm.Holding || arm === Arm.Windup) {
       tgt = sT.clone().addScaledVector(fwd, 0.26).addScaledVector(up, -0.32).addScaledVector(right, -side * 0.06);
+      // In the set: in the glove with the ball.
+      if (this.holdW > 0.001) tgt.lerp(pitch(windupPose(this.windup, 0).ball), this.holdW);
     } else {
       // Arm hangs relaxed, swinging a little when moving.
       const swing = Math.sin(this.time * 9) * Math.min(0.25, speed * 0.06);
