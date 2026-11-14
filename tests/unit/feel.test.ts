@@ -86,3 +86,26 @@ describe('the windup is as big as the pull', () => {
     expect(small.top.distanceTo(big.top)).toBeGreaterThan(0.1);
   });
 });
+
+describe('more zip on every throw', () => {
+  const p0: [number, number, number] = [0, 1.8, 0];
+  it('the same throw, to the same place, 17% faster and sooner; and never over the cap', async () => {
+    const { solveThrow, simulateFlight: sim, positionAt: at, solveArc: arc, throwElevation: elev } = await import('../../src/shared/physics');
+    const { THROW_ZIP, THROW_SPEED_CAP, SPEED_MAX } = await import('../../src/shared/constants');
+    for (const d of [14, 20, 35, 60, 90, 120]) for (const k of [0.65, 1.2]) {
+      const target: [number, number, number] = [0.6, 1.3, -d];
+      const base = arc(p0, target, elev(d) * k);
+      for (const mul of [THROW_ZIP, THROW_ZIP * SPEED_MAX]) {
+        const z = solveThrow(p0, target, elev(d) * k, mul);
+        const hit = at(sim(p0, z.v0), z.T);
+        expect(Math.hypot(hit[0] - target[0], hit[1] - target[1], hit[2] - target[2]), `${d} m ×${mul}`).toBeLessThan(0.06);
+        expect(z.speed).toBeLessThanOrEqual(THROW_SPEED_CAP + 1e-9);
+        expect(z.speed).toBeCloseTo(Math.min(THROW_SPEED_CAP, base.speed * mul), 3);
+        expect(z.T).toBeLessThan(base.T);
+      }
+    }
+    // Asking for no more zip changes nothing.
+    const a = arc(p0, [0, 1.25, -14], elev(14)), b = solveThrow(p0, [0, 1.25, -14], elev(14), 1);
+    expect(b.v0).toEqual(a.v0);
+  });
+});

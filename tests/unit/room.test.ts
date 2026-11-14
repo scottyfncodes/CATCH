@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { CATCH_BOBBLE, CATCH_GRACE_MS, DIST_MAX, MITT_MIN, MITT_START, EYE_HEIGHT, LEAP_HEIGHT, MAX_PLAYERS, RECOVER_DELAY_MS, THROW_SPEED_LIMIT } from '../../src/shared/constants';
+import { CATCH_BOBBLE, CATCH_GRACE_MS, DIST_MAX, MITT_MIN, MITT_START, SPEED_MAX, SPEED_STEP, WILD_MAX, EYE_HEIGHT, LEAP_HEIGHT, MAX_PLAYERS, RECOVER_DELAY_MS, THROW_SPEED_LIMIT } from '../../src/shared/constants';
 import { positionAt, simulateFlight, solveArc, solveElevation, solveThrowTo, throwElevation, velocityAt } from '../../src/shared/physics';
 import { type Pose, bodyToWorld, clampReach, eyePosition, gloveReady, gloveWorld, interceptPlan, lookAngles, maxSteps, reachNorm, ringSpread, seatLayout } from '../../src/shared/pose';
-import { Arm, type Mode, type ServerMsg, catchGrade, catchStyle, classifyCatch, gloveSize, groupKeyFor, isGreatCatch, toMode } from '../../src/shared/protocol';
+import { Arm, DEFAULT_TRAITS, type ServerMsg, TRAIT_KEYS, type Traits, catchGrade, catchStyle, classifyCatch, gloveSize, groupKeyFor, isGreatCatch, speedFactor, toTraits, traitBits, wildOffset } from '../../src/shared/protocol';
 import { type Vec3, dist, len } from '../../src/shared/vec';
 import { DEFAULT_WINDUP, HOUSE_WINDUP, RELEASE_TIME, WINDUP_IDS, getWindup, releasePointFor } from '../../src/shared/windups';
 import { type Conn, MemoryRecords, Room } from '../../src/server/room';
@@ -874,76 +874,92 @@ describe('room', () => {
     expect(classifyCatch(0.18, 40)).toBe('deflect');
   });
 
-  // ---------------------------------------------------------------- modes
+  // ---------------------------------------------------------------- traits
 
-  function modeRoom(mode: Mode | undefined, n = 2) {
+  const T = (t: Partial<Traits> = {}): Traits => ({ back: false, speed: false, wild: false, mitt: false, ...t });
+  function traitRoom(traits: Traits | undefined, n = 2) {
     let t = 1_000_000;
     const clock = { now: () => t, advance: (ms: number) => { t += ms; } };
     const room = new Room('ABCD', clock.now, new MemoryRecords(), { practiceBot: false });
     const conns: FakeConn[] = [], ids: string[] = [];
     for (let i = 0; i < n; i++) {
       const c = new FakeConn();
-      // Only the first player says which game; a joiner's choice is ignored.
-      ids.push(room.join(c, { t: 'hello', room: 'ABCD', guest: `g${i}`, name: `P${i}`, hand: 'R', v: 6, w: HOUSE_WINDUP, m: i === 0 ? mode : 'fixed' })!.id);
+      // Only whoever opens the room chooses; a joiner's choice is ignored.
+      ids.push(room.join(c, { t: 'hello', room: 'ABCD', guest: `g${i}`, name: `P${i}`, hand: 'R', v: 8, w: HOUSE_WINDUP, tr: i === 0 ? (traits ? traitBits(traits) : undefined) : traitBits(T({ wild: true, speed: true })) })!.id);
       conns.push(c);
     }
     return { room, conns, ids, clock };
   }
 
-  it('whoever opens the room chooses the game, and everyone is told which it is', () => {
-    for (const mode of ['long', 'fixed', 'mitt'] as const) {
-      const { room, conns } = modeRoom(mode);
-      expect(room.mode).toBe(mode);
-      expect(conns[1].last('welcome')!.score.mode).toBe(mode);
-    }
-    expect(modeRoom(undefined).room.mode).toBe('long');
-    expect(toMode('nonsense')).toBe('long');
+  it('traits go on the wire as one small number and come back as they went', () => {
+    for (let b = 0; b < 1 << TRAIT_KEYS.length; b++) expect(traitBits(toTraits(b))).toBe(b);
+    expect(toTraits('nonsense')).toEqual(DEFAULT_TRAITS);
+    expect(toTraits(999)).toEqual(DEFAULT_TRAITS);
+    expect(toTraits({ back: true, speed: 'yes' })).toEqual(T({ back: true }));
   });
 
-  it('fixed distance: catches and misses move nobody', () => {
-    const { room, ids, clock } = modeRoom('fixed');
-    for (let i = 0; i < 6; i++) exchange(room, clock, ids);
-    expect(room.score()).toMatchObject({ dist: 14, glove: 1, streak: 6 });
+  it('whoever opens the room chooses its traits, and everyone in it is told the same', () => {
+    for (const traits of [T(), T({ back: true }), T({ speed: true, wild: true }), T({ back: true, speed: true, wild: true, mitt: true })]) {
+      const { room, conns } = traitRoom(traits);
+      expect(room.traits).toEqual(traits);
+      for (const c of conns) expect(c.last('welcome')!.score.traits).toEqual(traits);
+    }
+    // A room opened by a link (or an old phone): long toss, as it always was.
+    expect(traitRoom(undefined).room.traits).toEqual(DEFAULT_TRAITS);
+    expect(DEFAULT_TRAITS).toEqual(T({ back: true }));
+  });
+
+  it('no traits: plain catch. Nobody moves, the glove is a glove, the ball is never faster, and misses cost nothing', () => {
+    const { room, ids, clock } = traitRoom(T());
+    for (let i = 0; i < 8; i++) exchange(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 14, glove: 1, speed: 1, streak: 8 });
     for (let i = 0; i < 4; i++) miss(room, clock, ids);
-    expect(room.score()).toMatchObject({ dist: 14, glove: 1, misses: 0, streak: 0 });
+    expect(room.score()).toMatchObject({ dist: 14, glove: 1, speed: 1, misses: 0, streak: 0 });
     expect(apart(room, ids)).toBeCloseTo(14, 6);
   });
 
+  it('step back on its own: further apart with every catch, and nothing else changes', () => {
+    const { room, ids, clock } = traitRoom(T({ back: true }));
+    for (let i = 0; i < 5; i++) exchange(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 19, glove: 1, speed: 1 });
+    miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 18, misses: 1 });
+  });
+
   it('big mitt: the glove starts giant and shrinks with every catch, past regular, to small', () => {
-    expect(gloveSize('mitt', 0)).toBe(MITT_START);
-    expect(gloveSize('long', 30)).toBe(1);
-    expect(gloveSize('fixed', 30)).toBe(1);
+    expect(gloveSize(true, 0)).toBe(MITT_START);
+    expect(gloveSize(false, 30)).toBe(1);
     let last = Infinity;
-    for (let n = 0; n < 40; n++) { const g = gloveSize('mitt', n); expect(g).toBeLessThanOrEqual(last); last = g; }
-    expect(gloveSize('mitt', 13)).toBeLessThan(1.05);
-    expect(gloveSize('mitt', 100)).toBe(MITT_MIN);
-    const { room, ids, clock } = modeRoom('mitt');
+    for (let n = 0; n < 40; n++) { const g = gloveSize(true, n); expect(g).toBeLessThanOrEqual(last); last = g; }
+    expect(gloveSize(true, 13)).toBeLessThan(1.05);
+    expect(gloveSize(true, 100)).toBe(MITT_MIN);
+    const { room, ids, clock } = traitRoom(T({ mitt: true }));
     expect(room.score()).toMatchObject({ glove: MITT_START, dist: 14 });
     for (let i = 0; i < 5; i++) exchange(room, clock, ids);
-    expect(room.score().glove).toBe(gloveSize('mitt', 5));
+    expect(room.score().glove).toBe(gloveSize(true, 5));
     expect(room.score().dist).toBe(14);
     // A miss: a size bigger. The third miss: the giant glove is back.
     miss(room, clock, ids);
-    expect(room.score()).toMatchObject({ glove: gloveSize('mitt', 4), misses: 1 });
+    expect(room.score()).toMatchObject({ glove: gloveSize(true, 4), misses: 1 });
     miss(room, clock, ids); miss(room, clock, ids);
     expect(room.score()).toMatchObject({ glove: MITT_START, misses: 0 });
   });
 
   it('big mitt: the catch is as big as the glove (and no bigger)', () => {
-    const off = (glove: number, mode: Mode) => {
-      const { room, ids, clock } = modeRoom(mode);
+    const off = (glove: number, traits: Traits) => {
+      const { room, ids, clock } = traitRoom(traits);
       const t0 = clock.now();
-      const { pose, T } = throwAt(room, ids[0], ids[1], t0);
+      const { pose, T: tt } = throwAt(room, ids[0], ids[1], t0);
       // The ball passes 40 cm above where the glove is held.
       const claim = { ...pose, g: [pose.g[0], pose.g[1] - 0.4, pose.g[2]] as Vec3 };
-      clock.advance(T * 1000);
+      clock.advance(tt * 1000);
       expect(room.glove()).toBe(glove);
-      room.handle(ids[1], { t: 'catch', tid: 1, at: t0 + T * 1000, pose: wire(claim) });
+      room.handle(ids[1], { t: 'catch', tid: 1, at: t0 + tt * 1000, pose: wire(claim) });
       return room.ball.holder === ids[1];
     };
     expect(0.4).toBeGreaterThan(CATCH_BOBBLE);
-    expect(off(1, 'long')).toBe(false);
-    expect(off(MITT_START, 'mitt')).toBe(true);
+    expect(off(1, T({ back: true }))).toBe(false);
+    expect(off(MITT_START, T({ mitt: true }))).toBe(true);
     // The zones scale with the glove: dead centre of a giant glove is still a perfect catch, its edge still a bobble.
     expect(classifyCatch(0.1, 10, 3)).toBe('perfect');
     expect(classifyCatch(0.55, 10, 3)).toBe('bobble');
@@ -952,16 +968,102 @@ describe('room', () => {
     expect(catchGrade(0.3, 3)).toBeGreaterThan(catchGrade(0.3, 1));
   });
 
-  it('Coach plays every game', () => {
-    for (const mode of ['fixed', 'mitt'] as const) {
+  it('speed up: every catch in a row adds 3% to every throw, up to half as fast again', () => {
+    expect(speedFactor(false, 40)).toBe(1);
+    expect(speedFactor(true, 0)).toBe(1);
+    expect(speedFactor(true, 1)).toBeCloseTo(1 + SPEED_STEP, 9);
+    expect(speedFactor(true, 10)).toBeCloseTo(1 + 10 * SPEED_STEP, 9);
+    let last = 0;
+    for (let n = 0; n < 60; n++) { const f = speedFactor(true, n); expect(f).toBeGreaterThanOrEqual(last); expect(f).toBeLessThanOrEqual(SPEED_MAX); last = f; }
+    expect(speedFactor(true, 17)).toBe(SPEED_MAX);
+    expect(speedFactor(true, 500)).toBe(SPEED_MAX);
+  });
+
+  it('speed up in a room: it builds with the rally, and a drop starts it over', () => {
+    const { room, ids, clock } = traitRoom(T({ speed: true }));
+    expect(room.score().speed).toBe(1);
+    for (let i = 0; i < 6; i++) exchange(room, clock, ids);
+    expect(room.score().speed).toBeCloseTo(1 + 6 * SPEED_STEP, 9);
+    for (let i = 0; i < 20; i++) exchange(room, clock, ids);
+    expect(room.score().speed).toBe(SPEED_MAX);
+    miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ speed: 1, streak: 0, dist: 14, misses: 0 });
+    exchange(room, clock, ids);
+    expect(room.score().speed).toBeCloseTo(1 + SPEED_STEP, 9);
+  });
+
+  it('every trait together: further apart, a smaller glove and a faster ball with every catch; a miss costs a step of each; the third, all of it', () => {
+    const { room, ids, clock } = traitRoom(T({ back: true, speed: true, wild: true, mitt: true }));
+    for (let i = 0; i < 8; i++) exchange(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 22, glove: gloveSize(true, 8), streak: 8 });
+    expect(room.score().speed).toBeCloseTo(1 + 8 * SPEED_STEP, 9);
+    miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 21, glove: gloveSize(true, 7), speed: 1, misses: 1 });
+    miss(room, clock, ids); miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ dist: 14, glove: MITT_START, speed: 1, misses: 0 });
+  });
+
+  it('both phones are told the same numbers after every catch', () => {
+    const { room, conns, ids, clock } = traitRoom(T({ back: true, speed: true, mitt: true }));
+    for (let i = 0; i < 5; i++) {
+      exchange(room, clock, ids);
+      const [a, b] = conns.map((c) => c.last('ball')!.score);
+      expect(a).toEqual(b);
+      expect(a).toMatchObject({ traits: T({ back: true, speed: true, mitt: true }), streak: i + 1 });
+    }
+  });
+
+  it('wild throws: knocked off line the same way for everyone who works it out, never past a dive, and not always the same way', () => {
+    expect(wildOffset('ABCD', 7)).toEqual(wildOffset('ABCD', 7));
+    expect(wildOffset('ABCD', 7)).not.toEqual(wildOffset('ABCD', 8));
+    let far = 0, near = 0, left = 0, sum = 0;
+    for (let tid = 1; tid <= 2000; tid++) {
+      const [x, y] = wildOffset('WXYZ', tid);
+      expect(Math.abs(x)).toBeLessThanOrEqual(WILD_MAX + 1e-9);
+      expect(Math.abs(y)).toBeLessThan(0.5);
+      sum += Math.abs(x);
+      if (Math.abs(x) > 1) far++;
+      if (Math.abs(x) < 0.5) near++;
+      if (x < 0) left++;
+    }
+    expect(far / 2000).toBeGreaterThan(0.1);
+    expect(near / 2000).toBeGreaterThan(0.25);
+    expect(left / 2000).toBeGreaterThan(0.4);
+    expect(left / 2000).toBeLessThan(0.6);
+    expect(sum / 2000).toBeGreaterThan(0.45);
+    expect(sum / 2000).toBeLessThan(0.9);
+  });
+
+  it('Coach plays every mix of traits', () => {
+    for (const traits of [T(), T({ mitt: true }), T({ speed: true, wild: true }), T({ back: true, speed: true, wild: true, mitt: true })]) {
       let t = 1e6;
       const room = new Room('ABCD', () => t, new MemoryRecords(), { practiceBot: true });
-      const m = room.join(new FakeConn(), { t: 'hello', room: 'ABCD', guest: 'g', name: 'P', hand: 'R', v: 6, w: HOUSE_WINDUP, m: mode })!;
+      const m = room.join(new FakeConn(), { t: 'hello', room: 'ABCD', guest: 'g', name: 'P', hand: 'R', v: 8, w: HOUSE_WINDUP, tr: traitBits(traits) })!;
       const clock = { now: () => t, advance: (ms: number) => { t += ms; } };
       throwAt(room, m.id, 'coach', t);
       for (let i = 0; i < 90 && room.ball.phase === 'flight'; i++) { clock.advance(33); room.tick(); }
-      expect(room.ball.holder, mode).toBe('coach');
-      expect(room.score()).toMatchObject({ mode, dist: 14, streak: 1 });
+      expect(room.ball.holder, JSON.stringify(traits)).toBe('coach');
+      expect(room.score().traits).toEqual(traits);
+      expect(room.score().streak).toBe(1);
     }
+  });
+
+  it("Coach's throws get faster with speed up, and wild throws knock them off line, the way the room says", () => {
+    const coachThrow = (traits: Traits, streak: number) => {
+      let t = 1e6;
+      const room = new Room('ABCD', () => t, new MemoryRecords(), { practiceBot: true });
+      const m = room.join(new FakeConn(), { t: 'hello', room: 'ABCD', guest: 'g', name: 'P', hand: 'R', v: 8, w: HOUSE_WINDUP, tr: traitBits(traits) })!;
+      throwAt(room, m.id, 'coach', t);
+      for (let i = 0; i < 90 && room.ball.phase === 'flight'; i++) { t += 33; room.tick(); }
+      room.streak = streak;
+      for (let i = 0; i < 600 && !(room.ball.phase === 'flight' && room.ball.thrower === 'coach'); i++) { t += 33; room.tick(); }
+      expect(room.ball.thrower).toBe('coach');
+      return { speed: len(room.ball.v0), v: room.ball.v0 };
+    };
+    const plain = coachThrow(T(), 17), fast = coachThrow(T({ speed: true }), 17);
+    expect(fast.speed / plain.speed).toBeGreaterThan(1.35);
+    expect(fast.speed).toBeLessThanOrEqual(THROW_SPEED_LIMIT);
+    const wild = coachThrow(T({ wild: true }), 17);
+    expect(wild.v).not.toEqual(plain.v);
   });
 });

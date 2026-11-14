@@ -1,6 +1,6 @@
 // WebSocket connection with clock sync and automatic reconnection.
 
-import type { ClientMsg, Mode, ServerMsg } from '../shared/protocol';
+import { type ClientMsg, type ServerMsg, type Traits, traitBits } from '../shared/protocol';
 import { PROTOCOL_VERSION } from '../shared/protocol';
 import type { Hand } from '../shared/pose';
 
@@ -65,7 +65,7 @@ export class Net {
   onMessage: (m: ServerMsg) => void = () => {};
   onStatus: (s: NetStatus) => void = () => {};
 
-  constructor(private room: string, private hello: () => { guest: string; name: string; hand: Hand; windup: number; style: number[]; mode?: Mode }) {}
+  constructor(private room: string, private hello: () => { guest: string; name: string; hand: Hand; windup: number; style: number[]; traits?: Traits }) {}
 
   now(): number { return performance.now() + this.clock.offset; }
 
@@ -78,7 +78,7 @@ export class Net {
     this.setStatus(this.retry ? 'reconnecting' : 'connecting');
     ws.onopen = () => {
       const h = this.hello();
-      this.sendRaw({ t: 'hello', room: this.room, guest: h.guest, name: h.name, hand: h.hand, v: PROTOCOL_VERSION, w: h.windup, s: h.style, m: h.mode });
+      this.sendRaw({ t: 'hello', room: this.room, guest: h.guest, name: h.name, hand: h.hand, v: PROTOCOL_VERSION, w: h.windup, s: h.style, tr: h.traits ? traitBits(h.traits) : undefined });
       this.clock = { ...this.clock, bestRtt: Infinity, trust: Infinity };
       // A burst of pings to find the clock quickly, a few more while the game is still settling in, then a slow cadence.
       for (const ms of [0, 120, 240, 360, 480, 800, 1200, 1700, 2600, 3600]) setTimeout(() => this.ping(), ms);

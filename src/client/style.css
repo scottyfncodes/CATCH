@@ -165,18 +165,23 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .jersey[aria-checked='true'] { background: var(--ink); color: var(--cream); }
 .jersey[aria-checked='true']::before { background: var(--stitch); opacity: 1; }
 
-/* ------------------------------------------------------------ game picker */
+/* ------------------------------------------------------------ how to play: traits */
 
-.modes { display: flex; flex-direction: column; gap: 10px; margin-bottom: 6px; }
-.mode {
-  display: block; width: 100%; text-align: left; padding: 16px 18px; border-radius: 16px; background: var(--cream-2); color: var(--ink);
-  border: 1.5px solid transparent; transition: transform 120ms ease, background-color 160ms ease;
+.traits { display: flex; flex-direction: column; gap: 10px; margin-bottom: 4px; }
+.trait {
+  position: relative; display: block; width: 100%; min-height: 64px; text-align: left; padding: 14px 58px 14px 18px; border-radius: 16px;
+  background: var(--cream-2); color: var(--ink); border: 1.5px solid transparent; transition: transform 120ms ease, background-color 160ms ease, border-color 160ms ease;
 }
-.mode:active { transform: scale(0.985); }
-.mode b { display: block; font-size: 19px; font-weight: 800; letter-spacing: -0.01em; }
-.mode span { display: block; margin-top: 3px; font-size: 14px; line-height: 1.35; color: var(--muted); font-weight: 500; }
-/* The one you played last. */
-.mode[data-last] { background: #fffaf1; border-color: var(--ink); }
+.trait:active { transform: scale(0.985); }
+.trait b { display: block; font-size: 18px; font-weight: 800; letter-spacing: -0.01em; }
+.trait > span:not(.tick) { display: block; margin-top: 3px; font-size: 14px; line-height: 1.35; color: var(--muted); font-weight: 500; }
+/* The tick: an empty ring when off, filled in stitch red with a check when on. */
+.trait .tick { position: absolute; right: 18px; top: 50%; width: 28px; height: 28px; margin-top: -14px; border-radius: 50%; border: 2px solid rgba(31, 26, 21, 0.28); transition: background-color 160ms ease, border-color 160ms ease; }
+.trait .tick::after { content: ''; position: absolute; left: 8px; top: 4px; width: 7px; height: 13px; border: solid var(--cream); border-width: 0 3px 3px 0; transform: rotate(45deg); opacity: 0; transition: opacity 120ms ease; }
+.trait[aria-checked='true'] { background: #fffaf1; border-color: var(--ink); }
+.trait[aria-checked='true'] .tick { background: var(--stitch); border-color: var(--stitch); }
+.trait[aria-checked='true'] .tick::after { opacity: 1; }
+#trnote { min-height: 1.4em; margin: 6px 2px 0; }
 
 /* ------------------------------------------------------------ look editor */
 
@@ -190,6 +195,14 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .lk-row > span { flex: none; width: 76px; font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); line-height: 1.2; }
 .swatches, .chips { display: flex; gap: 6px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; padding: 4px 2px; touch-action: pan-x; }
 .swatches::-webkit-scrollbar, .chips::-webkit-scrollbar, .items::-webkit-scrollbar { display: none; }
+/* A row with more to it than fits fades out on the side the rest of it is: so it reads as "swipe", not as cut off. */
+.items, .swatches, .chips {
+  --fl: 0px; --fr: 0px;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--fl), #000 calc(100% - var(--fr)), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--fl), #000 calc(100% - var(--fr)), transparent 100%);
+}
+[data-more~='l'] { --fl: 34px; }
+[data-more~='r'] { --fr: 46px; }
 .swatch { flex: none; width: 44px; height: 44px; border-radius: 50%; background: var(--c); border: 2px solid rgba(31, 26, 21, 0.14); }
 .swatch[aria-checked='true'] { border-color: var(--paper); box-shadow: 0 0 0 3px var(--ink); }
 .pick { flex: none; height: 44px; padding: 0 14px; border-radius: 12px; background: var(--cream-2); font-size: 15px; font-weight: 700; color: var(--ink-2); }
@@ -199,7 +212,7 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
   margin: 0 calc(-22px - var(--sa-r)) 6px calc(-22px - var(--sa-l)); padding: 2px calc(22px + var(--sa-r)) 4px calc(22px + var(--sa-l));
 }
 .item {
-  flex: none; width: 104px; min-height: 96px; border-radius: 16px; background: var(--cream-2); color: var(--ink-2); scroll-snap-align: center;
+  flex: none; width: 96px; min-height: 96px; border-radius: 16px; background: var(--cream-2); color: var(--ink-2); scroll-snap-align: center;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; padding: 10px 6px; text-align: center;
 }
 .item i { width: 30px; height: 30px; border-radius: 50%; background: var(--c); border: 2px solid rgba(31, 26, 21, 0.16); }
@@ -224,6 +237,10 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 }
 .streak b { display: block; font-size: 60px; line-height: 1; font-weight: 800; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; transition: transform 160ms ease; }
 .streak span { display: block; margin-top: 2px; font-size: 11px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; opacity: 0.85; }
+/* One line, always (a second would sit under the chip below). With several traits counting, the type tightens to fit. */
+.streak #streakLabel { white-space: nowrap; }
+.streak #streakLabel.dense { letter-spacing: 0.12em; font-size: 10px; }
+.streak #streakLabel.dense .ft { font-size: 12.5px; letter-spacing: 0.04em; }
 .streak.bump b { animation: bump 380ms cubic-bezier(0.2, 1.4, 0.4, 1); }
 .streak.reset b { animation: reset 520ms ease; }
 .streak.milestone span { color: #ffe1a8; }

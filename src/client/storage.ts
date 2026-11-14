@@ -2,7 +2,7 @@
 // Clearing site data or switching devices creates a new guest identity.
 
 import type { Hand } from '../shared/pose';
-import { type Mode, toMode } from '../shared/protocol';
+import { DEFAULT_TRAITS, type Traits, toTraits } from '../shared/protocol';
 import { type Style, defaultStyle, sanitizeStyle, wearable } from '../shared/style';
 import { windupId } from '../shared/windups';
 
@@ -12,8 +12,8 @@ export interface Prefs {
   hand: Hand;
   /** The windup you throw with (a number from the library). */
   windup: number;
-  /** The game you last opened a room with. */
-  mode: Mode;
+  /** The traits you last opened a room with. */
+  traits: Traits;
   /** What you look like and wear. */
   style: Style;
   /** The streak milestones you have reached (each gave you something to wear, once). */
@@ -46,6 +46,13 @@ function safeGet(): Partial<Prefs> {
 
 let cache: Prefs | null = null;
 
+/** What you last played, from before rooms had traits (long toss, classic or big mitt). */
+function fromMode(m: unknown): Traits {
+  if (m === 'fixed') return { back: false, speed: false, wild: false, mitt: false };
+  if (m === 'mitt') return { back: false, speed: false, wild: false, mitt: true };
+  return { ...DEFAULT_TRAITS };
+}
+
 export function prefs(): Prefs {
   if (cache) return cache;
   const s = safeGet();
@@ -53,7 +60,7 @@ export function prefs(): Prefs {
   const earned = Array.isArray(s.earned) ? s.earned.filter((x) => typeof x === 'number') : [];
   cache = {
     guest,
-    mode: toMode(s.mode),
+    traits: s.traits ? toTraits(s.traits) : fromMode((s as { mode?: unknown }).mode),
     style: wearable(sanitizeStyle(s.style, defaultStyle(guest)), earned),
     earned,
     fresh: Array.isArray(s.fresh) ? s.fresh.filter((x) => typeof x === 'number') : [],

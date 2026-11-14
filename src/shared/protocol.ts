@@ -10,6 +10,9 @@ import {
   MITT_MIN,
   MITT_SHRINK,
   MITT_START,
+  SPEED_MAX,
+  SPEED_STEP,
+  WILD_MAX,
 } from './constants.js';
 import type { Hand } from './pose.js';
 import type { Style } from './style.js';
@@ -18,19 +21,61 @@ import type { Vec3 } from './vec.js';
 export type CatchQuality = 'perfect' | 'pocket' | 'web' | 'bobble';
 
 /**
- * How a room plays. Chosen by whoever opens the room; everyone who joins plays it.
- *   long:  every catch is a step further apart.
- *   fixed: you stay where you started, across the road.
- *   mitt:  giant gloves that shrink with every catch.
+ * How a room plays: any mix of these, chosen by whoever opens the room.
+ * Everyone in the room plays the same ones; they come with the score.
+ *   back:  every catch, a step further apart (a miss, a step in).
+ *   speed: every catch in a row, the ball comes in a little faster (a drop starts it over).
+ *   wild:  every throw is knocked a little off line.
+ *   mitt:  everyone starts with a giant glove that shrinks with every catch (a miss, a size bigger).
+ * With none of them it's plain catch, across the road. With `back` or `mitt`,
+ * the third miss (in total) sends that progress back to the start.
  */
-export type Mode = 'long' | 'fixed' | 'mitt';
-export const MODES: Mode[] = ['long', 'fixed', 'mitt'];
-export const toMode = (x: unknown, fallback: Mode = 'long'): Mode => (MODES.includes(x as Mode) ? (x as Mode) : fallback);
+export interface Traits { back: boolean; speed: boolean; wild: boolean; mitt: boolean }
+export type Trait = keyof Traits;
+export const TRAIT_KEYS: Trait[] = ['back', 'speed', 'wild', 'mitt'];
+/** A room opened without saying (a shared link, an old client): the long toss it always was. */
+export const DEFAULT_TRAITS: Traits = { back: true, speed: false, wild: false, mitt: false };
+/** Traits as one small number on the wire (bit k = TRAIT_KEYS[k]). */
+export const traitBits = (t: Traits): number => TRAIT_KEYS.reduce((n, k, i) => n | (t[k] ? 1 << i : 0), 0);
+/** Anything (bits off the wire, an object from storage) as traits; nonsense falls back. */
+export function toTraits(x: unknown, fallback: Traits = DEFAULT_TRAITS): Traits {
+  if (typeof x === 'number' && Number.isInteger(x) && x >= 0 && x < 1 << TRAIT_KEYS.length) {
+    return Object.fromEntries(TRAIT_KEYS.map((k, i) => [k, (x & (1 << i)) !== 0])) as unknown as Traits;
+  }
+  if (x && typeof x === 'object') return Object.fromEntries(TRAIT_KEYS.map((k) => [k, (x as Record<string, unknown>)[k] === true])) as unknown as Traits;
+  return { ...fallback };
+}
+/** Whether misses count for anything (there's progress for them to take away). */
+export const missesCount = (t: Traits) => t.back || t.mitt;
 
-/** How big the glove is after `steps` catches (1 = a regular glove). Only Big mitt changes it. */
-export function gloveSize(mode: Mode, steps: number): number {
-  if (mode !== 'mitt') return 1;
-  return Math.round(Math.max(MITT_MIN, MITT_START * Math.pow(MITT_SHRINK, steps)) * 1000) / 1000;
+/** How big the glove is after `shrinks` catches (1 = a regular glove). Only Big mitt changes it. */
+export function gloveSize(mitt: boolean, shrinks: number): number {
+  if (!mitt) return 1;
+  return Math.round(Math.max(MITT_MIN, MITT_START * Math.pow(MITT_SHRINK, shrinks)) * 1000) / 1000;
+}
+
+/**
+ * Speed up: how much faster than normal every throw is, `streak` catches into
+ * a rally. A little more with each catch, to a limit; the streak is the
+ * server's, so everyone throws at the same speed, and a drop starts it over.
+ */
+export function speedFactor(speed: boolean, streak: number): number {
+  return speed ? Math.round(Math.min(SPEED_MAX, 1 + SPEED_STEP * Math.max(0, streak)) * 1000) / 1000 : 1;
+}
+
+/**
+ * Wild throws: how far throw `tid` in room `room` is knocked off line, at the
+ * receiver: [sideways, up] in metres. The same for everyone who works it out
+ * (a hash, not a dice roll). Most are a hand or two off; some take a step or
+ * a stretch; a few need a dive. Never further than a dive reaches.
+ */
+export function wildOffset(room: string, tid: number): [number, number] {
+  let h = 0x811c9dc5;
+  for (const c of `${room}:${tid}`) { h ^= c.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
+  const r = () => { h ^= h << 13; h >>>= 0; h ^= h >>> 17; h ^= h << 5; h >>>= 0; return h / 4294967296; };
+  const pick = r(), side = r() < 0.5 ? -1 : 1;
+  const across = pick < 0.35 ? 0.15 + r() * 0.35 : pick < 0.8 ? 0.5 + r() * 0.5 : 1.0 + r() * (WILD_MAX - 1.0);
+  return [Math.round(side * across * 1000) / 1000, Math.round((r() - 0.45) * 0.9 * 1000) / 1000];
 }
 
 /**
@@ -138,9 +183,12 @@ export interface ScoreState {
   dist: number;
   /** Misses so far (in total). The third and the distance, or the glove, starts again. */
   misses: number;
-  mode: Mode;
+  /** How this room plays (whoever opened it chose). */
+  traits: Traits;
   /** The size of everyone's glove (1 = regular; Big mitt starts at 3 and shrinks). */
   glove: number;
+  /** How much faster than normal every throw is right now (1 unless Speed up is on). */
+  speed: number;
 }
 
 export type BallEvent =
@@ -153,7 +201,7 @@ export type BallEvent =
 // ---- client -> server ------------------------------------------------------
 
 export type ClientMsg =
-  | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number; w?: number; s?: number[]; m?: Mode }
+  | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number; w?: number; s?: number[]; tr?: number }
   | { t: 'ping'; c: number }
   /** x, z, yaw, gx, gy, gz, arm, windup phase, lift, dive, pull (how big the windup is) — rounded. */
   | { t: 'st'; p: PoseWire }
@@ -198,8 +246,9 @@ export type SnapEntry = [string, number, number, number, number, number, number,
  * 3: signature windups (players carry a windup; the ball leaves the hand a
  *    beat after the arm starts forward) and leaps/dives in the pose.
  * 7: a pose carries the pull (how far back the thumb is: how big the windup is); throws are flatter.
+ * 8: rooms have traits (any mix of step back, speed up, wild throws, big mitt) instead of one mode; throws carry more zip.
  */
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 /** Room codes: 4 letters, no ambiguous characters. */
 export const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ';

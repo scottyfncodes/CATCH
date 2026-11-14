@@ -5,8 +5,8 @@
 // and keeps it still, so how well your throw finds that glove is what its POP
 // says. When it throws, it aims at your glove: good, not perfect.
 
-import { MOVE_RADIUS, RUN_ACCEL, RUN_SPEED, WALK_SPEED } from '../shared/constants.js';
-import { type Trajectory, closestApproach, positionAt, solveArc, throwElevation, velocityAt } from '../shared/physics.js';
+import { MOVE_RADIUS, RUN_ACCEL, RUN_SPEED, THROW_ZIP, WALK_SPEED } from '../shared/constants.js';
+import { type Trajectory, closestApproach, positionAt, solveThrow, throwElevation, velocityAt } from '../shared/physics.js';
 import { bodyToWorld, clampReach, gloveReady, interceptPlan, lookAngles } from '../shared/pose.js';
 import { Arm, type BallState, type CatchQuality, catchGrade, classifyCatch } from '../shared/protocol.js';
 import { type Vec3, dist, len, lerp, wrapAngle } from '../shared/vec.js';
@@ -29,6 +29,9 @@ export class BotBrain {
   private releasedAt = 0;
   private throws = 0;
   private plannedTid = -1;
+  /** The room's traits, as they bear on Coach's next throw: how much faster (Speed up), and how far off line (Wild throws). */
+  private speedMul = 1;
+  private wild: [number, number] | null = null;
   private decided = false;
   private reactAt = 0;
   private runTo: Vec3 | null = null;
@@ -47,7 +50,9 @@ export class BotBrain {
     this.throwAt = t + 1500 + this.rng() * 1200;
   }
 
-  update(t: number, coach: Member, human: Member | null, ball: BallState, traj: Trajectory | null, streak: number, glove = 1): BotAction | null {
+  update(t: number, coach: Member, human: Member | null, ball: BallState, traj: Trajectory | null, streak: number, glove = 1, speed = 1, wild: [number, number] | null = null): BotAction | null {
+    this.speedMul = speed;
+    this.wild = wild;
     const dt = this.lastT ? Math.min(0.1, (t - this.lastT) / 1000) : 1 / 30;
     this.lastT = t;
     const pose = coach.pose;
@@ -249,11 +254,14 @@ export class BotBrain {
       // In the dirt: a scoop.
       ox = this.gauss() * 0.2; oy = 0; high = 0.24 + this.rng() * 0.14;
     }
+    // Wild throws: knocked off line the same way anyone's throw is (the room works it out, not Coach).
+    if (this.wild) { ox += this.wild[0]; oy += this.wild[1]; }
     const target: Vec3 = [glove[0] + rx * ox, high || Math.max(0.25, glove[1] + oy), glove[2] + rz * ox];
-    // Thrown as hard as the distance takes; a little flatter and quicker once you're warm.
+    // Thrown as hard as the distance takes; a little flatter and quicker once you're warm. With the
+    // same zip as everyone's, and as much faster as Speed up says.
     const d = dist(p, target);
     const zip = warm ? 1.3 : 1.35 - this.rng() * Math.min(0.3, 0.1 + streak * 0.01);
-    return { p, v: solveArc(p, target, throwElevation(d) * zip).v0 };
+    return { p, v: solveThrow(p, target, throwElevation(d) * zip, THROW_ZIP * this.speedMul).v0 };
   }
 }
 

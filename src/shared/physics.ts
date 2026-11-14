@@ -11,6 +11,7 @@ import {
   REST_SPEED,
   ROLL_DECEL,
   SIM_DT,
+  THROW_SPEED_CAP,
 } from './constants.js';
 import type { Vec3 } from './vec.js';
 
@@ -262,6 +263,32 @@ export function solveArc(p0: Vec3, target: Vec3, elev: number): { v0: Vec3; spee
   const r = arcAt(hi, e, d, p0[1]);
   const ch = hi * Math.cos(e);
   return { v0: [(dx / d) * ch, hi * Math.sin(e), (dz / d) * ch], speed: hi, T: r ? r.t : d / ch };
+}
+
+/**
+ * The throw that goes from `p0` through `target` the way `solveArc` would
+ * throw it (`elev` sets the arc, and so how hard), but `mul` times as fast:
+ * the same place, on a flatter line, sooner. Never faster than
+ * THROW_SPEED_CAP. Everyone's throws (yours, a friend's, Coach's) are made
+ * here, so a room's throws are all the same kind of fast.
+ */
+export function solveThrow(p0: Vec3, target: Vec3, elev: number, mul: number): { v0: Vec3; speed: number; T: number } {
+  const base = solveArc(p0, target, elev);
+  const want = Math.min(THROW_SPEED_CAP, base.speed * mul);
+  if (want <= base.speed + 1e-3) return base;
+  const dx = target[0] - p0[0], dz = target[2] - p0[2];
+  const d = Math.max(0.5, Math.hypot(dx, dz));
+  // On the low, flat side of the arc, a steeper start arrives higher: find the start that arrives at the target.
+  let lo = -0.6, hi = Math.max(elev, Math.atan2(target[1] - p0[1], d) + 0.06);
+  for (let i = 0; i < 40; i++) {
+    const m = (lo + hi) / 2;
+    const r = arcAt(want, m, d, p0[1]);
+    if (!r || r.h < target[1]) lo = m; else hi = m;
+  }
+  const r = arcAt(want, hi, d, p0[1]);
+  if (!r || Math.abs(r.h - target[1]) > 0.05) return base;
+  const ch = want * Math.cos(hi);
+  return { v0: [(dx / d) * ch, want * Math.sin(hi), (dz / d) * ch], speed: want, T: r.t };
 }
 
 /** Velocity that reaches `target` from `p0` in `flightTime` seconds (drag-corrected). */
