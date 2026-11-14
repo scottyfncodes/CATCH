@@ -78,4 +78,28 @@ describe('seeing a friend who is a long way off', () => {
     expect(eyes(50, 1).camera.fov).toBeCloseTo(80, 0);
     expect(eyes(14, 0).camera.fov).toBeCloseTo(60, 0);
   });
+
+  it('choosing someone else to throw to: the camera turns to them in well under a second (a deliberate turn, not a drift)', () => {
+    // Three of you, 15 m apart: you face one, then tap the other's name.
+    const a: Vec3 = [0, 0, -15], b: Vec3 = [-15 * Math.sin(Math.PI / 3), 0, -15 * Math.cos(Math.PI / 3)];
+    const inView = (rig: CameraRig, p: Vec3) => {
+      rig.camera.updateMatrixWorld(true);
+      const v = new THREE.Vector3(p[0], 1.6, p[2]).project(rig.camera);
+      return Math.abs(v.x) < 0.7 && v.z < 1;
+    };
+    const timeToFrame = (fast: boolean) => {
+      const rig = new CameraRig();
+      rig.aspect = 390 / 844;
+      for (let i = 0; i < 600; i++) rig.update(dt, { me: [0, 0, 0], partner: a, ball: null, side: -1 });
+      expect(inView(rig, b)).toBe(false);
+      for (let i = 1; i < 600; i++) {
+        rig.update(dt, { me: [0, 0, 0], partner: b, ball: null, side: -1, turnFast: fast && i * dt < 1.2 });
+        if (inView(rig, b)) return i * dt;
+      }
+      return Infinity;
+    };
+    const fast = timeToFrame(true), slow = timeToFrame(false);
+    expect(fast, `in view after ${fast.toFixed(2)} s (drifting: ${slow.toFixed(2)} s)`).toBeLessThan(0.6);
+    expect(slow).toBeGreaterThan(fast);
+  });
 });

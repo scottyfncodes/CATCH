@@ -677,14 +677,29 @@ function enterRoom(code: string, traits?: Traits) {
       <div class="corner right"><button class="chip icon-btn tap" id="pauseBtn" aria-label="Pause and settings">${ICON.pause}</button></div>
       <div class="chip status" id="status" hidden><span class="pulse"></span><span id="statusText">Connecting…</span></div>
       <button class="chip company tap" id="company" hidden>Coach is keeping you company · <u>Invite a friend</u></button>
+      <button class="chip target left tap" id="tgtL" hidden></button>
+      <button class="chip target right tap" id="tgtR" hidden></button>
     </div>`);
   hud = ui.querySelector('.hud');
   ui.querySelector('#inviteBtn')!.addEventListener('click', () => invite(code));
   ui.querySelector('#company')!.addEventListener('click', () => invite(code));
   ui.querySelector('#pauseBtn')!.addEventListener('click', () => pauseSheet(code));
 
+  // Holding the ball with three or more: who you could turn and throw to, either side.
+  const tgt = { L: ui.querySelector<HTMLButtonElement>('#tgtL')!, R: ui.querySelector<HTMLButtonElement>('#tgtR')! };
+  for (const b of [tgt.L, tgt.R]) b.addEventListener('click', () => { if (b.dataset.id) { haptic('light'); game?.throwTo(b.dataset.id); } });
+  let toldTargets = false;
+  const onTargets = (t: { left: { id: string; name: string } | null; right: { id: string; name: string } | null } | null) => {
+    for (const [b, who, txt] of [[tgt.L, t?.left, (n: string) => `‹ ${n}`], [tgt.R, t?.right, (n: string) => `${n} ›`]] as const) {
+      b.hidden = !who;
+      if (who) { b.dataset.id = who.id; b.textContent = txt(who.name); b.setAttribute('aria-label', `Throw to ${who.name} instead`); }
+    }
+    if (t && !toldTargets) { toldTargets = true; toast('Tap a name at the side to throw to them'); }
+  };
+
   game = new Game(app, renderer, touch, code, {
     status: onStatus,
+    targets: onTargets,
     roster: (players, id) => { roster = players; me = id; updateCompany(); },
     score: onScore,
     moment: (k) => tutorial?.moment(k),

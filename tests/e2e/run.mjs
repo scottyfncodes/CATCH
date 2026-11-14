@@ -265,6 +265,14 @@ try {
   const T = others[2];
   const tId = await idOf(T);
   await setAutoMove(T, true);
+  // Holding the ball in a ring: the people either side are named at the edges, and a tap turns you to one.
+  await waitCanThrow(H);
+  const chips = await waitFor(() => H.page.locator('.target:not([hidden])').evaluateAll((els) => els.map((e) => [e.id, e.dataset.id, e.textContent.trim()])).then((c) => (c.length ? c : null)), 4000);
+  check('holding the ball in a ring of five, the people either side are named at the edges', !!chips && chips.length === 2 && chips.every(([, id, t]) => id && t.length > 2), JSON.stringify(chips));
+  const [chipEl, chipId] = chips?.[0] ?? [];
+  if (chipEl) await H.page.locator('#' + chipEl).tap();
+  const turned = await waitFor(async () => { const s = await H.state(); return s.partner === chipId ? s : null; }, 3000);
+  check('…and tapping a name turns you (and your camera) to them to throw', !!turned, `partner=${turned?.partner} want=${chipId}`);
   await aimAt(H, tId);
   await waitCanThrow(H);
   await throwGesture(H, { pull: 110 });

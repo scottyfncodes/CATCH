@@ -13,7 +13,7 @@ import {
   type Trajectory, closestApproach, positionAt, simulateFlight, solveThrow, sweptMinDistance, throwElevation, velocityAt,
 } from '../shared/physics';
 import {
-  type Hand, type Pose, bodyToWorld, clampReach, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, worldToBody,
+  type Hand, type Pose, bodyToWorld, clampReach, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, throwNeighbours, worldToBody,
 } from '../shared/pose';
 import {
   Arm, type Traits, DEFAULT_TRAITS, traitBits, wildOffset, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, catchStyle, classifyCatch,
@@ -56,6 +56,8 @@ export interface GameEvents {
   /** Gameplay moments the tutorial listens for. */
   moment(kind: 'move' | 'catch' | 'throw' | 'drop' | 'incoming' | 'holding' | 'aim'): void;
   toast(text: string): void;
+  /** Holding the ball in a ring of three or more: who you could turn and throw to instead, either side. */
+  targets?(t: { left: { id: string; name: string } | null; right: { id: string; name: string } | null } | null): void;
   /** Your view changed: first person (catching) or third (throwing). */
   view(first: boolean): void;
 }
@@ -164,6 +166,9 @@ export class Game {
   private first = false;
   private lastSent = 0;
   private partnerId: string | null = null;
+  private targetsKey = '';
+  /** Until when the camera turns quickly (you just chose who to throw to). */
+  private turnFastUntil = 0;
   private home: Vec3 = [0, 0, 6];
   private homeMovedAt = 0;
 
@@ -774,6 +779,7 @@ export class Game {
     this.world.update(dt, now / 1000);
     if (this.renderEnabled) this.renderer.render(this.scene, this.rig.camera);
     this.updateLabels();
+    this.updateTargets();
     this.sendState(now);
     this.perf?.frame(now, performance.now() - t0, { renderer: this.renderer, startRatio: this.startRatio, shadows: this.renderer.shadowMap.enabled && this.world.sun.castShadow, drawing: this.renderEnabled });
   };
@@ -1432,7 +1438,7 @@ export class Game {
     // A long throw of yours in the air: the shot lets go of you and goes with the ball.
     const mine = this.ball.phase === 'flight' && this.ball.live && this.ball.thrower === this.me;
     const flight = mine ? smooth01((Math.hypot(partner[0] - me[0], partner[2] - me[2]) - 22) / 20) : 0;
-    this.rig.update(dt, { me, partner, ball, side: this.hand === 'R' ? -1 : 1, aim: winding ? this.aimRing : null, windup: winding ? 1 : 0, flight }, eyes, first);
+    this.rig.update(dt, { me, partner, ball, side: this.hand === 'R' ? -1 : 1, aim: winding ? this.aimRing : null, windup: winding ? 1 : 0, flight, turnFast: now < this.turnFastUntil }, eyes, first);
     this.world.focus(me[0], me[2]);
     // In your own eyes your head and chest are out of the way (they still cast
     // your shadow). They fade by how close the camera is, so the move in and
@@ -1597,6 +1603,33 @@ export class Game {
   }
 
   /** Make a player the one you're playing with (tests / multi-player rooms). */
+  /**
+   * Turn to someone else to throw to (holding the ball, not mid-throw). Your body and the
+   * camera turn to them, and that is who the throw goes to.
+   */
+  throwTo(id: string) {
+    if (!this.players.has(id) || id === this.me || this.controls.aiming || this.pending) return;
+    if (!(this.ball.phase === 'held' && this.ball.holder === this.me)) return;
+    this.partnerId = id;
+    this.turnFastUntil = performance.now() + 1200;
+  }
+
+  /** Who you could turn to either side (only while it is yours to throw, in a ring of three or more). */
+  private updateTargets() {
+    let t: { left: { id: string; name: string } | null; right: { id: string; name: string } | null } | null = null;
+    const cur = this.partner();
+    const curAt = this.feetOf(cur);
+    if (this.me && curAt && this.players.size >= 3 && this.ball.phase === 'held' && this.ball.holder === this.me && !this.controls.aiming && !this.pending) {
+      const others = [...this.players.values()].filter((p) => p.info.id !== this.me && p.info.id !== cur && this.feetOf(p.info.id)).map((p) => ({ id: p.info.id, at: this.feetOf(p.info.id)! }));
+      const nb = throwNeighbours(this.home, curAt, others);
+      const who = (id: string | null) => (id ? { id, name: this.players.get(id)!.info.name } : null);
+      t = { left: who(nb.left), right: who(nb.right) };
+      if (!t.left && !t.right) t = null;
+    }
+    const key = t ? `${t.left?.id}:${t.left?.name}|${t.right?.id}:${t.right?.name}` : '';
+    if (key !== this.targetsKey) { this.targetsKey = key; this.ev.targets?.(t); }
+  }
+
   lookAtPlayer(id: string) {
     if (this.players.has(id) && id !== this.me) this.partnerId = id;
   }

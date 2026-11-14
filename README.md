@@ -47,6 +47,10 @@ One thumb, no buttons on screen:
   go through **your windup** and wait at the top of it; let go and you stride,
   and the ball leaves your hand at the release. The camera cranes up over you
   for it: all of your delivery below, your friend and the ring above.
+- **Choose who to throw to** (three or more of you): while you have the ball,
+  the people either side of the one you're facing are named at the edges of
+  the screen. Tap a name and you (and the camera) turn to them; that's who the
+  throw goes to. You start facing whoever threw it to you.
 - **Pick your windup**: seven deliveries, known only by the number on the
   shirt (WINDUP on the home screen, or in the pause sheet). Your player throws
   the one you pick on a loop while you choose. It's saved on your device, and
