@@ -39,6 +39,7 @@ export class AudioEngine {
   private unlocked = false;
   private ready = false;
   private lastPopAt = -1;
+  private lastGripAt = -1;
   private lastCreak = 0;
   /** Peak ZIP level of the current/last flight (diagnostics). */
   zipPeak = 0;
@@ -436,6 +437,34 @@ export class AudioEngine {
   }
 
   /** Arm whip at release: a low swish plus the fingertips letting go. */
+  /**
+   * The throw is accepted: the instant the thumb lifts, a quiet dry tick (the
+   * ball squeezed in the hand), so letting go is answered at once. It is mid-band
+   * and over in a few hundredths of a second: long gone before the arm whoosh
+   * (from 0.19 s) and the snap (0.30 s), and nowhere near their pitch.
+   */
+  grip(power: number, side: number) {
+    if (!this.ready || !this.ctx) return;
+    // (Once per throw, whatever calls it.)
+    const now = performance.now();
+    if (now - this.lastGripAt < 150) return;
+    this.lastGripAt = now;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = this.bufs.noise[0];
+    const band = ctx.createBiquadFilter();
+    band.type = 'bandpass'; band.frequency.value = 900; band.Q.value = 0.9;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.1 + power * 0.06, t + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.045);
+    const pan = ctx.createStereoPanner(); pan.pan.value = side * 0.2;
+    src.connect(band).connect(g).connect(pan).connect(this.sfx);
+    src.start(t, Math.random()); src.stop(t + 0.06);
+    this.log.push({ k: 'grip', t: now, power });
+  }
+
   /**
    * The arm coming through. `lead` (seconds) schedules it on the audio clock so
    * it lands exactly on a release that far away; it is over as the ball leaves,

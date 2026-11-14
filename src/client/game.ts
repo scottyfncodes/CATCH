@@ -694,6 +694,10 @@ export class Game {
   private release(a: Aim) {
     this.aim = null;
     if (!this.canThrow() || !this.me) return;
+    // Accepted. Answer the thumb at once, inside the touch itself (where iOS allows a haptic):
+    // a quiet grip and a light tap. The delivery, its whoosh, the snap and the firm haptic follow.
+    audio.grip(a.power, this.hand === 'R' ? 1 : -1);
+    haptic('light');
     const { p0, v0, ring } = this.planThrow(a, this.score.traits.wild ? wildOffset(this.room, this.ball.tid + 1) : null);
     const traj = simulateFlight(p0, v0);
     const now = performance.now();
