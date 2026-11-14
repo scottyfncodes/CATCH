@@ -73,7 +73,7 @@ One thumb, no buttons on screen:
   tees); what you earn is ridiculous, and more so the longer the streak: a
   propeller beanie, googly eyes on your glove, a Hawaiian shirt and lei, a
   shark glove, a rubber duck on your head, a tuxedo with tails, a disco-ball
-  glove, a ten-gallon hat, a superhero cape, a glove on fire, a crown, a royal
+  glove, a ten-gallon hat, a cape stitched like a baseball, a glove on fire, a crown, a royal
   robe. What you wear changes nothing about how you play: every glove is the
   same regular-sized glove, its pocket in the same place.
 - **Both jobs make the POP**: a perfect POP needs a throw that finds the pocket

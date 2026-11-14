@@ -2,7 +2,7 @@
 // streak going, increasingly ridiculous things. A propeller beanie. A rubber
 // duck. A ten-gallon hat. A crown. A glove with googly eyes, a shark glove, a
 // disco-ball glove, a glove on fire. A Hawaiian shirt and a lei, a tuxedo with
-// tails, a superhero cape, a royal robe.
+// tails, The Closer (a baseball on the chest and a stitched cape), a royal robe.
 //
 // All of it is for looking at: none of it changes the glove's size or where
 // its pocket is, or anything about a throw.
@@ -674,6 +674,30 @@ function fireGlove(glove: THREE.Group): Tick | undefined {
 // ------------------------------------------------------------------ clothes
 
 /** A shirt's pattern, painted on a strip that goes round the body (u = 0.5 straight ahead) from the hem (bottom) to the collar (top). */
+/** The Closer's cape: cream cloth, a red seam stitched down each edge (u across the cape, v down it). */
+function capeTexture(cream: string): THREE.CanvasTexture {
+  const W = 128, H = 256;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const g = cv.getContext('2d')!;
+  const r = rand(1500);
+  g.fillStyle = cream; g.fillRect(0, 0, W, H);
+  // A little weave, so it reads as cloth and not plastic.
+  for (let i = 0; i < 900; i++) { g.fillStyle = `rgba(${r() < 0.6 ? '255,255,255' : '150,130,100'},${0.025 + r() * 0.03})`; g.fillRect(r() * W, r() * H, 1, 2 + r() * 4); }
+  for (const x of [11, W - 11]) {
+    g.strokeStyle = '#c8372d'; g.lineWidth = 1.6;
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+    g.lineWidth = 2.4; g.lineCap = 'round';
+    for (let y = 4; y < H; y += 9) for (const side of [-1, 1]) {
+      g.beginPath(); g.moveTo(x + side * 1.5, y); g.lineTo(x + side * 7, y + 4.5); g.stroke();
+    }
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
 function shirtTexture(top: Top): THREE.CanvasTexture | null {
   if (!hasDom()) return null;
   const W = 512, H = 256;
@@ -717,17 +741,41 @@ function shirtTexture(top: Top): THREE.CanvasTexture | null {
     g.fillStyle = top.accent ?? '#d81e3a';
     g.beginPath(); g.moveTo(px - 16, py); g.lineTo(px - 6, py - 18); g.lineTo(px + 2, py - 6); g.lineTo(px + 10, py - 20); g.lineTo(px + 18, py); g.closePath(); g.fill();
     g.strokeStyle = '#f7f4ee'; g.lineWidth = 3; g.beginPath(); g.moveTo(px - 20, py); g.lineTo(px + 22, py); g.stroke();
-  } else if (top.pattern === 'hero') {
-    const cx = W / 2, cyy = H * 0.3;
-    // The belt.
-    g.fillStyle = '#f2c230'; g.fillRect(0, H * 0.88, W, H * 0.08);
-    g.fillStyle = '#c99a12'; g.fillRect(cx - 14, H * 0.875, 28, H * 0.09);
-    // The emblem: a diamond, with a baseball's C in it.
-    g.fillStyle = '#f2c230'; g.strokeStyle = top.accent ?? '#e43a2f'; g.lineWidth = 9;
-    g.beginPath(); g.moveTo(cx, cyy - 62); g.lineTo(cx + 54, cyy); g.lineTo(cx, cyy + 62); g.lineTo(cx - 54, cyy); g.closePath(); g.fill(); g.stroke();
-    g.fillStyle = top.accent ?? '#e43a2f';
-    g.font = '900 72px Arial Black, Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText('C', cx, cyy + 4);
+  } else if (top.pattern === 'closer') {
+    // A baseball across the whole chest: off-white hide, shaded to the edge, two red seams stitched in Vs.
+    // (The shirt is stretched round the trunk: the ball is drawn tall here so it is round on the chest.)
+    const cx = W / 2, cy = H * 0.32, R = 52;
+    g.save();
+    g.translate(cx, cy); g.scale(1, 1.28);
+    // A cream rim, as if it were stitched on.
+    g.fillStyle = top.accent ?? '#efe6d2'; g.beginPath(); g.arc(0, 0, R + 4, 0, 7); g.fill();
+    const hide = g.createRadialGradient(-R * 0.3, -R * 0.35, R * 0.1, 0, 0, R);
+    hide.addColorStop(0, '#ffffff'); hide.addColorStop(0.75, '#f6f6f3'); hide.addColorStop(1, '#dcdcd6');
+    g.fillStyle = hide; g.beginPath(); g.arc(0, 0, R, 0, 7); g.fill();
+    g.beginPath(); g.arc(0, 0, R, 0, 7); g.clip();
+    // Each seam is a circle centred off the ball, so it bows in toward the middle.
+    for (const sx of [-1, 1]) {
+      const ox = sx * R * 1.45, rr = R * 1.0, a0 = Math.PI * 0.55;
+      const mid = sx < 0 ? 0 : Math.PI;
+      g.strokeStyle = '#c8372d'; g.lineWidth = 2.2;
+      g.beginPath(); g.arc(ox, 0, rr, mid - a0, mid + a0); g.stroke();
+      // The stitches: Vs pointing along the seam, either side of it.
+      g.lineWidth = 2.6; g.lineCap = 'round';
+      for (let k = -8; k <= 8; k++) {
+        const a = mid + (k / 8) * a0 * 0.9;
+        const px = ox + Math.cos(a) * rr, py = Math.sin(a) * rr;
+        const tx = -Math.sin(a), ty = Math.cos(a), nx = Math.cos(a), ny = Math.sin(a);
+        for (const side of [-1, 1]) {
+          g.beginPath();
+          g.moveTo(px + nx * side * 2, py + ny * side * 2);
+          g.lineTo(px + nx * side * 7.5 + tx * 4, py + ny * side * 7.5 + ty * 4);
+          g.stroke();
+        }
+      }
+    }
+    g.restore();
+    // Piping at the hem, in the cape's cream.
+    g.fillStyle = top.accent ?? '#efe6d2'; g.fillRect(0, H * 0.94, W, H * 0.025);
   } else if (top.pattern === 'robe') {
     // Velvet, with a sheen; gold braid down the front and round the hem.
     for (let i = 0; i < 2500; i++) { g.fillStyle = `rgba(${r() < 0.5 ? '255,200,210' : '40,0,10'},${0.04 + r() * 0.06})`; g.fillRect(r() * W, r() * H, 1 + r() * 3, 2 + r() * 8); }
@@ -775,7 +823,8 @@ class Cape {
   private theta = 0.2;
   private thetaV = 0;
   private dir = new THREE.Vector3();
-  constructor(mat: THREE.Material, private w: number, private L: number, private at: THREE.Vector3, private wrap: number, private cols = 6, private rows = 10, private flare = 0.35) {
+  /** `clear(y)`: how far back the body is at a height (trunk space), so the cloth drapes over the shoulder blades and never through them. */
+  constructor(mat: THREE.Material, private w: number, private L: number, private at: THREE.Vector3, private wrap: number, private cols = 6, private rows = 10, private flare = 0.35, private clear?: (y: number) => number) {
     this.geo = new THREE.PlaneGeometry(w, L, cols, rows);
     this.mesh = new THREE.Mesh(this.geo, mat);
     this.mesh.castShadow = true;
@@ -800,12 +849,13 @@ class Cape {
         const sk = k / this.rows, a = 0.06 + (this.theta - 0.06) * Math.pow(sk, 0.6);
         y -= Math.cos(a) * (this.L / this.rows); z += Math.sin(a) * (this.L / this.rows);
       }
+      const zc = this.clear ? this.clear(this.at.y + y) - this.at.z : -Infinity;
       for (let i = 0; i <= this.cols; i++) {
         const xn = i / this.cols - 0.5;
         const x = xn * this.w * (1 + this.flare * s);
         const ripple = Math.sin(f.t * 6.5 - s * 7 + xn * 9) * flutter * s;
         const round = -this.wrap * (xn * 2) ** 2 * (1 - s) ** 2;
-        pos.setXYZ(j * (this.cols + 1) + i, this.at.x + x, this.at.y + y, this.at.z + z + ripple + round);
+        pos.setXYZ(j * (this.cols + 1) + i, this.at.x + x, this.at.y + y, this.at.z + Math.max(z + ripple, zc) + round);
       }
     }
     pos.needsUpdate = true;
@@ -827,9 +877,11 @@ export function dress(top: Top, torso: THREE.Object3D, chest: THREE.MeshStandard
   const tex = shirtTexture(top);
   if (tex) { chest.map = tex; chest.color.set('#ffffff'); chest.needsUpdate = true; }
   const at = (y: number, a: number, lift: number) => { const p = torsoSurface(y, a, w); const n = new THREE.Vector3(p.x, 0, p.z).normalize(); return p.addScaledVector(n, lift); };
+  // (The back of the trunk at a height, plus a little for the cloth: below the hem, the hem's.)
+  const back = (y: number) => at(Math.min(0.6, Math.max(0.02, y)), Math.PI, 0.016).z;
   const cape = (mat: THREE.MeshStandardMaterial, width: number, len: number, y: number, x = 0, wrap = 0.06, rows = 10, flare = 0.35) => {
     mat.side = THREE.DoubleSide;
-    const c = new Cape(mat, width, len, new THREE.Vector3(x, y, at(y, Math.PI, 0.012).z), wrap, 6, rows, flare);
+    const c = new Cape(mat, width, len, new THREE.Vector3(x, y, at(y, Math.PI, 0.012).z), wrap, 6, rows, flare, back);
     torso.add(c.mesh);
     out.ticks.push((f) => c.tick(f));
   };
@@ -877,9 +929,26 @@ export function dress(top: Top, torso: THREE.Object3D, chest: THREE.MeshStandard
     rose.add(leaf);
     torso.add(rose);
     for (const sx of [-1, 1]) cape(core(top.color, 0.7), 0.12, 0.52, 0.02, sx * 0.068, 0.0, 8, 0.15);
-  } else if (top.pattern === 'hero') {
-    out.collar = top.accent ?? '#e43a2f';
-    cape(core(top.accent ?? '#e43a2f', 0.6), 0.46, 1.0, 0.535, 0, 0.08);
+  } else if (top.pattern === 'closer') {
+    const cream = top.accent ?? '#efe6d2';
+    out.collar = cream;
+    // The cape: cream, with a baseball's red stitching down both edges.
+    const cloth = core('#ffffff', 0.75);
+    if (hasDom()) cloth.map = capeTexture(cream);
+    else cloth.color.set(cream);
+    cape(cloth, 0.46, 1.0, 0.535, 0, 0.045);
+    // Fastened at the throat with a gold clasp, set with the red dot from CATCH.
+    const clasp = new THREE.Group();
+    clasp.position.copy(at(0.565, 0, 0.006));
+    const gold = core('#e2b23a', 0.32);
+    gold.metalness = 0.85;
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.032, 0.01, 24), gold);
+    disc.rotation.x = Math.PI / 2;
+    clasp.add(disc);
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.013, 12, 8), core('#c8372d', 0.3));
+    dot.scale.z = 0.5; dot.position.z = -0.006;
+    clasp.add(dot);
+    torso.add(clasp);
   } else if (top.pattern === 'robe') {
     out.sleeve = tex;
     out.collar = '#e8b923';

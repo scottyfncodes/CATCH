@@ -63,7 +63,7 @@ opening at the back. Worn level-ish, the band a little higher at the forehead.
 | 500 | Tuxedo with tails | shirt front, studs, satin lapels, an oversized red bow tie, a rose, coat tails |
 | 750 | Disco ball (glove) | every piece of the glove mirror tiles, and it glitters |
 | 1000 | Ten-gallon hat | about 70 cm across, creased crown, brim curled up hard |
-| 1500 | Superhero cape | a C in a diamond on the chest, a belt, a red cape that streams out when you run |
+| 1500 | The Closer | a navy top with a baseball across the chest (red seams, stitched in Vs), a cream cape with a baseball's red stitching down both edges that streams out when you run, fastened at the throat with a gold clasp set with the CATCH. red dot |
 | 2000 | On fire (glove) | flames off the back, the fingertips and the heel, always going up |
 | 3000 | Crown | gold, jewels, pearls on the points, velvet, an orb and a cross; it twinkles; worn at an angle |
 | 5000 | Royal robe | red velvet with gold braid, an ermine mantle, a train to the ground |
@@ -71,7 +71,9 @@ opening at the back. Worn level-ish, the band a little higher at the forehead.
 None of it touches the glove's size or where its pocket is
 (`tests/unit/wear.test.ts` checks that for every glove). Capes and tails are a
 few dozen points worked out on the CPU each frame: they hang straight down
-however the body leans and stream out behind with speed. Flames and sparkles
+however the body leans and stream out behind with speed, and they drape over
+the back (the shoulder blades included) rather than through it, which a test
+checks for every build. Flames and sparkles
 are sprites, so they cost a draw call each, only for the people wearing them.
 
 ## Changing it
