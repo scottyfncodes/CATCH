@@ -60,8 +60,8 @@ export function limbs(w: number) {
   return {
     // Hip to knee: full at the top, tapering to the knee.
     thigh: limbGeo('thigh' + k, s([[0.07, -0.04], [0.09, 0.04], [0.092, 0.22], [0.082, 0.55], [0.067, 0.88], [KNEE, 1]])),
-    // Knee to just above the ankle: the calf, then a trouser leg that hangs straight to its cuff (the sock shows below it).
-    shin: limbGeo('shin' + k, s([[KNEE, 0], [0.067, 0.1], [0.069, 0.3], [0.061, 0.6], [0.056, 0.8], [0.058, 0.86], [0.05, 0.868]])),
+    // Knee to the ankle: the calf, then a trouser leg that hangs straight and breaks a little over the shoe.
+    shin: limbGeo('shin' + k, s([[KNEE, 0], [0.067, 0.1], [0.069, 0.3], [0.061, 0.6], [0.057, 0.8], [0.06, 0.9], [0.064, 0.955], [0.056, 0.965]])),
     // Shoulder to just above the elbow: a T-shirt sleeve, a little loose, with a hem.
     sleeve: limbGeo('sleeve' + k, s([[SHOULDER, 0], [0.055, 0.18], [0.054, 0.48], [0.056, 0.58], [0.05, 0.595]])),
     // The arm coming out of it, down to the elbow.
@@ -212,14 +212,14 @@ export function eyesGeo(): THREE.BufferGeometry {
  */
 export function shoeGeo(): THREE.BufferGeometry {
   return once('shoe', () => {
-    const CANVAS = '#ece5d6', CAP = '#f6f1e6', GUM = '#b0845a', SOCK = '#f1eee6', LACE = '#cfc7b6';
+    const CANVAS = '#ece5d6', CAP = '#f6f1e6', GUM = '#cdb08a', SOCK = '#f1eee6', LACE = '#cfc7b6';
     const parts: THREE.BufferGeometry[] = [];
     const put = (g: THREE.BufferGeometry, col: string) => parts.push(paint(plain(g), col));
-    // Sole: a slab with round ends, a touch wider than the upper.
-    const sole = new THREE.CapsuleGeometry(0.057, 0.165, 4, 10);
+    // Sole: round-ended, all but flush with the upper (a sole that sticks out reads as a plank).
+    const sole = new THREE.CapsuleGeometry(0.0535, 0.14, 4, 10);
     sole.rotateX(Math.PI / 2);
-    sole.scale(1, 0.25, 1);
-    sole.translate(0, 0.0145, -0.055);
+    sole.scale(1, 0.21, 1);
+    sole.translate(0, 0.0115, -0.046);
     put(sole, GUM);
     // Upper: low over the toes, rising to the ankle.
     const upper = new THREE.SphereGeometry(1, 12, 8);
@@ -249,8 +249,10 @@ export function shoeGeo(): THREE.BufferGeometry {
     collar.scale(1, 1, 1.12);
     collar.translate(0, 0.092, 0.012);
     put(collar, CANVAS);
-    const sock = new THREE.CylinderGeometry(0.036, 0.039, 0.085, 10);
-    sock.translate(0, 0.125, 0.008);
+    // (Just a band of sock above the collar: the trouser leg comes down over the rest. A tall one
+    // stood up behind the leg whenever the knees bent and the shin leaned forward.)
+    const sock = new THREE.CylinderGeometry(0.036, 0.038, 0.03, 10);
+    sock.translate(0, 0.1, 0.008);
     put(sock, SOCK);
     return mergeGeometries(parts)!;
   });
