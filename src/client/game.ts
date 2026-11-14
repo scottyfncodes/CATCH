@@ -16,7 +16,7 @@ import {
   type Hand, type Pose, bodyToWorld, clampReach, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, worldToBody,
 } from '../shared/pose';
 import {
-  Arm, type Traits, DEFAULT_TRAITS, wildOffset, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, catchStyle, classifyCatch,
+  Arm, type Traits, DEFAULT_TRAITS, traitBits, wildOffset, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, catchStyle, classifyCatch,
 } from '../shared/protocol';
 import { PerfOverlay } from './perf';
 import { type Vec3, clamp, dist, lerp, wrapAngle } from '../shared/vec';
@@ -102,7 +102,7 @@ export class Game {
   players = new Map<string, Remote>();
   ball: BallState = { phase: 'held', holder: null, tid: 0, thrower: null, t0: 0, p0: [0, 0, 0], v0: [0, 0, 0], live: false };
   traj: Trajectory | null = null;
-  score: ScoreState = { streak: 0, sessionBest: 0, groupBest: 0, groupKey: '', dist: 14, misses: 0, traits: { ...DEFAULT_TRAITS }, glove: 1, speed: 1 };
+  score: ScoreState = { streak: 0, sessionBest: 0, groupBest: 0, groupKey: '', dist: 14, misses: 0, traits: { ...DEFAULT_TRAITS }, glove: 1, speed: 1, host: null };
 
   // Local player: a body on the grass.
   hand: Hand;
@@ -307,6 +307,9 @@ export class Game {
     this.hand = h;
     this.net.send({ t: 'prof', name: prefs().name, hand: h, w: this.windup, s: prefs().style });
   }
+
+  /** The host changes how the room plays (it takes effect when the ball is next in someone's hand). */
+  setRules(t: Traits) { this.net.send({ t: 'rules', tr: traitBits(t) }); }
 
   setName(name: string) { this.net.send({ t: 'prof', name, hand: this.hand, w: this.windup, s: prefs().style }); }
 

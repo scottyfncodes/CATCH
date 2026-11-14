@@ -715,8 +715,25 @@ try {
     const js = await waitFor(async () => { const s = await J.state(); return s.score.traits?.mitt ? s : null; }, 5000);
     check('a friend who joins plays the same traits', !!js && JSON.stringify(js.score.traits) === JSON.stringify(g0.score.traits), JSON.stringify(js?.score.traits));
     await J.page.locator('#pauseBtn').tap();
-    const jsub = await J.page.locator('.sheet .sub').first().textContent();
-    check('…and can see them', /This room: Speed up · Big mitt/.test(jsub), jsub.trim());
+    // On the pause sheet: how this room plays, read-only for anyone but the host, and who the host is.
+    const jRules = await J.page.locator('.sheet [data-rule]').evaluateAll((els) => els.map((e) => [e.dataset.rule, e.getAttribute('aria-checked'), e.disabled]));
+    const jNote = await J.page.locator('#rulesnote').textContent();
+    check('…and can see them on the pause screen, but only the host can change them', JSON.stringify(jRules) === JSON.stringify([['back', 'false', true], ['speed', 'true', true], ['wild', 'false', true], ['mitt', 'true', true]]) && /Sam sets how this room plays/.test(jNote), `${JSON.stringify(jRules)} · "${jNote}"`);
+    await J.page.locator('#resume').tap();
+    // The host changes the game from their pause screen: everyone plays the new rules, and is told who changed them.
+    // (Every notice is recorded as it appears: one lasts under three seconds, and this machine is slow.)
+    await J.page.evaluate(() => { window.__toasts = []; new MutationObserver(() => { const t = document.querySelector('.toast'); if (t && window.__toasts.at(-1) !== t.textContent) window.__toasts.push(t.textContent); }).observe(document.body, { childList: true, subtree: true }); });
+    await G.page.locator('#pauseBtn').tap();
+    const gEnabled = await G.page.locator('.sheet [data-rule]').evaluateAll((els) => els.every((e) => !e.disabled));
+    await G.page.locator('.sheet [data-rule=wild]').tap();
+    const jw = await waitFor(async () => { const s = await J.state(); return s.score.traits.wild ? s : null; }, 8000);
+    const jToasts = await J.page.evaluate(() => window.__toasts);
+    const told = jToasts.find((x) => /changed the game/.test(x)) ?? '';
+    check('the host can change how the room plays from the pause screen, and everyone plays it', gEnabled && !!jw && jw.score.traits.speed && jw.score.traits.mitt && /Sam changed the game: Speed up · Wild throws · Big mitt/.test(told), `host switches ${gEnabled ? 'live' : 'disabled'} · friend ${JSON.stringify(jw?.score.traits)} · told "${told}"`);
+    await G.page.locator('.sheet [data-rule=wild]').tap();
+    const jw2 = await waitFor(async () => { const s = await J.state(); return !s.score.traits.wild ? s : null; }, 8000);
+    check('…and change it back', !!jw2, JSON.stringify(jw2?.score.traits));
+    await G.page.locator('#resume').tap();
     await J.ctx.close();
     await G.page.reload();
     await G.page.locator('#go').waitFor();

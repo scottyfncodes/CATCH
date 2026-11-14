@@ -189,6 +189,8 @@ export interface ScoreState {
   glove: number;
   /** How much faster than normal every throw is right now (1 unless Speed up is on). */
   speed: number;
+  /** Who can change how the room plays (the player who opened it, or whoever has been here longest since). */
+  host: string | null;
 }
 
 export type BallEvent =
@@ -212,6 +214,8 @@ export type ClientMsg =
   | { t: 'catch'; tid: number; at: number; pose: number[] }
   | { t: 'prof'; name: string; hand: Hand; w?: number; s?: number[] }
   | { t: 'rec'; key: string; best: number }
+  /** The host changes how the room plays (trait bits). It takes effect when the ball is next in someone's hand. */
+  | { t: 'rules'; tr: number }
   | { t: 'leave' };
 
 // ---- server -> client ------------------------------------------------------
@@ -247,8 +251,9 @@ export type SnapEntry = [string, number, number, number, number, number, number,
  *    beat after the arm starts forward) and leaps/dives in the pose.
  * 7: a pose carries the pull (how far back the thumb is: how big the windup is); throws are flatter.
  * 8: rooms have traits (any mix of step back, speed up, wild throws, big mitt) instead of one mode; throws carry more zip.
+ * 9: the host can change a room's traits mid-game ('rules'); the score says who the host is.
  */
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 /** Room codes: 4 letters, no ambiguous characters. */
 export const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ';

@@ -39,7 +39,8 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 #touch { position: absolute; inset: 0; touch-action: none; display: none; }
 #app.playing #touch { display: block; }
-#ui { position: absolute; inset: 0; pointer-events: none; }
+/* (Above the players' name tags: a sheet or the scoreboard is never under a name.) */
+#ui { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
 #ui > * { pointer-events: auto; }
 #ui > .hud { pointer-events: none; }
 
@@ -181,6 +182,14 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .trait[aria-checked='true'] { background: #fffaf1; border-color: var(--ink); }
 .trait[aria-checked='true'] .tick { background: var(--stitch); border-color: var(--stitch); }
 .trait[aria-checked='true'] .tick::after { opacity: 1; }
+/* On the pause sheet: the same switches, a little more compact; read-only for everyone but the host. */
+.rules .traits { gap: 8px; }
+.rules .trait { padding-top: 12px; padding-bottom: 12px; }
+.rules .trait b { font-size: 16px; }
+.rules .trait > span:not(.tick) { font-size: 13px; }
+.trait:disabled { cursor: default; }
+.trait:disabled:active { transform: none; }
+.trait:disabled[aria-checked='false'] { opacity: 0.55; }
 #trnote { min-height: 1.4em; margin: 6px 2px 0; }
 
 /* ------------------------------------------------------------ look editor */
@@ -287,7 +296,7 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
   transition: opacity 200ms; will-change: transform; margin-top: -6px;
 }
 .label.away { opacity: 0.55 !important; }
-.labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 1; }
 /* ?fps=1: the frame-timing readout. Bottom left, out of the way of the thumb and the scoreboard. */
 .perf {
   position: absolute; left: calc(var(--sa-l, 0px) + 8px); bottom: calc(var(--sa-b, 0px) + 8px); z-index: 50; pointer-events: none;

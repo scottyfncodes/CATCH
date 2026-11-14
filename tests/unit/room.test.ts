@@ -1034,6 +1034,67 @@ describe('room', () => {
     expect(sum / 2000).toBeLessThan(0.9);
   });
 
+  // ---------------------------------------------------------------- changing the rules mid-game
+
+  const rules = (room: Room, id: string, t: Traits) => { room.handle(id, { t: 'rules', tr: traitBits(t) }); room.tick(); };
+
+  it('the host is whoever opened the room; only they can change how it plays, and everyone is told', () => {
+    const { room, ids, conns } = traitRoom(T({ back: true }));
+    expect(room.score().host).toBe(ids[0]);
+    for (const c of conns) expect(c.last('welcome')!.score.host).toBe(ids[0]);
+    rules(room, ids[1], T({ mitt: true }));
+    expect(room.traits).toEqual(T({ back: true }));
+    rules(room, ids[0], T({ back: true, wild: true }));
+    expect(room.traits).toEqual(T({ back: true, wild: true }));
+    for (const c of conns) expect(c.last('roster')!.score.traits).toEqual(T({ back: true, wild: true }));
+  });
+
+  it('a trait turned on mid-game starts fresh, one turned off stops, and the streak carries on', () => {
+    const { room, ids, clock } = traitRoom(T());
+    for (let i = 0; i < 6; i++) exchange(room, clock, ids);
+    rules(room, ids[0], T({ back: true, speed: true, mitt: true }));
+    // Speed up from normal, Step back from the start, Big mitt at its biggest; still six in a row.
+    expect(room.score()).toMatchObject({ streak: 6, speed: 1, dist: 14, glove: MITT_START, misses: 0 });
+    exchange(room, clock, ids);
+    expect(room.score().speed).toBeCloseTo(1 + SPEED_STEP, 9);
+    expect(room.score()).toMatchObject({ streak: 7, dist: 15, glove: gloveSize(true, 1) });
+    expect(apart(room, ids)).toBeCloseTo(15, 6);
+    rules(room, ids[0], T({ speed: true }));
+    // Off: back across the road, a regular glove; Speed up keeps going.
+    expect(room.score()).toMatchObject({ streak: 7, dist: 14, glove: 1 });
+    expect(room.score().speed).toBeCloseTo(1 + SPEED_STEP, 9);
+    expect(apart(room, ids)).toBeCloseTo(14, 6);
+    // A drop ends the rally, and Speed up starts over from it.
+    miss(room, clock, ids);
+    exchange(room, clock, ids);
+    expect(room.score().speed).toBeCloseTo(1 + SPEED_STEP, 9);
+  });
+
+  it('a change made while the ball is in the air waits until someone has it', () => {
+    const { room, ids, clock } = traitRoom(T());
+    const from = room.ball.holder!, to = ids.find((x) => x !== from)!;
+    const t0 = clock.now();
+    const { pose, T: flight } = throwAt(room, from, to, t0);
+    rules(room, ids[0], T({ mitt: true }));
+    expect(room.ball.phase).toBe('flight');
+    expect(room.traits).toEqual(T());
+    clock.advance(flight * 1000);
+    room.handle(to, { t: 'catch', tid: room.ball.tid, at: t0 + flight * 1000, pose: wire(pose) });
+    room.tick();
+    expect(room.traits).toEqual(T({ mitt: true }));
+    expect(room.score().glove).toBe(MITT_START);
+  });
+
+  it('when the host leaves, whoever has been here longest can change it', () => {
+    const { room, ids } = traitRoom(T(), 3);
+    room.handle(ids[0], { t: 'leave' });
+    expect(room.score().host).toBe(ids[1]);
+    rules(room, ids[2], T({ wild: true }));
+    expect(room.traits).toEqual(T());
+    rules(room, ids[1], T({ wild: true }));
+    expect(room.traits).toEqual(T({ wild: true }));
+  });
+
   it('Coach plays every mix of traits', () => {
     for (const traits of [T(), T({ mitt: true }), T({ speed: true, wild: true }), T({ back: true, speed: true, wild: true, mitt: true })]) {
       let t = 1e6;
