@@ -301,6 +301,7 @@ export class Avatar {
 
     this.root.traverse((o) => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = true; });
     if (worn.group.userData.noShadow) worn.group.traverse((o) => { o.castShadow = false; });
+    worn.group.traverse((o) => { if (o.userData.noShadow) o.castShadow = false; });
     this.feet = [0, 1].map(() => ({ pos: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), t: 1, stepping: false }));
     this.teleport(home, facing);
   }

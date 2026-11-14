@@ -208,7 +208,10 @@ function buildCap(hat: Hat, mat: Mat): THREE.Group {
     const ink = matte(mat('#ffffff', 0.8));
     ink.map = word;
     ink.alphaTest = 0.45;
-    crown.add(new THREE.Mesh(patch, ink));
+    const decal = new THREE.Mesh(patch, ink);
+    // (It lies on the cap: the cap's own shadow is the shadow.)
+    decal.userData.noShadow = true;
+    crown.add(decal);
   }
   if (hat.shape === 'back') g.rotation.y = Math.PI;
   return g;
