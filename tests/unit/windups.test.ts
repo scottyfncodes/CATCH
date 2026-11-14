@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import * as THREE from 'three';
 import { EYE_HEIGHT } from '../../src/shared/constants';
 import { positionAt, simulateFlight, solveThrowTo } from '../../src/shared/physics';
 import { Arm } from '../../src/shared/protocol';
 import { type Vec3, dist } from '../../src/shared/vec';
 import {
-  DEFAULT_WINDUP, DELIVERY_LENGTH, HOUSE_WINDUP, RELEASE_REACH, RELEASE_TIME, RIG, WINDUPS, WINDUP_IDS,
+  DEFAULT_WINDUP, DELIVERY_LENGTH, HOUSE_WINDUP, LAND_TIME, RELEASE_REACH, RELEASE_TIME, RIG, WINDUPS, WINDUP_IDS,
   deliveryPose, getWindup, pelvisHeight, releasePointFor, sampleKeys, shoulderOf, windupId, windupPose,
 } from '../../src/shared/windups';
 import { defaultStyle } from '../../src/shared/style';
@@ -132,21 +133,15 @@ describe('the mechanics are a real pitcher\'s', () => {
     }
   });
 
-  it('they walk back to the spot they threw from, so nothing slides when the clip hands the body back', () => {
+  it('the finish is held: both feet stay exactly where they landed until the clip ends', () => {
     for (const w of WINDUPS) {
-      const end = sampleKeys(w.delivery, DELIVERY_LENGTH), set = windupPose(w, 0);
-      expect(dist(end.pelvis, set.pelvis), `#${w.id}`).toBeLessThan(0.05);
-      expect(dist(end.lead, set.lead), `#${w.id}`).toBeLessThan(0.05);
-      expect(dist(end.pivot, set.pivot), `#${w.id}`).toBeLessThan(0.05);
-      // A step at a time: never both feet off the grass at once, and a foot on the grass stays put.
-      let prev = sampleKeys(w.delivery, 0.8);
-      for (let t = 0.81; t <= DELIVERY_LENGTH; t += 0.01) {
+      const land = sampleKeys(w.delivery, LAND_TIME);
+      expect(land.lead[1], `#${w.id}`).toBe(0);
+      expect(land.pivot[1], `#${w.id}`).toBe(0);
+      for (let t = LAND_TIME; t <= DELIVERY_LENGTH + 1e-9; t += 0.01) {
         const p = sampleKeys(w.delivery, t);
-        expect(Math.min(p.lead[1], p.pivot[1]), `#${w.id} at ${t.toFixed(2)} s`).toBeLessThan(0.03);
-        for (const f of ['lead', 'pivot'] as const) {
-          if (p[f][1] < 0.005 && prev[f][1] < 0.005) expect(dist(p[f], prev[f]), `#${w.id} ${f} foot sliding at ${t.toFixed(2)} s`).toBeLessThan(0.012);
-        }
-        prev = p;
+        expect(dist(p.lead, land.lead), `#${w.id} front foot at ${t.toFixed(2)} s`).toBe(0);
+        expect(dist(p.pivot, land.pivot), `#${w.id} back foot at ${t.toFixed(2)} s`).toBe(0);
       }
     }
   });
@@ -215,6 +210,66 @@ describe('the avatar performs the delivery', () => {
     const av = deliver(34, 'R', DELIVERY_LENGTH + 0.05);
     expect(av.deliveryTime).toBe(-1);
     expect(av.timeToRelease).toBe(RELEASE_TIME);
+  });
+
+  type Body = { feet: { pos: THREE.Vector3; stepping: boolean }[]; pelvis: THREE.Object3D };
+  /** Throw, then stand on the spot (no throw coming unless `readyAt`), recording the feet and hips every frame. */
+  function afterThrow(id: number, seconds: number, readyAt = Infinity) {
+    const av = deliver(id, 'R', 0.2);
+    const base = { pose: { x: 2, z: 5, yaw: 0.4, g: [0, 1.18, -0.4] as Vec3 }, look: null };
+    const b = av as unknown as Body;
+    const frames: { t: number; feet: THREE.Vector3[]; up: boolean[]; hips: THREE.Vector3 }[] = [];
+    for (let t = 0.2; t < seconds; t += dt) {
+      av.update(dt, { ...base, arm: t < 0.6 ? Arm.Release : Arm.Idle, charge: 0, ready: t >= readyAt });
+      // (From the landing on, the feet drawn are the step planner's; before it, the clip's, tested above.)
+      if (t > LAND_TIME + 0.01) frames.push({ t, feet: b.feet.map((f) => f.pos.clone()), up: b.feet.map((f) => f.stepping), hips: b.pelvis.position.clone() });
+    }
+    return { av, frames };
+  }
+  const spot = (i: number) => new THREE.Vector3(2, 0, 5).add(new THREE.Vector3(...([i === 0 ? -0.15 : 0.15, 0, i === 0 ? -0.07 : 0.05] as Vec3)).applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.4));
+
+  it('after the throw: held in the fielding stance, then three natural steps back to the spot', () => {
+    for (const w of WINDUPS) {
+      const { frames } = afterThrow(w.id, 3);
+      const standing = frames[frames.length - 1].hips.y;
+      let steps = 0, prevUp = [false, false], prev = frames[0];
+      for (const f of frames) {
+        // One foot in the air at a time; the one on the grass does not move; nothing jumps.
+        expect(f.up[0] && f.up[1], `#${w.id} both feet up at ${f.t.toFixed(2)} s`).toBe(false);
+        for (const i of [0, 1]) {
+          if (!f.up[i] && !prevUp[i]) expect(f.feet[i].distanceTo(prev.feet[i]), `#${w.id} foot ${i} sliding at ${f.t.toFixed(2)} s`).toBeLessThan(1e-6);
+          if (f.up[i] && !prevUp[i]) steps++;
+          expect(f.feet[i].distanceTo(prev.feet[i]) / dt, `#${w.id} foot ${i} speed`).toBeLessThan(6);
+        }
+        expect(f.hips.distanceTo(prev.hips) / dt, `#${w.id} hips speed at ${f.t.toFixed(2)} s`).toBeLessThan(3.2);
+        if (f.t > DELIVERY_LENGTH) {
+          // A walking stride, never a lunge; the hips stay up over it.
+          expect(Math.hypot(f.feet[0].x - f.feet[1].x, f.feet[0].z - f.feet[1].z), `#${w.id} feet apart at ${f.t.toFixed(2)} s`).toBeLessThan(0.78);
+          expect(f.hips.y, `#${w.id} hips at ${f.t.toFixed(2)} s`).toBeGreaterThan(standing - 0.07);
+        }
+        // Held: both feet down from the landing to the end of the clip.
+        if (f.t > LAND_TIME + 0.02 && f.t < DELIVERY_LENGTH - 0.01) expect(f.up[0] || f.up[1], `#${w.id} hold at ${f.t.toFixed(2)} s`).toBe(false);
+        prevUp = f.up; prev = f;
+      }
+      expect(steps, `#${w.id} steps back`).toBe(3);
+      // Home, on the spot, well before any throw could come back.
+      const home = frames.find((f) => f.t > 2.4)!;
+      for (const i of [0, 1]) expect(home.feet[i].distanceTo(spot(i)), `#${w.id} foot ${i} home`).toBeLessThan(0.08);
+    }
+  });
+
+  it('a throw coming back mid-walk takes over: they hurry home and the glove is at the catch when it arrives', () => {
+    const want = new THREE.Vector3(2, 1.18, 5 - 0.4);
+    for (const w of WINDUPS) {
+      // Quicker than a friend can get the ball back at the shortest distance (your throw is caught at
+      // about 0.8 s, theirs leaves the hand 0.15 + 0.3 s after that at the very least, and flies 0.49 s):
+      // on its way at 1.3 s, there at 1.8 s.
+      const at = afterThrow(w.id, 1.8, 1.3).av;
+      expect(at.joints.glove.distanceTo(want), `#${w.id}: glove off the catch when it arrives`).toBeLessThan(0.015);
+      const home = afterThrow(w.id, 2.1, 1.3).av;
+      expect(home.joints.glove.distanceTo(want), `#${w.id}: glove off the catch once home`).toBeLessThan(0.01);
+      expect(home.joints.gap, `#${w.id}: reach shortfall`).toBeLessThan(0.01);
+    }
   });
 
   it('a remote delivery that starts late catches up, so its release lines up with the real one', () => {

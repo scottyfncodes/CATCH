@@ -64,7 +64,8 @@ A delivery is two clips:
    comes back down if they ease off.
 2. **The delivery**, in seconds from letting go: drive, plant, layback,
    **release at `RELEASE_TIME`**, follow-through, the back leg coming round
-   to a fielding position, and a jog back to the spot (`DELIVERY_LENGTH`).
+   to a fielding position (`LAND_TIME`), held a beat until `DELIVERY_LENGTH`.
+   Then the avatar walks back to the spot on its own (see the table below).
 
 Each key is a `DeliveryPose`: hip turn, shoulder coil, trunk lean and tilt,
 and positions for the pelvis, both feet, the throwing hand and the glove. The
@@ -114,7 +115,7 @@ whole library to them:
 | Release | Out in front of the head (further forward of the shoulder than it is above it) and out over the front foot; the trunk bent forward and tilted to the glove side for the slot; the front leg bracing; the glove pulled in to the chest. |
 | Follow-through | The arm finishes across the body to the far knee, the trunk folds over the front leg, the back leg comes up off the ground behind. |
 | Landing | The back leg comes round and down beside the front one: square to the target, both feet on the grass, glove up, ready to field. |
-| Recovery | A jog back to the spot (back foot, front foot, back foot), so the body is where it started when the clip hands it back. Planted feet never slide. |
+| Recovery | The finish is held a beat, feet planted. Then the avatar walks back to the spot in three natural steps (back foot, front foot, back foot), one foot off the grass at a time, the hips over the feet and the weight on the planted foot, the glove carried in front; planted feet never slide. It is done about 2.2 s after letting go. A throw coming back takes over at once: the steps quicken and the glove goes to the catch as the body gets home, in time for the quickest return a friend can make. Moving (to a catch) or winding up ends it immediately. This is the avatar's step planner (`WALK_*` in `avatar.ts`), not keys in the clip. |
 
 ## Adding a windup
 
