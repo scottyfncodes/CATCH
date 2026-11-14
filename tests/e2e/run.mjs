@@ -666,14 +666,6 @@ try {
     check('big mitt: everyone starts with a giant glove', g0?.score.glove === 3 && /glove ×3\.0/i.test(lab0), `glove ×${g0?.score.glove} · "${lab0}"`);
     const drawn = await G.page.evaluate(() => { const g = window.__catch.game; return [...g.players.values()].map((p) => (p.avatar ?? g.myAvatar)?.glove.scale.y); });
     check('…and it is drawn that size on every player', drawn.every((x) => x === 3), JSON.stringify(drawn));
-    // A friend joins by the link: they're playing the same game, and can see which.
-    const J = await player(new URL(G.page.url()).pathname.split('/').pop(), 'Joy', 'R');
-    const js = await waitFor(async () => { const s = await J.state(); return s.score.traits?.mitt ? s : null; }, 5000);
-    check('a friend who joins plays the same traits', !!js && JSON.stringify(js.score.traits) === JSON.stringify(g0.score.traits), JSON.stringify(js?.score.traits));
-    await J.page.locator('#pauseBtn').tap();
-    const jsub = await J.page.locator('.sheet .sub').first().textContent();
-    check('…and can see them', /This room: Speed up · Big mitt/.test(jsub), jsub.trim());
-    await J.ctx.close();
     await waitCanThrow(G);
     await sleep(400);
     // A throw 45 cm off Coach's glove: a miss with a regular glove, a catch with this one.
@@ -691,6 +683,14 @@ try {
     check('speed up: one catch in, every throw is 3% faster, and the scoreboard says so', Math.abs(g1.score.speed - 1.03) < 1e-9 && /\+3% speed/.test(lab1), `×${g1.score.speed} · "${lab1}"`);
     const rel = g1.audio.filter((x) => x.k === 'release');
     check('the throw has its own sound: a snap as the ball leaves the hand', rel.length === relBefore + 1 && rel[rel.length - 1].power > 0, `power=${rel[rel.length - 1]?.power?.toFixed(2)}`);
+    // A friend joins by the link: they're playing the same game, and can see which. (Coach steps out when they do: so this comes last.)
+    const J = await player(new URL(G.page.url()).pathname.split('/').pop(), 'Joy', 'R');
+    const js = await waitFor(async () => { const s = await J.state(); return s.score.traits?.mitt ? s : null; }, 5000);
+    check('a friend who joins plays the same traits', !!js && JSON.stringify(js.score.traits) === JSON.stringify(g0.score.traits), JSON.stringify(js?.score.traits));
+    await J.page.locator('#pauseBtn').tap();
+    const jsub = await J.page.locator('.sheet .sub').first().textContent();
+    check('…and can see them', /This room: Speed up · Big mitt/.test(jsub), jsub.trim());
+    await J.ctx.close();
     await G.page.reload();
     await G.page.locator('#go').waitFor();
     const lastTraits = await G.page.evaluate(() => JSON.parse(localStorage.getItem('catch.prefs.v1')).traits);
