@@ -29,8 +29,13 @@ export const RELEASE_TIME = 0.3;
  * stride in the library lets go about 1.8 m out.
  */
 export const RELEASE_REACH = 2.0;
-/** Length of the delivery clip (stride, release, follow-through, and the steps back to the spot). */
-export const DELIVERY_LENGTH = 1.48;
+/**
+ * Length of the delivery clip: stride, release, follow-through, and the landing held a beat.
+ * Then the avatar walks back to the spot on its own (see the avatar's step planner).
+ */
+export const DELIVERY_LENGTH = 1.0;
+/** Both feet down in the fielding stance (s after letting go). */
+export const LAND_TIME = 0.8;
 /** The arm at its furthest laid back, just before it comes through (s after letting go). */
 const LAYBACK_TIME = 0.265;
 
@@ -349,23 +354,12 @@ function generate(p: WindupParams): { windup: Key[]; delivery: Key[] } {
     lead: land, pivot: [0.36, 0.06 + p.finish * 0.12, p.stride - 0.08],
     ball: [-0.12, 0.7, p.stride + 0.12], glove: [-0.26, 1.0, p.stride + 0.2],
   };
-  // ...square to the target in a fielding position, glove up...
+  // ...square to the target in a fielding position, glove up. (It is held there a beat, and then
+  // the avatar walks back to the spot: see `build`.)
   const LAND: DeliveryPose = {
     hip: 0, coil: 0, lean: 0.22, tilt: 0, pelvis: [0.1, 0.06, p.stride - 0.14],
     lead: land, pivot: [0.36, 0, p.stride - 0.1],
     ball: [0.24, 0.88, p.stride + 0.08], glove: [-0.18, 1.08, p.stride + 0.26],
-  };
-  // ...then a jog back to where they threw from: back foot, front foot, back foot.
-  const S = p.stride;
-  const hands = (z: number): Pick<DeliveryPose, 'ball' | 'glove'> => ({ ball: [0.19, 0.94, z + 0.16], glove: [-0.15, 1.02, z + 0.2] });
-  const STEP_A: DeliveryPose = { hip: 0.05, coil: 0, lean: 0.12, tilt: 0, pelvis: [0.05, 0.04, S * 0.74], lead: land, pivot: [0.22, 0.1, S * 0.68], ...hands(S * 0.74) };
-  const DOWN_A: DeliveryPose = { ...STEP_A, pelvis: [0.03, 0.04, S * 0.56], pivot: [0.17, 0, S * 0.48], ...hands(S * 0.56) };
-  const STEP_B: DeliveryPose = { ...DOWN_A, lean: 0.08, pelvis: [0.01, 0.03, S * 0.36], lead: [-0.13, 0.1, S * 0.5], ...hands(S * 0.36) };
-  const DOWN_B: DeliveryPose = { ...STEP_B, pelvis: [0, 0.02, S * 0.2], lead: [-0.15, 0, 0.1], ...hands(S * 0.2) };
-  const STEP_C: DeliveryPose = { ...DOWN_B, lean: 0.05, pelvis: [0, 0.02, 0.08], pivot: [0.16, 0.08, S * 0.24], ...hands(0.08) };
-  const HOME: DeliveryPose = {
-    hip: 0.06, coil: 0, lean: 0.04, tilt: 0, pelvis: [0, 0.01, 0],
-    lead: [-0.15, 0, 0.07], pivot: [0.15, 0, -0.03], ...hands(0),
   };
   const delivery: Key[] = [
     { t: 0, pose: TOP },
@@ -375,14 +369,7 @@ function generate(p: WindupParams): { windup: Key[]; delivery: Key[] } {
     { t: RELEASE_TIME, pose: RELEASE },
     { t: 0.42, pose: FOLLOW },
     { t: 0.62, pose: FINISH },
-    { t: 0.8, pose: LAND },
-    { t: 0.86, pose: { ...LAND, lean: 0.18, pelvis: [0.09, 0.05, p.stride - 0.16] } },
-    { t: 0.96, pose: STEP_A },
-    { t: 1.06, pose: DOWN_A },
-    { t: 1.16, pose: STEP_B },
-    { t: 1.26, pose: DOWN_B },
-    { t: 1.37, pose: STEP_C },
-    { t: DELIVERY_LENGTH, pose: HOME },
+    { t: LAND_TIME, pose: LAND },
   ];
   return { windup, delivery };
 }
@@ -412,6 +399,9 @@ function build(def: WindupDef): Windup {
   // A custom top carries into the delivery, which starts from the same pose.
   g.delivery[0].pose = windup[windup.length - 1].pose;
   const delivery = applyPatches(g.delivery, def.deliveryKeys);
+  // The finish is held: balanced in the fielding stance, feet planted, settling a little taller.
+  const land = delivery.find((k) => Math.abs(k.t - LAND_TIME) < 1e-3)!.pose;
+  delivery.push({ t: DELIVERY_LENGTH, pose: { ...land, lean: land.lean * 0.75, pelvis: [land.pelvis[0], land.pelvis[1] - 0.02, land.pelvis[2]] } });
   // The ball leaves the hand at RELEASE_TIME, a grip's length beyond the wrist along the arm.
   const rel = sampleKeys(delivery, RELEASE_TIME);
   const S = shoulderOf(rel);
@@ -467,12 +457,11 @@ const DEFS: WindupDef[] = [
     ],
     // Slings across the body and falls away to the glove side.
     deliveryKeys: [
-      { t: 0.42, pose: { pelvis: [-0.2, 0.12, 0.76], hip: -0.75 } },
-      { t: 0.62, pose: { pelvis: [-0.3, 0.1, 0.86], hip: -0.9, pivot: [0.05, 0.24, 1.0] } },
-      { t: 0.8, pose: { pelvis: [-0.3, 0.08, 0.98], hip: -0.4, pivot: [-0.46, 0, 1.1] } },
-      { t: 0.86, pose: { pelvis: [-0.28, 0.06, 0.96], hip: -0.3, pivot: [-0.46, 0, 1.1] } },
-      { t: 0.96, pose: { pelvis: [-0.18, 0.04, 0.86], pivot: [-0.26, 0.1, 0.8] } },
-      { t: 1.06, pose: { pelvis: [-0.04, 0.04, 0.66] } },
+      // (Spun open past the target, the trunk over the planted front foot; the back leg swings wide
+      // across behind it and lands well over on the glove side, so the base is under the body.)
+      { t: 0.42, pose: { pelvis: [-0.04, 0.12, 0.8], hip: -0.8 } },
+      { t: 0.62, pose: { pelvis: [-0.12, 0.1, 0.92], hip: -0.95, pivot: [-0.18, 0.24, 1.0] } },
+      { t: 0.8, pose: { pelvis: [-0.2, 0.08, 1.02], hip: -0.45, pivot: [-0.46, 0, 1.1] } },
     ],
   },
   {

@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import { type Hand, type Pose, bodyToWorld, gloveWorld, worldToBody } from '../../shared/pose';
 import { Arm } from '../../shared/protocol';
 import { type Vec3, clamp, wrapAngle } from '../../shared/vec';
-import { DELIVERY_LENGTH, type DeliveryPose, RELEASE_TIME, type Windup, deliveryPose, exaggerate, getWindup, pelvisHeight, windupPose, windupScale } from '../../shared/windups';
+import { DELIVERY_LENGTH, type DeliveryPose, LAND_TIME, RELEASE_TIME, type Windup, deliveryPose, exaggerate, getWindup, pelvisHeight, windupPose, windupScale } from '../../shared/windups';
 import { BUILDS, GLOVES, HAIR_COLORS, HATS, type Hat, PANTS, S, SKINS, type Style, TOPS } from '../../shared/style';
 import { buildGlove, buildHand, setGloveClosure } from './gear';
 import { rim } from './look';
@@ -100,7 +100,7 @@ function solve2(s: THREE.Vector3, t: THREE.Vector3, a: number, b: number, pole: 
 
 const smooth = (k: number) => k * k * (3 - 2 * k);
 
-interface Foot { pos: THREE.Vector3; from: THREE.Vector3; to: THREE.Vector3; t: number; stepping: boolean }
+interface Foot { pos: THREE.Vector3; from: THREE.Vector3; to: THREE.Vector3; t: number; stepping: boolean; /** Seconds since it last came down. */ down: number; /** How long this step takes (s). */ dur: number }
 
 export interface AvatarFrame {
   pose: Pose;
@@ -122,8 +122,11 @@ export interface AvatarFrame {
   lag?: number;
 }
 
-/** When the delivery hands the feet back to the step planner (they walk back to the spot). */
-const FEET_BACK = 0.8;
+/**
+ * Walking back to the spot after a delivery: at most this far between the feet in one step (m),
+ * this long a step (s), and both feet down this long between steps (s).
+ */
+const WALK_SPREAD = 0.76, WALK_STEP = 0.36, WALK_GAP = 0.05;
 
 export class Avatar {
   root = new THREE.Group();
@@ -164,6 +167,11 @@ export class Avatar {
   private dw = 0;
   private dpose: DeliveryPose | null = null;
   private feetOwned = false;
+  /** Walking back to the spot after a delivery (1), or not (0); `recoverW` is the same, eased. */
+  private recover = 0;
+  private recoverW = 0;
+  /** How much the glove is carried along with the body while walking back (0..1). */
+  private carryW = 0;
   private coreMats: THREE.MeshStandardMaterial[] = [];
   private coreAlpha = 1;
   private sleeve!: THREE.MeshStandardMaterial;
@@ -302,7 +310,7 @@ export class Avatar {
     this.root.traverse((o) => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = true; });
     if (worn.group.userData.noShadow) worn.group.traverse((o) => { o.castShadow = false; });
     worn.group.traverse((o) => { if (o.userData.noShadow) o.castShadow = false; });
-    this.feet = [0, 1].map(() => ({ pos: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), t: 1, stepping: false }));
+    this.feet = [0, 1].map(() => ({ pos: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), t: 1, stepping: false, down: 1, dur: 0.3 }));
     this.teleport(home, facing);
   }
 
@@ -469,13 +477,15 @@ export class Avatar {
     }
     const P = this.dpose;
     const dw = P ? this.dw * fade : 0;
-    // The feet belong to the clip until the follow-through lands; then they walk back.
-    if (throwing && this.feetOwned && this.deliveryT >= FEET_BACK && P) {
+    // The feet belong to the clip until both are down in the fielding stance. They stay planted
+    // there while the finish is held, then walk back to the spot.
+    if (throwing && this.feetOwned && this.deliveryT >= LAND_TIME && P) {
       this.feetOwned = false;
       const gf = this.hand === 'R' ? 0 : 1;
       pitch(P.lead, this.feet[gf].pos).setY(0);
       pitch(P.pivot, this.feet[1 - gf].pos).setY(0);
-      for (const ft of this.feet) { ft.stepping = false; ft.from.copy(ft.pos); ft.to.copy(ft.pos); ft.t = 1; }
+      for (const ft of this.feet) { ft.stepping = false; ft.from.copy(ft.pos); ft.to.copy(ft.pos); ft.t = 1; ft.down = 1; }
+      this.recover = 1;
     }
     if (!throwing) this.feetOwned = false;
     const footW = throwing ? (this.feetOwned ? dw : 0) : dw;
@@ -483,6 +493,16 @@ export class Avatar {
     // ---- glove target in body space decides crouch and lean
     const gw = gloveWorld(pose);
     gw[1] -= lift;
+    // Walking back, the glove goes along with the body (it is held where it would be at the spot,
+    // relative to the feet). The moment a throw is coming, it goes to the catch: catching comes first.
+    // (A throw on its way while still out in front: it hands over to the catch as the body gets home.)
+    const away = Math.hypot((this.feet[0].pos.x + this.feet[1].pos.x) / 2 - this.pos.x, (this.feet[0].pos.z + this.feet[1].pos.z) / 2 - this.pos.z);
+    const carry = this.recover > 0 && !f.gloved && !lift && !f.dive ? (f.ready ? clamp((away - 0.25) / 0.5, 0, 1) : 1) : 0;
+    this.carryW += (carry - this.carryW) * (1 - Math.exp(-dt / (carry ? 0.05 : 0.08)));
+    if (this.carryW > 0.001) {
+      const mx = (this.feet[0].pos.x + this.feet[1].pos.x) / 2 - this.pos.x, mz = (this.feet[0].pos.z + this.feet[1].pos.z) / 2 - this.pos.z;
+      gw[0] += mx * this.carryW; gw[2] += mz * this.carryW;
+    }
     const gl = worldToBody(yaw, [gw[0] - this.pos.x, gw[1], gw[2] - this.pos.z]);
     const wantCrouch = (f.ready ? 0.1 : 0.025) + clamp((0.95 - gl[1]) / 0.75, 0, 1) * 0.3 + Math.min(0.06, speed * 0.012) + Math.abs(dive) * 0.3;
     this.crouch += (wantCrouch - this.crouch) * (1 - Math.exp(-dt / 0.09));
@@ -497,23 +517,55 @@ export class Avatar {
     // ---- feet: a simple step planner. Feet stay planted until the body
     // leaves them behind, then a step arcs to the new stance.
     const gloveFoot = this.hand === 'R' ? 0 : 1;
-    const stepDur = clamp(0.32 - speed * 0.03, 0.17, 0.32);
-    for (let i = 0; i < 2 && footW < 0.02; i++) {
+    // Walking back stops the moment anything else needs the feet: moving (to a catch), or a windup.
+    if (this.recover > 0 && !throwing && (speed > 0.4 || dw > 0.02)) this.recover = 0;
+    const walking = this.recover > 0;
+    // (A throw on its way: hurry.)
+    const stepDur = walking ? (f.ready ? WALK_STEP * 0.6 : WALK_STEP) : clamp(0.32 - speed * 0.03, 0.17, 0.32);
+    // (Walking back: the foot further from its place goes first, the back foot if it's close; one at a time.)
+    let walker = -1;
+    if (walking && !throwing && !this.feet[0].stepping && !this.feet[1].stepping) {
+      const e0 = this.feet[0].pos.distanceTo(this.stance(0, yaw)), e1 = this.feet[1].pos.distanceTo(this.stance(1, yaw));
+      walker = Math.abs(e0 - e1) < 0.06 ? 1 - gloveFoot : e0 > e1 ? 0 : 1;
+      if (Math.max(e0, e1) <= 0.2 || this.feet[1 - walker].down < (f.ready ? WALK_GAP * 0.4 : WALK_GAP)) walker = -1;
+      if (Math.max(e0, e1) <= 0.2) this.recover = 0;
+    }
+    for (const ft of this.feet) if (!ft.stepping) ft.down += dt;
+    for (let i = 0; i < 2 && footW < 0.02 && !throwing; i++) {
       const ft = this.feet[i];
       const want = this.stance(i, yaw);
+      const other = this.feet[1 - i];
+      if (walking) {
+        // A natural step: never further from the planted foot than a walking stride.
+        // (Hurrying back for a throw, a longer backpedal stride.)
+        const spread = f.ready ? WALK_SPREAD * 1.2 : WALK_SPREAD, d = want.distanceTo(other.pos);
+        if (d > spread) want.sub(other.pos).multiplyScalar(spread / d).add(other.pos);
+        if (ft.stepping) {
+          ft.t += dt / ft.dur;
+          ft.to.lerp(want, 0.25);
+          const k = Math.min(1, ft.t);
+          ft.pos.lerpVectors(ft.from, ft.to, smooth(k));
+          ft.pos.y = Math.sin(Math.PI * k) * 0.06;
+          if (k >= 1) { ft.stepping = false; ft.pos.y = 0; ft.down = 0; }
+        } else if (i === walker) {
+          // (A longer step takes a little longer, as it does when you walk.)
+          ft.stepping = true; ft.t = 0; ft.from.copy(ft.pos); ft.to.copy(want);
+          ft.dur = stepDur * clamp(ft.pos.distanceTo(want) / 1.0, 0.8, 1.3);
+        }
+        continue;
+      }
       // Moving: plant ahead along the velocity.
       want.addScaledVector(this.vel, clamp(stepDur * 0.7, 0, 0.3));
       // A wide reach: the foot on that side steps out under it (weight goes with the glove).
       const out = clamp((Math.abs(gl[0]) - 0.5) * 0.7, 0, 0.3) * (1 - dw);
       if (out > 0 && (i === 0 ? -1 : 1) === Math.sign(gl[0])) want.addScaledVector(right, Math.sign(gl[0]) * out);
-      const other = this.feet[1 - i];
       if (ft.stepping) {
         ft.t += dt / stepDur;
         ft.to.lerp(want, 0.25);
         const k = Math.min(1, ft.t);
         ft.pos.lerpVectors(ft.from, ft.to, smooth(k));
         ft.pos.y = Math.sin(Math.PI * k) * (0.05 + Math.min(0.08, speed * 0.02));
-        if (k >= 1) { ft.stepping = false; ft.pos.y = 0; }
+        if (k >= 1) { ft.stepping = false; ft.pos.y = 0; ft.down = 0; }
       } else if (!other.stepping && (ft.pos.distanceTo(want) > 0.2 || (speed > 0.4 && ft.pos.distanceTo(want) > 0.12))) {
         // Only one foot in the air at a time; the further-behind foot goes first.
         const otherErr = other.pos.distanceTo(this.stance(1 - i, yaw));
@@ -534,6 +586,14 @@ export class Avatar {
     // ---- pelvis: between the feet, dropped by the crouch, bobbing with steps
     const mid = tmpA.addVectors(this.feet[0].pos, this.feet[1].pos).multiplyScalar(0.5);
     const centre = new THREE.Vector3(this.pos.x, 0, this.pos.z).lerp(mid.setY(0), 0.35);
+    // Walking back, the hips ride over the feet, and the weight goes onto the planted foot while the other swings.
+    this.recoverW += ((this.recover > 0 ? 1 : 0) - this.recoverW) * (1 - Math.exp(-dt / (this.recover > 0 ? 0.03 : 0.18)));
+    if (this.recoverW > 0.001) {
+      const sw = this.feet[0].stepping ? 0 : this.feet[1].stepping ? 1 : -1;
+      const over = mid.clone();
+      if (sw >= 0) over.lerp(tmpB.copy(this.feet[1 - sw].pos).setY(0), 0.3 * Math.sin(Math.PI * Math.min(1, this.feet[sw].t)));
+      centre.lerp(over, this.recoverW);
+    }
     const bob = Math.max(this.feet[0].pos.y, this.feet[1].pos.y) * 0.25;
     // Idle: slow weight shifts and breathing.
     const idle = speed < 0.2 && dw < 0.01 ? 1 : 0;
@@ -542,6 +602,8 @@ export class Avatar {
     // High glove: up on the toes.
     this.tiptoe += (clamp((gl[1] - 1.75) * 0.32, 0, 0.13) - this.tiptoe) * (1 - Math.exp(-dt / 0.1));
     let hipY = HIP_Y - this.crouch * 0.42 + this.tiptoe + bob - 0.01 * idle * (0.5 + 0.5 * Math.sin(this.time * 1.7));
+    // (A walking stride is wider than a stance: the hips ride a little lower for it.)
+    if (this.recoverW > 0.001) hipY -= this.recoverW * clamp(Math.hypot(this.feet[0].pos.x - this.feet[1].pos.x, this.feet[0].pos.z - this.feet[1].pos.z) - 0.35, 0, 0.4) * 0.16;
     let hipTurn = 0, coil = 0, lean = this.leanF, tilt = -this.leanS * 0.8;
     if (P && dw > 0) {
       const pc = pitch([P.pelvis[0], 0, P.pelvis[2]]);
