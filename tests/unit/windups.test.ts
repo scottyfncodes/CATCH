@@ -9,7 +9,7 @@ import {
   deliveryPose, getWindup, pelvisHeight, releasePointFor, sampleKeys, shoulderOf, windupId, windupPose,
 } from '../../src/shared/windups';
 import { defaultStyle } from '../../src/shared/style';
-import { Avatar } from '../../src/client/scene/avatar';
+import { Avatar, RECOVERY_TIME } from '../../src/client/scene/avatar';
 
 describe('windup library', () => {
   it('has the house delivery and six numbered signatures, each with a plain description', () => {
@@ -255,6 +255,22 @@ describe('the avatar performs the delivery', () => {
       // Home, on the spot, well before any throw could come back.
       const home = frames.find((f) => f.t > 2.4)!;
       for (const i of [0, 1]) expect(home.feet[i].distanceTo(spot(i)), `#${w.id} foot ${i} home`).toBeLessThan(0.08);
+    }
+  });
+
+  it('every delivery, either hand, is standing on its spot by RECOVERY_TIME (the windup preview loops on it)', () => {
+    for (const hand of ['R', 'L'] as const) {
+      for (const w of WINDUPS) {
+        const av = new Avatar([2, 0, 5], 0.4, hand, defaultStyle('test'), w.id);
+        const base = { pose: { x: 2, z: 5, yaw: 0.4, g: [0, 1.18, -0.4] as Vec3 }, look: null };
+        for (let i = 0; i < 60; i++) av.update(dt, { ...base, arm: Arm.Holding, charge: 0 });
+        const n = Math.round(w.params.tempo / dt);
+        for (let i = 1; i <= n; i++) av.update(dt, { ...base, arm: Arm.Windup, charge: i / n });
+        for (let t = 0; t < RECOVERY_TIME; t += dt) av.update(dt, { ...base, arm: t < 0.75 ? Arm.Release : Arm.Idle, charge: 0 });
+        const b = av as unknown as Body & { recover: number };
+        expect(b.recover, `#${w.id} ${hand} still walking back`).toBe(0);
+        expect(b.feet[0].stepping || b.feet[1].stepping, `#${w.id} ${hand} mid-step`).toBe(false);
+      }
     }
   });
 
