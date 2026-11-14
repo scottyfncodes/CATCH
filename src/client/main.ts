@@ -765,8 +765,12 @@ function onScore(s: ScoreState, ev?: BallEvent) {
   const progress = `${kind}:${s.dist}:${s.glove}:${s.speed}`;
   if (progress !== lastProgress) {
     if (lastProgress.startsWith(kind + ':')) { label.classList.remove('step'); void label.offsetWidth; label.classList.add('step'); }
-    // Arriving (or the room's game changing): say what this room plays. (Not on top of the first-time tips: one thing to read at a time.)
-    else if (hud && !Tutorial.needed()) toast(`This room: ${kind}`);
+    // Arriving (or the room's game changing): say what this room plays, and who changed it. (Not on top of the first-time tips: one thing to read at a time.)
+    else if (hud && !Tutorial.needed()) {
+      const host = roster.find((p) => p.id === s.host);
+      const changed = lastProgress !== '' && lastProgress.split(':')[0] !== kind;
+      toast(changed ? `${host?.id === me ? 'You' : host?.name ?? 'The host'} changed the game: ${kind}` : `This room: ${kind}`);
+    }
     lastProgress = progress;
   }
   if ((ev?.k === 'drop' && !ev.void) || ev?.k === 'deflect') {
@@ -823,6 +827,40 @@ function showGrade(q: string, st?: string | null) {
   gradeTimer = window.setTimeout(() => { el.className = 'grade'; }, great ? 2400 : 1700);
 }
 
+/**
+ * How this room plays, on the pause sheet. The host (whoever opened the room, or has been
+ * here longest since) can change it; everyone else sees what it is and who can.
+ */
+function rulesSection(s: ScoreState): string {
+  const mine = s.host !== null && s.host === me;
+  const host = roster.find((p) => p.id === s.host);
+  return `
+    <section class="rules">
+      <h3>How this room plays</h3>
+      <div class="traits" role="group" aria-label="How this room plays">
+        ${TRAIT_KEYS.map((k) => `<button type="button" class="trait" role="switch" data-rule="${k}" aria-checked="${s.traits[k]}"${mine ? '' : ' disabled'}>
+          <span class="tick" aria-hidden="true"></span><b>${TRAIT_INFO[k].name}</b><span>${TRAIT_INFO[k].line}</span></button>`).join('')}
+      </div>
+      <p class="hint" id="rulesnote">${mine
+    ? 'Changes are for everyone here, from the next throw. Anything you turn on starts fresh; the streak carries on.'
+    : `${host ? esc(host.name) : 'Whoever opened the room'} sets how this room plays.`}</p>
+    </section>`;
+}
+
+function bindRules(el: HTMLElement, s: ScoreState) {
+  if (s.host === null || s.host !== me) return;
+  const t: Traits = { ...s.traits };
+  el.querySelectorAll<HTMLButtonElement>('[data-rule]').forEach((b) => b.addEventListener('click', () => {
+    const k = b.dataset.rule as Trait;
+    t[k] = !t[k];
+    b.setAttribute('aria-checked', String(t[k]));
+    haptic('light');
+    // (Also what your next room starts with.)
+    save({ traits: { ...t } });
+    game?.setRules(t);
+  }));
+}
+
 function pauseSheet(code: string) {
   const s = game?.score;
   const people = [...roster].sort((a, b) => a.seat - b.seat).map((p) => `
@@ -831,7 +869,8 @@ function pauseSheet(code: string) {
       <span class="num">${p.catches} caught${p.perfects ? ` · ${p.perfects} perfect` : ''}${p.saves ? ` · ${p.saves} great` : ''}</span><span class="num">${p.drops} dropped</span></li>`).join('');
   const el = sheet(`
     <h2>Paused</h2>
-    <p class="sub">${s ? `This room: ${traitWords(s.traits)}. ` : ''}The game keeps going for everyone else.</p>
+    <p class="sub">The game keeps going for everyone else.</p>
+    ${s ? rulesSection(s) : ''}
     <section>
       <h3>Invite</h3>
       <div class="invite-code"><div><small>Room code</small><b>${code}</b></div><button class="btn btn-ink btn-sm" id="share">Share link</button></div>
@@ -859,6 +898,7 @@ function pauseSheet(code: string) {
       <button class="btn btn-danger" id="leave">Leave room</button>
     </div>`);
   bindSettings(el);
+  if (s) bindRules(el, s);
   el.querySelector('#share')!.addEventListener('click', () => invite(code));
   el.querySelector('#wu')!.addEventListener('click', () => { el.remove(); windupSheet(); });
   el.querySelector('#lk')!.addEventListener('click', () => { el.remove(); lookSheet(); });

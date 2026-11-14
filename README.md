@@ -10,7 +10,9 @@ friends can share a room and keep one streak of consecutive catches alive;
 alone, Coach keeps you company.
 
 **How to play is up to you.** Whoever opens the room picks any mix of these
-(or none); friends who join play the same, and see which.
+(or none); friends who join play the same, and see which. The host can change
+them mid-game from the pause screen: everyone plays the new rules from the next
+throw, anything turned on starts fresh, and the streak carries on.
 
 - **Step back.** You start 46 feet apart. Every catch takes you both a step
   further back, and the throws get longer, higher and harder: at 394 feet (as
@@ -118,7 +120,9 @@ tests/visual/ authoring tools: a filmstrip of any windup, the catching poses, th
   because nothing cosmetic affects play. A build changes how thick the limbs
   are drawn, never where the joints are, so reach and release are identical.
 - **Traits** (`Traits` in `src/shared/protocol.ts`). The room carries its
-  traits (set by whoever opens it, sent to everyone with the score). Step back
+  traits (set by whoever opens it, sent to everyone with the score). The host
+  (`hostId()`: whoever has been in the room longest) can change them with a
+  `rules` message; the change waits for the ball to be in someone's hand. Step back
   and Big mitt each have their own counter (`steps`, `shrinks`); misses take one
   off each and the third resets both. Speed up is `speedFactor(streak)`: the
   streak is the server's, so every phone and Coach throw at the same speed, and

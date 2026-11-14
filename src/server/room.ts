@@ -41,6 +41,7 @@ import {
   gloveSize,
   missesCount,
   speedFactor,
+  TRAIT_KEYS,
   toTraits,
   wildOffset,
   catchGrade,
@@ -135,6 +136,10 @@ export class Room {
   steps = 0;
   shrinks = 0;
   misses = 0;
+  /** The streak when Speed up was last turned on (it speeds up from there). */
+  speedFrom = 0;
+  /** A change of rules from the host, waiting for the ball to be in someone's hand. */
+  pendingRules: Traits | null = null;
   lastActive: number;
   /** A disconnect/leave happened during the current flight: a drop will not reset the streak. */
   private flightDisrupted = false;
@@ -167,7 +172,7 @@ export class Room {
     return {
       streak: this.streak, sessionBest: this.sessionBest, groupBest: this.records.get(key), groupKey: key,
       dist: ringSpread(Math.max(2, this.members.size), this.back()), misses: this.misses,
-      traits: { ...this.traits }, glove: this.glove(), speed: this.speed(),
+      traits: { ...this.traits }, glove: this.glove(), speed: this.speed(), host: this.hostId(),
     };
   }
 
@@ -193,8 +198,42 @@ export class Room {
   private back(): number { return this.traits.back ? this.steps : 0; }
   /** The size of everyone's glove right now. */
   glove(): number { return gloveSize(this.traits.mitt, this.shrinks); }
-  /** How much faster than normal every throw is right now (Speed up). */
-  speed(): number { return speedFactor(this.traits.speed, this.streak); }
+  /** How much faster than normal every throw is right now (Speed up: counted from when it was turned on). */
+  speed(): number { return speedFactor(this.traits.speed, Math.max(0, this.streak - this.speedFrom)); }
+
+  /** Who can change how the room plays: the player who has been here longest (the one who opened it, unless they left). */
+  hostId(): string | null {
+    const hs = this.humans().sort((a, b) => a.joinOrder - b.joinOrder);
+    return (hs.find((m) => m.connected) ?? hs[0])?.id ?? null;
+  }
+
+  /**
+   * The host changes how the room plays. A trait turned on starts fresh (Step back from the
+   * start, Big mitt at its biggest, Speed up from normal); one turned off stops; the streak
+   * goes on. It waits for the ball to be in someone's hand, so no throw changes in the air.
+   */
+  private changeRules(m: Member, tr: number) {
+    if (m.id !== this.hostId()) return;
+    const next = toTraits(tr, this.traits);
+    if (TRAIT_KEYS.every((k) => next[k] === this.traits[k])) { this.pendingRules = null; return; }
+    this.pendingRules = next;
+    this.applyPendingRules();
+  }
+
+  private applyPendingRules() {
+    const next = this.pendingRules;
+    if (!next || this.ball.phase !== 'held') return;
+    this.pendingRules = null;
+    const was = this.traits;
+    if (!was.back && next.back) this.steps = 0;
+    if (!was.mitt && next.mitt) this.shrinks = 0;
+    if (!was.speed && next.speed) this.speedFrom = this.streak;
+    this.traits = next;
+    if (!next.back) this.steps = 0;
+    this.misses = 0;
+    this.relayout();
+    this.broadcastRoster();
+  }
 
   // ---------------------------------------------------------------- membership
 
@@ -392,6 +431,9 @@ export class Room {
         m.style = sanitizeStyle(msg.s, m.style);
         this.broadcastRoster();
         return;
+      case 'rules':
+        this.changeRules(m, Number(msg.tr));
+        return;
       case 'rec': {
         const key = this.groupKey();
         if (msg.key !== key) return;
@@ -483,7 +525,7 @@ export class Room {
       const v: Vec3 = [-vel[0] * s + side * Math.cos(m.pose.yaw), 2.6, -vel[2] * s - side * Math.sin(m.pose.yaw)];
       this.launch(m.id, pos, v, at, false);
       const disrupted = this.flightDisrupted;
-      if (!disrupted) { this.streak = 0; m.drops++; this.missed(); }
+      if (!disrupted) { this.streak = 0; this.speedFrom = 0; m.drops++; this.missed(); }
       this.broadcastBall({ k: 'deflect', by: m.id, speed, at, pos }, true);
       return;
     }
@@ -511,6 +553,7 @@ export class Room {
   tick() {
     const t = this.now();
     if (this.bot) this.botTick(t);
+    if (this.pendingRules) this.applyPendingRules();
     // (Read the ball after Coach has acted: a ball that just came off Coach's
     // glove is already dead, and must not also be called a drop.)
     const b = this.ball;
@@ -578,6 +621,7 @@ export class Room {
     const isVoid = this.flightDisrupted || (blame !== null && !blame.connected);
     if (!isVoid) {
       this.streak = 0;
+      this.speedFrom = 0;
       if (blame) blame.drops++;
       this.missed();
     }
