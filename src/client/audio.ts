@@ -121,7 +121,7 @@ export class AudioEngine {
   private render() {
     const sr = this.ctx!.sampleRate;
     const N = (s: number) => Math.floor(s * sr);
-    const out: Bufs = { shot: [], ring: [], crack: [], body: [], settle: [], ground: [], transfer: [], creak: [], bird: [], noise: [], wind: [], palm: [] };
+    const out: Bufs = { shot: [], ring: [], crack: [], body: [], whip: [], settle: [], ground: [], transfer: [], creak: [], bird: [], noise: [], wind: [], palm: [] };
 
     for (let v = 0; v < 4; v++) {
       const r = rng(101 + v * 17);
@@ -132,7 +132,8 @@ export class AudioEngine {
       biquad(c, sr, 'peaking', 5200, 2, 3);
       envelope(c, sr, 0.0002, 0.0042 + r() * 0.0012);
       c[0] += 0.9; c[1] -= 0.5;
-      out.crack.push(this.buf(fadeEdges(normalize(c, 1), sr, 1)));
+      // (Two samples of fade, not a millisecond: the click at the front is the point.)
+      out.crack.push(this.buf(fadeEdges(normalize(c, 1), sr, 0.04)));
 
       // Shot: the report of a hard one into the pocket. Everything at once and
       // then nothing: full-band, clipped, over in a twentieth of a second, with
@@ -140,32 +141,49 @@ export class AudioEngine {
       const sn = N(0.11);
       const shot = new Float32Array(sn);
       const blast = white(sn, r);
-      biquad(blast, sr, 'highpass', 500, 0.7);
-      biquad(blast, sr, 'peaking', 1900 + r() * 300, 0.9, 7);
+      biquad(blast, sr, 'highpass', 700, 0.7);
+      biquad(blast, sr, 'peaking', 2500 + r() * 300, 0.9, 8);
       envelope(blast, sr, 0.00015, 0.011 + r() * 0.002);
       mix(shot, normalize(blast, 1), 1);
       const bark = white(sn, r);
-      biquad(bark, sr, 'bandpass', 950 + r() * 120, 0.8);
+      biquad(bark, sr, 'bandpass', 1250 + r() * 150, 0.8);
       envelope(bark, sr, 0.0003, 0.024);
       mix(shot, normalize(bark, 1), 0.7);
-      const punch = tone(sn, sr, 190, 62, 0.03, 0.03);
+      // (A little low end under it, short: the report is a pop, not a thud.)
+      const punch = tone(sn, sr, 210, 90, 0.016, 0.02);
       envelope(punch, sr, 0.0005, 1);
-      mix(shot, punch, 0.9);
+      mix(shot, punch, 0.3);
       shot[0] += 1; shot[1] -= 0.6;
       saturate(shot, 3.2);
-      out.shot.push(this.buf(fadeEdges(normalize(shot, 1), sr, 1)));
+      out.shot.push(this.buf(fadeEdges(normalize(shot, 1), sr, 0.04)));
+
+      // Whip: the crack of a whip on top of a clean one. A whip cracks because its tip
+      // breaks the sound barrier: a single N-shaped pressure wave under a millisecond
+      // long, then a thin bright tear of air. Nothing low, nothing after.
+      const wn = N(0.03);
+      const whip = new Float32Array(wn);
+      const nw = Math.max(8, Math.round(sr * (0.00045 + r() * 0.0001)));
+      for (let i = 0; i < nw; i++) whip[i] = 1 - (2 * i) / nw;
+      const tear = white(wn, r);
+      biquad(tear, sr, 'highpass', 3200, 0.7);
+      biquad(tear, sr, 'peaking', 6500 + r() * 1000, 1.2, 6);
+      envelope(tear, sr, 0.00005, 0.0022 + r() * 0.0006);
+      mix(whip, normalize(tear, 1), 0.75);
+      saturate(whip, 2.4);
+      out.whip.push(this.buf(fadeEdges(normalize(whip, 1), sr, 0.04)));
 
       // Body: the pocket. Mid slap + hand thump behind the glove + leather ring.
       const n = N(0.24);
       const body = new Float32Array(n);
       const slap = white(n, r);
-      biquad(slap, sr, 'bandpass', 430 + r() * 90, 1.1);
-      biquad(slap, sr, 'lowpass', 1700, 0.7);
-      envelope(slap, sr, 0.0007, 0.026 + r() * 0.006);
-      mix(body, normalize(slap, 1), 1);
-      const thump = tone(n, sr, 170 + r() * 20, 82 + r() * 10, 0.048, 0.018);
+      // (The THWACK: leather smacking leather, wide across the low mids, a little longer.)
+      biquad(slap, sr, 'bandpass', 520 + r() * 80, 0.75);
+      biquad(slap, sr, 'lowpass', 2000, 0.7);
+      envelope(slap, sr, 0.0005, 0.032 + r() * 0.006);
+      mix(body, normalize(slap, 1), 1.5);
+      const thump = tone(n, sr, 190 + r() * 20, 100 + r() * 10, 0.024, 0.018);
       envelope(thump, sr, 0.001, 1);
-      mix(body, thump, 0.85);
+      mix(body, thump, 0.3);
       mix(body, tone(n, sr, 760 * (0.93 + r() * 0.14), 720, 0.015, 0.05), 0.32);
       mix(body, tone(n, sr, 1330 * (0.93 + r() * 0.14), 1300, 0.01, 0.05), 0.2);
       // Early reflection off the forearm/ground.
@@ -388,22 +406,28 @@ export class AudioEngine {
       return;
     }
     // Clean catches: one continuous ladder from thwap to POP.
+    // (Headroom: the whole thing 1.5 dB down, so a hard one in the middle of the pocket
+    // peaks at full scale instead of leaning on the master's safety clip.)
+    const lv = 0.84;
     // Crack: brighter and louder the closer to the centre.
     const crackGain = (0.06 + 1.15 * Math.pow(g, 1.6)) * (0.25 + 0.75 * Math.pow(s, 1.1));
     const crackCut = 2200 + 15000 * g * g;
-    this.play('crack', node, crackGain, t, (0.94 + 0.08 * g) * jitter(), { type: 'lowpass', f: crackCut });
+    this.play('crack', node, crackGain * 1.3 * lv, t, (0.94 + 0.08 * g) * jitter(), { type: 'lowpass', f: crackCut });
+    // Whip: the crack of it, on top: strongest dead centre and thrown hard.
+    const whipGain = (0.05 + 0.95 * g * g) * (0.35 + 0.65 * Math.pow(s, 1.1));
+    this.play('whip', node, whipGain * 0.9 * lv, t, (0.97 + 0.06 * g) * jitter());
     // Body: tighter (higher, shorter) on a centred catch, duller off it.
     const bodyRate = (0.86 + 0.12 * s + 0.1 * g) * jitter();
     const bodyCut = 1500 + 9000 * g;
-    this.play('body', node, (0.5 + 0.35 * g) * loud, t, bodyRate, { type: 'lowpass', f: bodyCut });
+    this.play('body', node, (0.66 + 0.36 * g) * loud * lv, t, bodyRate, { type: 'lowpass', f: bodyCut });
     // Ring: only near the centre.
     const ringAmt = Math.max(0, (g - 0.5) / 0.5);
     if (ringAmt > 0) {
-      this.play('ring', node, Math.pow(ringAmt, 1.4) * (0.32 + 0.4 * s), t + 0.001, (0.97 + 0.06 * s) * jitter());
+      this.play('ring', node, Math.pow(ringAmt, 1.4) * (0.32 + 0.4 * s) * lv, t + 0.001, (0.97 + 0.06 * s) * jitter());
     }
     // The report: a clean one, thrown hard, goes off like a shot. Dry: nothing comes back off the houses.
     const shotGain = Math.pow(g, 1.3) * (0.25 + 0.95 * Math.pow(s, 1.4));
-    if (shotGain > 0.04) this.play('shot', node, shotGain * 1.15, t, (0.96 + 0.1 * s) * jitter());
+    if (shotGain > 0.04) this.play('shot', node, shotGain * 1.15 * lv, t, (0.96 + 0.1 * s) * jitter());
     // Settle: more leather shuffling when it wasn't clean.
     this.play('settle', node, 0.12 + 0.22 * (1 - g), t + 0.012, 0.92 + 0.1 * g);
   }
