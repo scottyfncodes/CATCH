@@ -20,16 +20,6 @@ recognisable motion can still identify a real athlete, and right-of-publicity
 law varies by jurisdiction. What to review, and the built-in fallback (ship only
 the neutral house delivery, #00), are in [WINDUPS.md](WINDUPS.md#-legal-review-before-any-public-commercial-release).
 
-### 2. The "Superhero cape" reward
-
-The 1500-streak reward is a blue top with a red cape, a belt, and a letter in
-a diamond on the chest. The diamond-and-letter emblem with that colour scheme
-echoes a famous comic-book hero's shield. It was left as it is in this pass
-(the branding pass was scoped to caps). If counsel wants it changed, the emblem
-is drawn in one place (`shirtTexture`, the `hero` case, in
-`src/client/scene/wear.ts`): a different shape (a ball, a star, the CATCH.
-wordmark) changes nothing else.
-
 ## Done
 
 ### Caps (changed)
@@ -39,6 +29,17 @@ navy, green or red cap sits close to how some professional baseball teams brand
 theirs. The caps now carry the game's own wordmark, **CATCH.** (heavy, tight,
 the dot in stitch red; in the lettering's colour on a red cap), the same mark as
 the home screen. Nothing else about the caps changed.
+
+### The 1500-streak cape (replaced)
+
+The 1500-streak reward was a "Superhero cape": a blue top, a red cape, a belt
+and a letter in a diamond on the chest, a combination that echoed a famous
+comic-book hero's shield. It is now **The Closer** (baseball slang for the
+pitcher who finishes the game): a navy top with a baseball across the chest, a
+cream cape with a baseball's red stitching down both edges, and a gold clasp
+set with the CATCH. red dot. The emblem, the blue-and-red scheme and the belt
+are gone; the streak that earns it and the cape are unchanged. A unit test
+keeps "super" and "hero" out of the reward names.
 
 ### Nothing else that is known
 

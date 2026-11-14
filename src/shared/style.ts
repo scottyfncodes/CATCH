@@ -39,7 +39,7 @@ interface Item {
 // it changes how anyone throws or catches.)
 export interface Hat extends Item { shape: 'none' | 'cap' | 'back' | 'propeller' | 'duck' | 'cowboy' | 'crown'; color: string; accent?: string }
 export interface Glove extends Item { leather: string; dark: string; pocket: string; lace: string; extra?: 'eyes' | 'shark' | 'disco' | 'fire' }
-export interface Top extends Item { color: string; pattern: 'plain' | 'hawaiian' | 'tux' | 'hero' | 'robe'; accent?: string }
+export interface Top extends Item { color: string; pattern: 'plain' | 'hawaiian' | 'tux' | 'closer' | 'robe'; accent?: string }
 
 export const HATS: Hat[] = [
   { name: 'Navy cap', at: 0, shape: 'cap', color: '#26295a', accent: '#efe6d2' },
@@ -71,7 +71,7 @@ export const TOPS: Top[] = [
   { name: 'Grey tee', at: 0, color: '#8d99ae', pattern: 'plain' },
   { name: 'Hawaiian shirt and lei', at: 50, color: '#e2553a', pattern: 'hawaiian', accent: '#ffd25a', swatch: 'radial-gradient(circle at 30% 35%, #ffd25a 0 14%, transparent 16%), radial-gradient(circle at 68% 66%, #ff9ac1 0 14%, transparent 16%), #e2553a' },
   { name: 'Tuxedo with tails', at: 500, color: '#17171b', pattern: 'tux', accent: '#d81e3a', swatch: 'linear-gradient(90deg, #17171b 0 34%, #f7f4ee 34% 66%, #17171b 66%)' },
-  { name: 'Superhero cape', at: 1500, color: '#2456c9', pattern: 'hero', accent: '#e43a2f', swatch: 'linear-gradient(135deg, #2456c9 0 50%, #e43a2f 50%)' },
+  { name: 'The Closer', at: 1500, color: '#1f2a4a', pattern: 'closer', accent: '#efe6d2', swatch: 'radial-gradient(circle at 42% 50%, #fbf8f1 0 31%, transparent 33%), linear-gradient(90deg, #1f2a4a 0 76%, #c8372d 76% 80%, #efe6d2 80%)' },
   { name: 'Royal robe', at: 5000, color: '#8e1626', pattern: 'robe', accent: '#f6f3ec', swatch: 'radial-gradient(circle at 30% 30%, #111 0 6%, transparent 7%), radial-gradient(circle at 65% 60%, #111 0 6%, transparent 7%), linear-gradient(#f6f3ec 0 40%, #8e1626 40%)' },
 ];
 

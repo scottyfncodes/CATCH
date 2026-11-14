@@ -3,7 +3,8 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { Arm } from '../../src/shared/protocol';
-import { GLOVES, HATS, S, type Style, TOPS, defaultStyle } from '../../src/shared/style';
+import { BUILDS, GLOVES, HATS, S, type Style, TOPS, defaultStyle } from '../../src/shared/style';
+import { torsoSurface } from '../../src/client/scene/body';
 import { bodyToWorld } from '../../src/shared/pose';
 import { Avatar } from '../../src/client/scene/avatar';
 
@@ -43,7 +44,7 @@ describe('everything you can wear', () => {
   });
 
   it('a cape streams out behind you when you run, and hangs when you stand', () => {
-    const hero = TOPS.findIndex((t) => t.pattern === 'hero');
+    const hero = TOPS.findIndex((t) => t.pattern === 'closer');
     const back = (av: Avatar) => {
       // How far behind the trunk the bottom of the cape is (+Z is behind).
       let z = -Infinity;
@@ -55,5 +56,50 @@ describe('everything you can wear', () => {
     const av = new Avatar([0, 0, 0], 0, 'R', wearing(S.top, hero), 34);
     for (let i = 0; i < 120; i++) av.update(1 / 60, { pose: { x: 0, z: -i * 0.08, yaw: 0, g: bodyToWorld(0, G) }, arm: Arm.Idle, charge: 0, look: [0, 1.6, -30], ready: false });
     expect(back(av)).toBeGreaterThan(standing + 0.15);
+  });
+
+  it('a cape lies over the back, never through it: standing, running, for every build', () => {
+    for (const pattern of ['closer', 'robe'] as const) {
+      const k = TOPS.findIndex((t) => t.pattern === pattern);
+      BUILDS.forEach((b, bi) => {
+        const style = wearing(S.top, k); style[S.build] = bi;
+        const av = new Avatar([0, 0, 0], 0, 'R', style, 34);
+        let worst = Infinity;
+        for (let i = 0; i < 150; i++) {
+          // Stand for a second, then run.
+          av.update(1 / 60, { pose: { x: 0, z: i < 60 ? 0 : -(i - 60) * 0.08, yaw: 0, g: bodyToWorld(0, G) }, arm: Arm.Idle, charge: 0, look: [0, 1.6, -30], ready: i < 60 });
+          av.root.traverse((o) => {
+            const m = o as THREE.Mesh;
+            if (!m.isMesh || m.geometry.type !== 'PlaneGeometry') return;
+            // (The middle of the cloth, where the back is furthest out: the shoulder blades.)
+            const p = m.geometry.attributes.position, cols = (m.geometry as THREE.PlaneGeometry).parameters.widthSegments + 1, mid = (cols - 1) / 2;
+            for (let v = mid; v < p.count; v += cols) {
+              const y = p.getY(v);
+              if (y < 0.02 || y > 0.6) continue;
+              worst = Math.min(worst, p.getZ(v) - torsoSurface(y, Math.PI, b.w).z);
+            }
+          });
+        }
+        expect(worst, `${TOPS[k].name}, ${b.name}: closest the cloth comes to the back (m)`).toBeGreaterThan(0.004);
+        av.dispose();
+      });
+    }
+  });
+
+  it('The Closer: a baseball on the chest and a stitched cape, and nothing borrowed from a comic book', () => {
+    const k = TOPS.findIndex((t) => t.pattern === 'closer');
+    expect(TOPS[k].name).toBe('The Closer');
+    expect(TOPS[k].at).toBe(1500);
+    // The streak that earns the cape is unchanged, and it is the only cape short of the robe.
+    expect(TOPS.filter((t) => t.at === 1500)).toHaveLength(1);
+    for (const t of TOPS) expect(t.name.toLowerCase(), t.name).not.toMatch(/super|hero/);
+    let capes = 0, clasp = 0;
+    run(wearing(S.top, k)).root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh && m.geometry.type === 'PlaneGeometry') capes++;
+      if (m.isMesh && m.geometry.type === 'CylinderGeometry' && (m.material as THREE.MeshStandardMaterial).metalness > 0.5) clasp++;
+    });
+    expect(capes).toBe(1);
+    expect(clasp).toBe(1);
   });
 });
