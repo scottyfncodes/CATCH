@@ -766,10 +766,12 @@ function onScore(s: ScoreState, ev?: BallEvent) {
   if (progress !== lastProgress) {
     if (lastProgress.startsWith(kind + ':')) { label.classList.remove('step'); void label.offsetWidth; label.classList.add('step'); }
     // Arriving (or the room's game changing): say what this room plays, and who changed it. (Not on top of the first-time tips: one thing to read at a time.)
-    else if (hud && !Tutorial.needed()) {
+    else if (hud) {
+      // (A change mid-game is always said, tips or not: the game you are playing just changed.)
       const host = roster.find((p) => p.id === s.host);
       const changed = lastProgress !== '' && lastProgress.split(':')[0] !== kind;
-      toast(changed ? `${host?.id === me ? 'You' : host?.name ?? 'The host'} changed the game: ${kind}` : `This room: ${kind}`);
+      if (changed) toast(`${host?.id === me ? 'You' : host?.name ?? 'The host'} changed the game: ${kind}`);
+      else if (!Tutorial.needed()) toast(`This room: ${kind}`);
     }
     lastProgress = progress;
   }
