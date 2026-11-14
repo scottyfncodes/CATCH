@@ -257,6 +257,7 @@ export class Game {
       onAimCancel: () => { this.aim = null; },
       onGlove: (dx, dy, speed) => this.moveGlove(dx, dy, speed),
       onGloveActive: (a) => { this.gloveDragging = a; this.lastInputAt = performance.now(); },
+      onTap: (x, y) => this.tapAt(x, y),
     });
 
     this.net = new Net(room, () => ({ guest: prefs().guest, name: prefs().name, hand: prefs().hand, windup: prefs().windup, style: prefs().style, traits }));
@@ -1552,12 +1553,29 @@ export class Game {
 
   private updateLabels() {
     const w = this.root.clientWidth, h = this.root.clientHeight;
+    let edgeL = 0, edgeR = 0;
     for (const p of this.players.values()) {
       if (!p.label || !p.avatar) continue;
       tmpV.copy(p.avatar.headTop).project(this.rig.camera);
       // A name never sits on top of the scoreboard or a tip: up there it steps aside.
       const y = (-tmpV.y * 0.5 + 0.5) * h;
       const on = tmpV.z < 1 && Math.abs(tmpV.x) < 1.1 && Math.abs(tmpV.y) < 1.1 && y - 22 > this.hudBottom();
+      // Out of the picture to one side (and you're not choosing who to throw to, which names them already):
+      // the name waits at that edge, pointing the way.
+      let edge = 0;
+      if (!on && !this.targetsKey && p.info.connected) {
+        tmpV.copy(p.avatar.headTop).applyMatrix4(this.rig.camera.matrixWorldInverse);
+        if (tmpV.z > 0 || Math.abs(tmpV.x) > Math.abs(tmpV.y)) edge = tmpV.x < 0 ? -1 : 1;
+      }
+      p.label.classList.toggle('edge-l', edge < 0);
+      p.label.classList.toggle('edge-r', edge > 0);
+      if (edge) {
+        const n = edge < 0 ? edgeL++ : edgeR++;
+        const ex = edge < 0 ? 10 : w - 10, ey = h * 0.52 + n * 32;
+        p.label.style.opacity = '';
+        p.label.style.transform = `translate(${ex.toFixed(1)}px, ${ey.toFixed(1)}px) translate(${edge < 0 ? '0' : '-100%'}, -50%)`;
+        continue;
+      }
       p.label.style.opacity = on ? '' : '0';
       if (on) p.label.style.transform = `translate(${((tmpV.x * 0.5 + 0.5) * w).toFixed(1)}px, ${((-tmpV.y * 0.5 + 0.5) * h).toFixed(1)}px) translate(-50%, -100%)`;
     }
@@ -1612,6 +1630,25 @@ export class Game {
     if (!(this.ball.phase === 'held' && this.ball.holder === this.me)) return;
     this.partnerId = id;
     this.turnFastUntil = performance.now() + 1200;
+  }
+
+  /** A tap on someone (holding the ball, three or more of you): turn to them to throw. */
+  private tapAt(x: number, y: number) {
+    if (!(this.ball.phase === 'held' && this.ball.holder === this.me) || this.players.size < 3) return;
+    const w = this.root.clientWidth, h = this.root.clientHeight;
+    const screen = (v: THREE.Vector3) => { const p = v.clone().project(this.rig.camera); return p.z < 1 ? [(p.x * 0.5 + 0.5) * w, (-p.y * 0.5 + 0.5) * h] : null; };
+    let best: string | null = null, bd = 56;
+    for (const p of this.players.values()) {
+      if (p.info.id === this.me || !p.avatar) continue;
+      const top = screen(p.avatar.headTop), foot = screen(p.avatar.position.clone());
+      if (!top || !foot) continue;
+      // Distance from the tap to the person (head to feet), on screen.
+      const vx = foot[0] - top[0], vy = foot[1] - top[1], L = vx * vx + vy * vy || 1;
+      const k = Math.max(0, Math.min(1, ((x - top[0]) * vx + (y - top[1]) * vy) / L));
+      const d = Math.hypot(x - (top[0] + vx * k), y - (top[1] + vy * k));
+      if (d < bd) { bd = d; best = p.info.id; }
+    }
+    if (best && best !== this.partnerId) { haptic('light'); this.throwTo(best); }
   }
 
   /** Who you could turn to either side (only while it is yours to throw, in a ring of three or more). */

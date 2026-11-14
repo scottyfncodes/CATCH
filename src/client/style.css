@@ -303,6 +303,10 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
   transition: opacity 200ms; will-change: transform; margin-top: -6px;
 }
 .label.away { opacity: 0.55 !important; }
+/* Someone out of the picture to one side: their name waits at that edge, pointing the way. */
+.label.edge-l, .label.edge-r { margin-top: 0; background: rgba(24, 19, 14, 0.5); }
+.label.edge-l::before { content: '‹ '; }
+.label.edge-r::after { content: ' ›'; }
 .labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 1; }
 /* ?fps=1: the frame-timing readout. Bottom left, out of the way of the thumb and the scoreboard. */
 .perf {

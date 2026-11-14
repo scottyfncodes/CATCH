@@ -14,6 +14,16 @@ const check = (n, ok, d = '') => { if (!ok) failed++; console.log(`${ok ? '  ✓
 
 const proxy = process.env.HTTPS_PROXY ? { server: process.env.HTTPS_PROXY } : undefined;
 const browser = await chromium.launch({ proxy, args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required'] });
+/**
+ * Press "Join the game" (or "Play catch"). Sent to the button itself: a tap waits for the
+ * sheet to stop moving over two animation frames, and on a machine busy drawing 3D in
+ * software those frames can take so long that the tap times out (it is not the game).
+ */
+async function pressGo(page) {
+  const go = page.locator('#go');
+  await go.waitFor({ state: 'visible' });
+  await go.dispatchEvent('click');
+}
 async function player(name, i) {
   const ctx = await browser.newContext({ ...devices['iPhone 13'], deviceScaleFactor: 1 });
   const page = await ctx.newPage();
@@ -21,7 +31,7 @@ async function player(name, i) {
   page.on('pageerror', (e) => errors.push(e.message));
   await page.addInitScript(([g, n]) => localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: g, name: n, hand: 'R', profiled: true, tutorialDone: true })), [`live-${Date.now()}-${i}`, name]);
   await page.goto(`${BASE}/r/${room}`);
-  await page.locator('#go').tap();
+  await pressGo(page);
   const ok = await waitFor(() => page.evaluate(() => window.__catch?.game?.debugState().status === 'open'), 90000);
   const cdp = await ctx.newCDPSession(page);
   return { page, ctx, errors, ok, state: () => page.evaluate(() => window.__catch.game.debugState()), touch: (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((q) => ({ x: q[0], y: q[1], id: 0 })) }) };

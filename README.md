@@ -49,8 +49,10 @@ One thumb, no buttons on screen:
   for it: all of your delivery below, your friend and the ring above.
 - **Choose who to throw to** (three or more of you): while you have the ball,
   the people either side of the one you're facing are named at the edges of
-  the screen. Tap a name and you (and the camera) turn to them; that's who the
-  throw goes to. You start facing whoever threw it to you.
+  the screen. Tap a name (or tap the person, if you can see them) and you (and
+  the camera) turn to them; that's who the throw goes to. You start facing
+  whoever threw it to you. While you wait, anyone out of the picture is named
+  at the edge they're off ("Max ›").
 - **Pick your windup**: seven deliveries, known only by the number on the
   shirt (WINDUP on the home screen, or in the pause sheet). Your player throws
   the one you pick on a loop while you choose. It's saved on your device, and

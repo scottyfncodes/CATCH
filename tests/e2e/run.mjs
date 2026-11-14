@@ -48,6 +48,16 @@ await waitFor(async () => { try { return (await fetch(`http://127.0.0.1:${SERVER
 await waitFor(async () => { try { return (await fetch(BASE)).ok; } catch { return false; } }, 15000);
 
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required'] });
+/**
+ * Press "Join the game" (or "Play catch"). Sent to the button itself: a tap waits for the
+ * sheet to stop moving over two animation frames, and on a machine busy drawing 3D in
+ * software those frames can take so long that the tap times out (it is not the game).
+ */
+async function pressGo(page) {
+  const go = page.locator('#go');
+  await go.waitFor({ state: 'visible' });
+  await go.dispatchEvent('click');
+}
 let guestN = 0;
 
 /** Haptics, as they happen: how long, when, and which event (if any) was being handled at the time. */
@@ -73,7 +83,7 @@ async function player(room, name, hand = 'R', guest, expect = 'open', windup = 3
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.stack || e.message));
   await page.goto(`${BASE}/r/${room}?server=${encodeURIComponent(WS)}`);
-  await page.locator('#go').tap();
+  await pressGo(page);
   await waitFor(() => page.evaluate((x) => window.__catch?.game?.debugState().status === x, expect), 10000, 50);
   // Software GL is far too slow for real-time touch timing; keep the sim and input running, skip drawing.
   await page.evaluate(() => { window.__catch.game.renderEnabled = false; });
@@ -236,7 +246,7 @@ try {
   console.log('\nRECONNECTION');
   const before = await A.state();
   await B.page.reload();
-  await B.page.locator('#go').tap();
+  await pressGo(B.page);
   const rb = await waitFor(async () => { const s = await B.page.evaluate(() => window.__catch?.game?.debugState()); return s?.status === 'open' && s.players.length === 2 ? s : null; }, 10000);
   await B.page.evaluate(() => { window.__catch.game.renderEnabled = false; });
   check('reconnecting player keeps identity and gets the correct state', rb && rb.me === bId && rb.ball.holder === before.ball.holder && rb.score.streak === before.score.streak, `me=${rb?.me} holder=${rb?.ball.holder}`);
@@ -274,6 +284,25 @@ try {
   if (chipEl) await H.page.locator('#' + chipEl).tap();
   const turned = await waitFor(async () => { const s = await H.state(); return s.partner === chipId ? s : null; }, 3000);
   check('…and tapping a name turns you (and your camera) to them to throw', !!turned, `partner=${turned?.partner} want=${chipId}`);
+  // Or tap the person themselves (someone else you can see): you turn to them.
+  await sleep(1500);
+  const seen = await H.page.evaluate(() => {
+    const g = window.__catch.game, me = g.me, cur = g.debugState().partner;
+    for (const p of g.players.values()) {
+      if (p.info.id === me || p.info.id === cur || !p.avatar) continue;
+      const q = p.avatar.position, s = g.screenOf([q.x, 1.2, q.z]);
+      if (s.on && s.x > 40 && s.x < innerWidth - 40 && s.y > 150) return { id: p.info.id, x: s.x, y: s.y };
+    }
+    return null;
+  });
+  if (seen) {
+    await H.touch('touchStart', [[seen.x, seen.y]]); await sleep(60); await H.touch('touchEnd', []);
+    const tapped = await waitFor(async () => { const s = await H.state(); return s.partner === seen.id ? s : null; }, 3000);
+    check('…or tapping the person themselves turns you to them', !!tapped, `partner=${tapped?.partner} want=${seen.id}`);
+  } else console.log('  (nobody else in view to tap)');
+  // While it's someone else's to throw, people out of the picture are named at the edge they're off.
+  const edgeNames = await others[0].page.evaluate(() => [...document.querySelectorAll('.label.edge-l, .label.edge-r')].map((e) => { const r = e.getBoundingClientRect(); return [e.textContent, Math.round(r.left), Math.round(r.right), innerWidth]; }));
+  check('…and while you wait, anyone out of the picture is named at the edge they are off (inside the screen)', edgeNames.every(([, l, r, w]) => l >= 0 && r <= w), JSON.stringify(edgeNames));
   await aimAt(H, tId);
   await waitCanThrow(H);
   await throwGesture(H, { pull: 110 });
@@ -682,7 +711,7 @@ try {
     check('…and any of them can be on at once', (await on()) === 'speed,mitt', await on());
     const big = await G.page.evaluate(() => Math.min(...[...document.querySelectorAll('.trait')].map((b) => b.getBoundingClientRect().height)));
     check('…each a comfortable thing to tap', big >= 56, `${Math.round(big)} px tall`);
-    await G.page.locator('#go').tap();
+    await pressGo(G.page);
     await waitFor(() => G.page.evaluate(() => window.__catch?.game?.debugState().status === 'open'), 10000, 50);
     await G.page.evaluate(() => { const g = window.__catch.game; g.renderEnabled = false; g.steadyAim = true; });
     const gcdp = await G.ctx.newCDPSession(G.page);
@@ -756,7 +785,7 @@ try {
     for (const k of ['back', 'speed', 'wild', 'mitt']) {
       if ((await F.page.locator(`.trait[data-trait=${k}]`).getAttribute('aria-checked')) === 'true') await F.page.locator(`.trait[data-trait=${k}]`).tap();
     }
-    await F.page.locator('#go').tap();
+    await pressGo(F.page);
     const fs = await waitFor(async () => { const s = await F.page.evaluate(() => window.__catch?.game?.debugState()); return s?.status === 'open' && s.score.traits && !Object.values(s.score.traits).some(Boolean) ? s : null; }, 10000, 50);
     const flab = await F.page.locator('#streakLabel').textContent();
     check('no traits: a regular glove at a fixed 46 feet, normal speed, nothing else on the scoreboard', fs?.score.glove === 1 && fs.score.dist === 14 && fs.score.speed === 1 && flab.trim() === 'in a row', `"${flab}"`);
@@ -791,7 +820,7 @@ try {
     page.setDefaultTimeout(90000);
     await page.addInitScript(() => localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: 'perf-' + Math.random(), name: 'Pat', hand: 'R', profiled: true, tutorialDone: true, tipsSeen: 9 })));
     await page.goto(`${BASE}/r/${code()}?server=${encodeURIComponent(WS)}&fps=1`);
-    await page.locator('#go').tap();
+    await pressGo(page);
     await waitFor(() => page.evaluate(() => window.__catch?.game?.debugState().status === 'open'), 10000, 50);
     await page.evaluate(() => { window.__catch.game.renderEnabled = false; });
     await sleep(1500);
@@ -804,7 +833,8 @@ try {
   check('single animation loop (frame count sane)', loops > 0 && loops < 200, `${loops} rAF/s`);
 } catch (e) {
   console.error(e);
-  failed++;
+  // (A run that stops early has failed, and says so: the checks after it never ran.)
+  check('the run finished (it stopped early on an error; the checks after it did not run)', false, String(e?.message ?? e).split('\n')[0]);
 } finally {
   await browser.close().catch(() => {});
   for (const p of procs) { try { process.kill(-p.pid, 'SIGTERM'); } catch { /* gone */ } }
