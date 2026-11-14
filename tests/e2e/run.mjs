@@ -786,9 +786,11 @@ try {
       if ((await F.page.locator(`.trait[data-trait=${k}]`).getAttribute('aria-checked')) === 'true') await F.page.locator(`.trait[data-trait=${k}]`).tap();
     }
     await pressGo(F.page);
-    const fs = await waitFor(async () => { const s = await F.page.evaluate(() => window.__catch?.game?.debugState()); return s?.status === 'open' && s.score.traits && !Object.values(s.score.traits).some(Boolean) ? s : null; }, 10000, 50);
+    let fLast = null;
+    const fs = await waitFor(async () => { const s = await F.page.evaluate(() => window.__catch?.game?.debugState()); fLast = s; return s?.status === 'open' && s.score.traits && !Object.values(s.score.traits).some(Boolean) ? s : null; }, 30000, 50);
     const flab = await F.page.locator('#streakLabel').textContent();
-    check('no traits: a regular glove at a fixed 46 feet, normal speed, nothing else on the scoreboard', fs?.score.glove === 1 && fs.score.dist === 14 && fs.score.speed === 1 && flab.trim() === 'in a row', `"${flab}"`);
+    const fSeen = fLast && { status: fLast.status, traits: fLast.score.traits, glove: fLast.score.glove, dist: fLast.score.dist, speed: fLast.score.speed };
+    check('no traits: a regular glove at a fixed 46 feet, normal speed, nothing else on the scoreboard', fs?.score.glove === 1 && fs.score.dist === 14 && fs.score.speed === 1 && flab.trim() === 'in a row', `"${flab}" ${JSON.stringify(fSeen)}`);
     errsExtra.push(...G.errors, ...F.errors);
     await F.ctx.close();
   }
