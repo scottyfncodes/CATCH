@@ -271,6 +271,12 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 }
 .label.away { opacity: 0.55 !important; }
 .labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+/* ?fps=1: the frame-timing readout. Bottom left, out of the way of the thumb and the scoreboard. */
+.perf {
+  position: absolute; left: calc(var(--sa-l, 0px) + 8px); bottom: calc(var(--sa-b, 0px) + 8px); z-index: 50; pointer-events: none;
+  max-width: calc(100% - 16px); padding: 6px 8px; border-radius: 8px; background: rgba(10, 8, 6, 0.72); color: #e9f5e1;
+  font: 600 11px/1.35 ui-monospace, 'SF Mono', Menlo, monospace; white-space: pre; font-variant-numeric: tabular-nums;
+}
 /* Points at a throw coming in off the edge of your view (first person). */
 .catch-arrow {
   position: absolute; left: 0; top: 0; width: 26px; height: 26px; margin: -13px 0 0 -13px; opacity: 0; will-change: transform, opacity;

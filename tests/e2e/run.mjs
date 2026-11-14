@@ -704,6 +704,24 @@ try {
   });
   check('no name label sits on top of the scoreboard or a tip', frame.over === 0, `${frame.over} overlapping (top band ends at ${Math.round(frame.hud)} px)`);
   check('a frame stays inside its drawing budget', frame.draw.calls > 0 && frame.draw.calls <= 140 && frame.draw.tris < 120000, `${frame.draw.calls} draw calls, ${frame.draw.tris} triangles`);
+  // The ?fps=1 readout: not there in a normal game; there, live and cheap when asked for.
+  check('no performance overlay in a normal game', await A.page.evaluate(() => !document.querySelector('.perf')));
+  {
+    const ctx = await browser.newContext({ ...devices['iPhone 13'], deviceScaleFactor: 1 });
+    const page = await ctx.newPage();
+    page.setDefaultTimeout(90000);
+    await page.addInitScript(() => localStorage.setItem('catch.prefs.v1', JSON.stringify({ guest: 'perf-' + Math.random(), name: 'Pat', hand: 'R', profiled: true, tutorialDone: true, tipsSeen: 9 })));
+    await page.goto(`${BASE}/r/${code()}?server=${encodeURIComponent(WS)}&fps=1`);
+    await page.locator('#go').tap();
+    await waitFor(() => page.evaluate(() => window.__catch?.game?.debugState().status === 'open'), 10000, 50);
+    await page.evaluate(() => { window.__catch.game.renderEnabled = false; });
+    await sleep(1500);
+    const txt = await page.evaluate(() => document.querySelector('.perf')?.textContent ?? '');
+    const cost = Number((txt.match(/overlay (\d+) µs/) || [])[1] ?? NaN);
+    check('?fps=1 shows frame rate, frame times, long frames, resolution and shadows', /\d+ fps/.test(txt) && /ms avg/.test(txt) && /long frames/.test(txt) && /draw \d+×\d+ @/.test(txt) && /shadows (on|off)/.test(txt), txt.split('\n')[0]);
+    check('…and costs next to nothing (it times itself)', cost < 200, `${cost} µs a frame`);
+    await ctx.close();
+  }
   check('single animation loop (frame count sane)', loops > 0 && loops < 200, `${loops} rAF/s`);
 } catch (e) {
   console.error(e);
