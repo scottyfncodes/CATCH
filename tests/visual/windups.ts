@@ -24,7 +24,7 @@ const w = getWindup(id);
 type Shot = { label: string; u: number; t: number };
 const shots: Shot[] = [
   ...[0, 0.25, 0.5, 0.78, 1].map((u) => ({ label: `u ${u}`, u, t: -1 })),
-  ...[0.1, 0.2, RELEASE_TIME, 0.42, 0.62, 0.9].map((t) => ({ label: `t ${t}`, u: 1, t })),
+  ...[0.1, 0.2, 0.265, RELEASE_TIME, 0.42, 0.62, 0.8, 1.06, 1.26].map((t) => ({ label: `t ${t}`, u: 1, t })),
 ];
 const only = q.get('shots');
 const list = only ? only.split(',').map(Number).map((i) => shots[i]) : shots;
@@ -64,14 +64,15 @@ scene.add(ball);
 const rel = new THREE.Mesh(new THREE.SphereGeometry(0.02, 8, 8), new THREE.MeshBasicMaterial({ color: '#d0342c' }));
 scene.add(rel);
 
-const cam = new THREE.OrthographicCamera(-1.15, 1.15, 1.5, -1.3, 0.1, 50);
+// (Wide enough for the longest stride and the steps back.)
+const cam = new THREE.OrthographicCamera(-1.45, 1.45, 1.55, -1.3, 0.1, 50);
 const side = hand === 'R' ? 1 : -1;
 if (view === 'front') cam.position.set(0, 1.1, -8);
 else if (view === 'back') cam.position.set(0, 1.1, 8);
-else if (view === 'top') { cam.position.set(0, 9, -0.4); cam.up.set(0, 0, -1); }
-else cam.position.set(8 * side, 1.1, -0.45);
-cam.lookAt(view === 'top' ? new THREE.Vector3(0, 0, -0.4) : new THREE.Vector3(0, 1.1, view === 'side' ? -0.45 : 0));
-if (view === 'top') { cam.top = 1.9; cam.bottom = -0.9; cam.updateProjectionMatrix(); }
+else if (view === 'top') { cam.position.set(0, 9, -0.6); cam.up.set(0, 0, -1); }
+else cam.position.set(8 * side, 1.1, -0.75);
+cam.lookAt(view === 'top' ? new THREE.Vector3(0, 0, -0.6) : new THREE.Vector3(0, 1.1, view === 'side' ? -0.75 : 0));
+if (view === 'top') { cam.top = 2.3; cam.bottom = -0.9; cam.updateProjectionMatrix(); }
 
 function pose(s: Shot) {
   avatar.teleport([0, 0, 0], 0);
@@ -100,7 +101,7 @@ function draw() {
     renderer.setScissor(cx, cy, CW, CH);
     renderer.render(scene, cam);
     // Run the clip out before the next figure.
-    for (let k = 0; k < 150; k++) avatar.update(1 / 120, { pose: { x: 0, z: 0, yaw: 0, g: [-0.2 * side, 1.18, -0.42] }, arm: Arm.Idle, charge: 0, look: null });
+    for (let k = 0; k < 220; k++) avatar.update(1 / 120, { pose: { x: 0, z: 0, yaw: 0, g: [-0.2 * side, 1.18, -0.42] }, arm: Arm.Idle, charge: 0, look: null });
   });
   (window as unknown as { __done: boolean }).__done = true;
 }

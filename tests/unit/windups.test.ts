@@ -83,6 +83,75 @@ describe('windup library', () => {
   });
 });
 
+describe('the mechanics are a real pitcher\'s', () => {
+  // Checked against how a pitch is actually thrown: stride length, where the hand lets go,
+  // the arm laid back before it comes through, the glove pulled in, the back leg coming round.
+  it('a real stride: from about 60% to 95% of the body\'s height', () => {
+    const height = 1.75;
+    for (const w of WINDUPS) {
+      expect(w.params.stride / height, `#${w.id}`).toBeGreaterThan(0.58);
+      expect(w.params.stride / height, `#${w.id}`).toBeLessThan(0.95);
+    }
+  });
+
+  it('the ball is let go out in front of the head, not straight up over it', () => {
+    for (const w of WINDUPS) {
+      const p = sampleKeys(w.delivery, RELEASE_TIME), S = shoulderOf(p);
+      const fwd = w.release[2] - S[2], up = w.release[1] - S[1];
+      expect(fwd, `#${w.id}: how far in front of the shoulder`).toBeGreaterThan(0.35);
+      expect(fwd, `#${w.id}: in front at least as far as it is up`).toBeGreaterThan(up);
+      // Out over the front foot.
+      expect(w.release[2], `#${w.id}`).toBeGreaterThan(p.lead[2] - 0.05);
+    }
+  });
+
+  it('the arm is laid back behind the shoulder just before it comes through, with the trunk already turned to the target', () => {
+    for (const w of WINDUPS) {
+      const lay = sampleKeys(w.delivery, RELEASE_TIME - 0.035);
+      expect(lay.ball[2], `#${w.id}`).toBeLessThan(shoulderOf(lay)[2] - 0.1);
+      expect(Math.abs(lay.hip + lay.coil), `#${w.id}: chest toward the target`).toBeLessThan(0.35);
+    }
+  });
+
+  it('the glove is pulled in to the chest as the arm comes through', () => {
+    for (const w of WINDUPS) {
+      const p = sampleKeys(w.delivery, RELEASE_TIME);
+      const G = shoulderOf(p, true);
+      expect(dist(p.glove, G), `#${w.id}`).toBeLessThan(0.36);
+      expect(p.glove[1], `#${w.id}`).toBeGreaterThan(G[1] - 0.32);
+    }
+  });
+
+  it('the back leg comes round and down: both feet on the grass by the time they are set to field', () => {
+    for (const w of WINDUPS) {
+      const p = sampleKeys(w.delivery, 0.8);
+      expect(p.pivot[1], `#${w.id}`).toBeLessThan(0.02);
+      expect(p.lead[1], `#${w.id}`).toBeLessThan(0.02);
+      // ...after it came up off the ground behind.
+      expect(sampleKeys(w.delivery, 0.42).pivot[1], `#${w.id}`).toBeGreaterThan(0.2);
+    }
+  });
+
+  it('they walk back to the spot they threw from, so nothing slides when the clip hands the body back', () => {
+    for (const w of WINDUPS) {
+      const end = sampleKeys(w.delivery, DELIVERY_LENGTH), set = windupPose(w, 0);
+      expect(dist(end.pelvis, set.pelvis), `#${w.id}`).toBeLessThan(0.05);
+      expect(dist(end.lead, set.lead), `#${w.id}`).toBeLessThan(0.05);
+      expect(dist(end.pivot, set.pivot), `#${w.id}`).toBeLessThan(0.05);
+      // A step at a time: never both feet off the grass at once, and a foot on the grass stays put.
+      let prev = sampleKeys(w.delivery, 0.8);
+      for (let t = 0.81; t <= DELIVERY_LENGTH; t += 0.01) {
+        const p = sampleKeys(w.delivery, t);
+        expect(Math.min(p.lead[1], p.pivot[1]), `#${w.id} at ${t.toFixed(2)} s`).toBeLessThan(0.03);
+        for (const f of ['lead', 'pivot'] as const) {
+          if (p[f][1] < 0.005 && prev[f][1] < 0.005) expect(dist(p[f], prev[f]), `#${w.id} ${f} foot sliding at ${t.toFixed(2)} s`).toBeLessThan(0.012);
+        }
+        prev = p;
+      }
+    }
+  });
+});
+
 describe('windups are fair', () => {
   it('every delivery lets go at the same moment, from a spot the server accepts', () => {
     for (const w of WINDUPS) {
