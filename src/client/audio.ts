@@ -378,7 +378,7 @@ export class AudioEngine {
    * Speed scales loudness and weight; the grade sets the character.
    * `pos` null = your own glove (stereo, close); otherwise spatialised.
    */
-  pop(o: { speed: number; q: CatchQuality | 'deflect'; g: number; pos: Vec3 | null; side?: number }) {
+  pop(o: { speed: number; q: CatchQuality | 'deflect'; g: number; pos: Vec3 | null; side?: number; heat?: number }) {
     if (!this.ready || !this.ctx) return;
     const ctx = this.ctx;
     // De-duplicate: a predicted local catch and its server confirmation must not double up.
@@ -389,7 +389,7 @@ export class AudioEngine {
     const { node, delay } = this.placeAt(o.pos, (o.side ?? 0) * 0.28);
     const t = ctx.currentTime + delay;
     const jitter = () => 1 + (Math.random() - 0.5) * 0.04;
-    this.log.push({ k: 'pop', t: performance.now(), q: o.q, g, speed: o.speed });
+    this.log.push({ k: 'pop', t: performance.now(), q: o.q, g, speed: o.speed, heat: o.heat ?? 0 });
     const loud = 0.55 + 0.45 * s;
 
     if (o.q === 'deflect') {
@@ -409,19 +409,23 @@ export class AudioEngine {
     // (Headroom: the whole thing 1.5 dB down, so a hard one in the middle of the pocket
     // peaks at full scale instead of leaning on the master's safety clip.)
     const lv = 0.84;
+    // Heat (perfect catches in a row): every one after the first cracks a little harder and rings a
+    // little more, up to ten. (It spends the headroom kept above, no more.)
+    const hk = Math.min(1, Math.max(0, ((o.heat ?? 0) - 1) / 9));
+    const hot = 1 + 0.45 * hk;
     // Crack: brighter and louder the closer to the centre.
     const crackGain = (0.06 + 1.15 * Math.pow(g, 1.6)) * (0.25 + 0.75 * Math.pow(s, 1.1));
     const crackCut = 2200 + 15000 * g * g;
-    this.play('crack', node, crackGain * 1.3 * lv, t, (0.94 + 0.08 * g) * jitter(), { type: 'lowpass', f: crackCut });
+    this.play('crack', node, crackGain * 1.3 * lv * hot, t, (0.94 + 0.08 * g) * jitter(), { type: 'lowpass', f: crackCut });
     // Whip: the crack of it, on top: strongest dead centre and thrown hard.
     const whipGain = (0.05 + 0.95 * g * g) * (0.35 + 0.65 * Math.pow(s, 1.1));
-    this.play('whip', node, whipGain * 0.9 * lv, t, (0.97 + 0.06 * g) * jitter());
+    this.play('whip', node, whipGain * 0.9 * lv * hot, t, (0.97 + 0.06 * g) * jitter());
     // Body: tighter (higher, shorter) on a centred catch, duller off it.
     const bodyRate = (0.86 + 0.12 * s + 0.1 * g) * jitter();
     const bodyCut = 1500 + 9000 * g;
     this.play('body', node, (0.66 + 0.36 * g) * loud * lv, t, bodyRate, { type: 'lowpass', f: bodyCut });
     // Ring: only near the centre.
-    const ringAmt = Math.max(0, (g - 0.5) / 0.5);
+    const ringAmt = Math.min(1, Math.max(0, (g - 0.5) / 0.5) + 0.4 * hk);
     if (ringAmt > 0) {
       this.play('ring', node, Math.pow(ringAmt, 1.4) * (0.32 + 0.4 * s) * lv, t + 0.001, (0.97 + 0.06 * s) * jitter());
     }

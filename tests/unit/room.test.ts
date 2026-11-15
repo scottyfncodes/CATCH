@@ -6,6 +6,7 @@ import { Arm, DEFAULT_TRAITS, type ServerMsg, TRAIT_KEYS, type Traits, catchGrad
 import { type Vec3, dist, len } from '../../src/shared/vec';
 import { DEFAULT_WINDUP, HOUSE_WINDUP, RELEASE_TIME, WINDUP_IDS, getWindup, releasePointFor } from '../../src/shared/windups';
 import { type Conn, MemoryRecords, Room } from '../../src/server/room';
+import { dailyFor, dayKey, isDayKey } from '../../src/shared/daily';
 
 /** Where a right-hander with the house delivery lets go of the ball. */
 const releasePoint = (feet: Vec3, yaw: number, hand: 'R' | 'L') => releasePointFor(HOUSE_WINDUP, feet, yaw, hand);
@@ -1032,6 +1033,69 @@ describe('room', () => {
     expect(left / 2000).toBeLessThan(0.6);
     expect(sum / 2000).toBeGreaterThan(0.45);
     expect(sum / 2000).toBeLessThan(0.9);
+  });
+
+  // ---------------------------------------------------------------- heat and the daily
+
+  /** A catch off the middle of the pocket (caught, not perfect). */
+  function offCentre(room: Room, clock: { now: () => number; advance: (ms: number) => void }, ids: string[]) {
+    const from = room.ball.holder!, to = ids.find((x) => x !== from)!;
+    const t0 = clock.now();
+    const { pose, T: f } = throwAt(room, from, to, t0, 15, [0.075, 0, 0]);
+    clock.advance(f * 1000);
+    room.handle(to, { t: 'catch', tid: room.ball.tid, at: t0 + f * 1000, pose: wire(pose) });
+    expect(room.ball.holder).toBe(to);
+  }
+
+  it('heat: perfect catches in a row; anything less starts it again but the streak goes on, and a miss ends both', () => {
+    const { room, ids, clock, conns } = setup(2);
+    for (let i = 1; i <= 3; i++) { exchange(room, clock, ids); expect(room.score().heat, `perfect ${i}`).toBe(i); }
+    for (const c of conns) expect(c.last('ball')!.score.heat).toBe(3);
+    offCentre(room, clock, ids);
+    expect(room.score()).toMatchObject({ heat: 0, streak: 4 });
+    exchange(room, clock, ids);
+    expect(room.score().heat).toBe(1);
+    miss(room, clock, ids);
+    expect(room.score()).toMatchObject({ heat: 0, streak: 0 });
+  });
+
+  it('a daily room plays the day\'s setup (whatever the opener had picked), can\'t be changed, and keeps the group\'s best today', () => {
+    const day = '2026-11-15', d = dailyFor(day);
+    let t = 1_000_000;
+    const clock = { now: () => t, advance: (ms: number) => { t += ms; } };
+    const room = new Room('ABCD', clock.now, new MemoryRecords(), { practiceBot: false });
+    const ids = [0, 1].map((i) => room.join(new FakeConn(), { t: 'hello', room: 'ABCD', guest: `g${i}`, name: `P${i}`, hand: 'R', v: 10, w: HOUSE_WINDUP, tr: traitBits(T({ mitt: true, wild: true, speed: true, back: true })), day: i === 0 ? day : undefined })!.id);
+    expect(room.traits).toEqual(d.traits);
+    expect(room.score()).toMatchObject({ day, dayBest: 0 });
+    rules(room, ids[0], T({ mitt: !d.traits.mitt }));
+    expect(room.traits).toEqual(d.traits);
+    for (let i = 0; i < 3; i++) exchange(room, clock, ids);
+    const s = room.score();
+    expect(s.dayBest).toBe(d.metric === 'heat' ? s.heat : s.streak);
+    expect(s.dayBest).toBeGreaterThan(0);
+    // An ordinary room has no day; and a daily room everyone left, opened again as an ordinary one, is ordinary.
+    expect(setup(2).room.score().day).toBeNull();
+    for (const id of ids) room.leave(id);
+    room.join(new FakeConn(), { t: 'hello', room: 'ABCD', guest: 'g9', name: 'P9', hand: 'R', v: 10, w: HOUSE_WINDUP, tr: traitBits(T({ mitt: true })) });
+    expect(room.score()).toMatchObject({ day: null, traits: T({ mitt: true }) });
+  });
+
+  it('every day has a setup; the same day always the same one, and never the same two days running', () => {
+    expect(dailyFor('2026-11-15')).toEqual(dailyFor('2026-11-15'));
+    const seen = new Set<string>();
+    let prev = '';
+    for (let i = 0; i < 40; i++) {
+      const day = dayKey(new Date(2026, 0, 1 + i));
+      const d = dailyFor(day);
+      const key = JSON.stringify([d.traits, d.metric, d.target]);
+      expect(key, day).not.toBe(prev);
+      expect(d.target).toBeGreaterThan(0);
+      seen.add(key); prev = key;
+    }
+    expect(seen.size).toBe(8);
+    expect(isDayKey('2026-11-15')).toBe(true);
+    expect(isDayKey('2026-13-45')).toBe(false);
+    expect(isDayKey('<script>')).toBe(false);
   });
 
   // ---------------------------------------------------------------- choosing who to throw to

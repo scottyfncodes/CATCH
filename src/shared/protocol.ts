@@ -191,6 +191,11 @@ export interface ScoreState {
   speed: number;
   /** Who can change how the room plays (the player who opened it, or whoever has been here longest since). */
   host: string | null;
+  /** Perfect catches in a row (any catch that isn't perfect, or a miss, starts it again). */
+  heat?: number;
+  /** A daily room: the day it is playing (YYYY-MM-DD), and this group's best at it today. */
+  day?: string | null;
+  dayBest?: number;
 }
 
 export type BallEvent =
@@ -203,7 +208,7 @@ export type BallEvent =
 // ---- client -> server ------------------------------------------------------
 
 export type ClientMsg =
-  | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number; w?: number; s?: number[]; tr?: number }
+  | { t: 'hello'; room: string; guest: string; name: string; hand: Hand; v: number; w?: number; s?: number[]; tr?: number; day?: string }
   | { t: 'ping'; c: number }
   /** x, z, yaw, gx, gy, gz, arm, windup phase, lift, dive, pull (how big the windup is) — rounded. */
   | { t: 'st'; p: PoseWire }
@@ -252,8 +257,9 @@ export type SnapEntry = [string, number, number, number, number, number, number,
  * 7: a pose carries the pull (how far back the thumb is: how big the windup is); throws are flatter.
  * 8: rooms have traits (any mix of step back, speed up, wild throws, big mitt) instead of one mode; throws carry more zip.
  * 9: the host can change a room's traits mid-game ('rules'); the score says who the host is.
+ * 10: heat (perfect catches in a row) in the score; daily rooms (hello 'day': the day's setup, its best).
  */
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 
 /** Room codes: 4 letters, no ambiguous characters. */
 export const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ';

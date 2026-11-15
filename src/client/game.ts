@@ -16,7 +16,7 @@ import {
   type Hand, type Pose, bodyToWorld, clampReach, gloveReady, gloveWorld, interceptPlan, lookAngles, reachNorm, throwNeighbours, worldToBody,
 } from '../shared/pose';
 import {
-  Arm, type Traits, DEFAULT_TRAITS, traitBits, wildOffset, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, catchGrade, catchStyle, classifyCatch,
+  Arm, type Traits, DEFAULT_TRAITS, traitBits, wildOffset, type BallEvent, type BallState, type CatchQuality, type PlayerInfo, type ScoreState, type ServerMsg, type SnapEntry, type CatchStyle, catchGrade, catchStyle, classifyCatch, isGreatCatch,
 } from '../shared/protocol';
 import { PerfOverlay } from './perf';
 import { type Vec3, clamp, dist, lerp, wrapAngle } from '../shared/vec';
@@ -29,6 +29,7 @@ import { Net, type NetStatus } from './net';
 import { AimArc } from './scene/aim';
 import { Avatar } from './scene/avatar';
 import { CameraRig, type EyeShot } from './scene/camera';
+import { HeatFx } from './scene/fx';
 import { buildBall, contactShadow } from './scene/gear';
 import { CatchGuide, type GuideState, TRAIL, Tier, type TierId } from './scene/guide';
 import { type World, buildWorld } from './scene/world';
@@ -167,6 +168,14 @@ export class Game {
   private lastSent = 0;
   private partnerId: string | null = null;
   private targetsKey = '';
+  private sentDayFor = '';
+  /** This visit, for the card you get when you leave: what the group did while you were here. */
+  private sess = { catches: 0, perfects: 0, heat: 0, far: 0, best: null as null | { score: number; by: string; q: CatchQuality; st: CatchStyle | null; ft: number } };
+  private photo: HTMLCanvasElement | null = null;
+  private snapAt = 0;
+  /** Perfect catches in a row after the catch being handled. */
+  private nextHeat = 0;
+  private fx = new HeatFx();
   /** Until when the camera turns quickly (you just chose who to throw to). */
   private turnFastUntil = 0;
   private home: Vec3 = [0, 0, 6];
@@ -211,7 +220,7 @@ export class Game {
   private releaseGap = -1;
   private releaseClip = -1;
 
-  constructor(private root: HTMLElement, renderer: THREE.WebGLRenderer, touchLayer: HTMLElement, readonly room: string, private ev: GameEvents, traits?: Traits) {
+  constructor(private root: HTMLElement, renderer: THREE.WebGLRenderer, touchLayer: HTMLElement, readonly room: string, private ev: GameEvents, traits?: Traits, day?: string) {
     this.hand = prefs().hand;
     this.windup = prefs().windup;
     const lowSpec = (navigator.hardwareConcurrency || 4) <= 2;
@@ -230,7 +239,7 @@ export class Game {
       new THREE.MeshBasicMaterial({ color: '#f4efe4', transparent: true, opacity: 0.22, depthWrite: false }),
     );
     this.ballShadow = contactShadow(0.3);
-    this.scene.add(this.ballMesh, this.ballBlur, this.ballShadow);
+    this.scene.add(this.ballMesh, this.ballBlur, this.ballShadow, this.fx.group);
 
     this.labels = document.createElement('div');
     this.labels.className = 'labels';
@@ -260,7 +269,7 @@ export class Game {
       onTap: (x, y) => this.tapAt(x, y),
     });
 
-    this.net = new Net(room, () => ({ guest: prefs().guest, name: prefs().name, hand: prefs().hand, windup: prefs().windup, style: prefs().style, traits }));
+    this.net = new Net(room, () => ({ guest: prefs().guest, name: prefs().name, hand: prefs().hand, windup: prefs().windup, style: prefs().style, traits, day }));
     this.net.onMessage = (m) => this.onMessage(m);
     this.net.onStatus = (s) => this.ev.status(s);
 
@@ -298,6 +307,7 @@ export class Game {
     this.perf?.dispose();
     this.aimArc.dispose();
     this.guide.dispose();
+    this.fx.dispose();
     this.scene.traverse((o) => {
       const m = o as THREE.Mesh;
       if (m.isMesh) {
@@ -442,6 +452,8 @@ export class Game {
       }
       case 'ball':
         if (m.players) this.applyPlayers(m.players);
+        // (The heat after this catch: its pop and its smoke go with it.)
+        this.nextHeat = m.score.heat ?? 0;
         this.applyBall(m.ball, m.ev);
         this.applyScore(m.score, m.ev);
         break;
@@ -532,6 +544,15 @@ export class Game {
         this.net.send({ t: 'rec', key: s.groupKey, best: local });
       }
     }
+    // A daily room: today's best with this group is kept here too (and re-seeds a restarted server),
+    // and so is your own best at today's setup, for the home screen.
+    if (s.day && s.groupKey) {
+      const dk = `day:${s.day}:${s.groupKey}`;
+      if ((s.dayBest ?? 0) > recordFor(dk)) raiseRecord(dk, s.dayBest ?? 0);
+      const local = recordFor(dk);
+      if (local > (s.dayBest ?? 0) && this.sentDayFor !== dk) { this.sentDayFor = dk; this.net.send({ t: 'rec', key: dk, best: local }); }
+      raiseRecord(`me:day:${s.day}`, Math.max(local, s.dayBest ?? 0));
+    }
     this.ev.score(s, ev);
   }
 
@@ -592,7 +613,10 @@ export class Game {
         if (ev.by === mine) {
           const predicted = this.localCatch && this.localCatch.tid === b.tid;
           // Not predicted locally (rare): still give full feedback.
-          if (!predicted) this.popLocal(ev.q, ev.speed, ev.g ?? 0.6);
+          if (!predicted) {
+            this.popLocal(ev.q, ev.speed, ev.g ?? 0.6, ev.self ? 0 : this.nextHeat);
+            if (!ev.self && this.myAvatar) this.smokeOff(this.myAvatar.gloveWorldPos, this.nextHeat);
+          }
           this.localCatch = null;
           const at = this.lastCatchPerf || perf;
           this.catchShow = { by: mine, perf: at };
@@ -604,13 +628,15 @@ export class Game {
         } else {
           const av = this.avatarOf(ev.by);
           const at = av ? [av.gloveWorldPos.x, av.gloveWorldPos.y, av.gloveWorldPos.z] as Vec3 : ev.pos;
-          audio.pop({ speed: ev.speed, q: ev.q, g: ev.g ?? 0.6, pos: at });
+          audio.pop({ speed: ev.speed, q: ev.q, g: ev.g ?? 0.6, pos: at, heat: ev.self ? 0 : this.nextHeat });
+          if (av && !ev.self) this.smokeOff(av.gloveWorldPos, this.nextHeat);
           if (av && this.traj) av.catchImpact(velocityAt(this.traj, (ev.at - prev.t0) / 1000), ev.speed);
           if (av) setTimeout(() => av.transfer(), 320);
           this.catchShow = { by: ev.by, perf };
         }
         if (ev.milestone) audio.milestone();
         this.lastCatchPerf = 0;
+        if (!ev.self) this.note(ev, prev);
         break;
       }
       case 'deflect': {
@@ -638,8 +664,66 @@ export class Game {
     }
   }
 
-  private popLocal(q: CatchQuality | 'deflect', speed: number, g: number) {
-    audio.pop({ speed, q, g, pos: null, side: this.hand === 'R' ? -1 : 1 });
+  /**
+   * A catch, for the card at the end: how far it came (from where it left the hand), how
+   * clean it was, and whether it is the best of the visit, in which case the picture is
+   * taken a beat later, with the ball in the glove.
+   */
+  private note(ev: Extract<BallEvent, { k: 'catch' }>, prev: BallState) {
+    const ss = this.sess;
+    const ft = Math.round(Math.hypot(ev.pos[0] - prev.p0[0], ev.pos[2] - prev.p0[2]) * 3.28084);
+    ss.catches++;
+    if (ev.q === 'perfect') ss.perfects++;
+    ss.heat = Math.max(ss.heat, this.nextHeat);
+    ss.far = Math.max(ss.far, ft);
+    const st = ev.st ?? null;
+    // A great catch beats a clean one; a clean one beats a long one; a long one, a short one.
+    // (And a person's catch beats Coach's: the card is about the people who played.)
+    const score = (isGreatCatch(st) ? 100 : 0) + ({ perfect: 30, pocket: 20, web: 10, bobble: 0 }[ev.q] ?? 0) + Math.min(60, ft) / 6 + Math.min(10, this.nextHeat)
+      - (this.players.get(ev.by)?.info.bot ? 1000 : 0);
+    if (!ss.best || score > ss.best.score) {
+      ss.best = { score, by: ev.by, q: ev.q, st, ft };
+      this.snapAt = performance.now() + 140;
+    }
+  }
+
+  /** What the group did this visit (null with nothing caught). */
+  recap() {
+    const ss = this.sess;
+    if (!ss.catches) return null;
+    const nameOf = (id: string) => this.players.get(id)?.info.name ?? (id === this.me ? prefs().name : 'Someone');
+    return {
+      catches: ss.catches, perfects: ss.perfects, heat: ss.heat, far: ss.far,
+      streak: this.score.sessionBest, day: this.score.day ?? null, dayBest: this.score.dayBest ?? 0,
+      best: ss.best && { by: nameOf(ss.best.by), mine: ss.best.by === this.me, q: ss.best.q, st: ss.best.st, ft: ss.best.ft },
+      names: [...this.players.values()].sort((a, b) => a.info.seat - b.info.seat).map((p) => p.info.name),
+      photo: this.photo,
+    };
+  }
+
+  /** The picture of the best catch: what is on screen right now, small (and without the aiming marks: drawn again without them). */
+  private snap() {
+    const src = this.renderer.domElement;
+    if (!src.width || !src.height) return;
+    const marks = [this.guide.group, this.aimArc.group].filter((g) => g.visible);
+    if (marks.length) {
+      for (const g of marks) g.visible = false;
+      this.renderer.render(this.scene, this.rig.camera);
+      for (const g of marks) g.visible = true;
+    }
+    const w = Math.min(720, src.width), h = Math.round((src.height / src.width) * w);
+    const c = this.photo && this.photo.width === w && this.photo.height === h ? this.photo : Object.assign(document.createElement('canvas'), { width: w, height: h });
+    c.getContext('2d')?.drawImage(src, 0, 0, w, h);
+    this.photo = c;
+  }
+
+  /** A run of perfect catches: smoke off the glove that made the latest (three in a row and up). */
+  private smokeOff(at: THREE.Vector3, heat: number) {
+    if (heat >= 3) this.fx.puff(at, heat);
+  }
+
+  private popLocal(q: CatchQuality | 'deflect', speed: number, g: number, heat = 0) {
+    audio.pop({ speed, q, g, pos: null, side: this.hand === 'R' ? -1 : 1, heat });
     haptic(g >= 0.75 ? 'firm' : 'light');
   }
 
@@ -774,11 +858,17 @@ export class Game {
     // release (the clock is only a backstop, for a tab that stopped drawing).
     if (this.pending && (this.myAvatar ? this.myAvatar.deliveryTime >= RELEASE_TIME || this.myAvatar.deliveryTime < 0 : now >= this.pending.at)) this.launch(now);
     const ballPos = this.updateBall(dt, now, sNow);
+    // Ten perfect catches in a row and up: the ball trails embers.
+    this.fx.ball(ballPos ? tmpV.set(ballPos[0], ballPos[1], ballPos[2]) : null, (this.score.heat ?? 0) >= 10);
+    this.fx.resize(this.rig.camera.fov, this.renderer.domElement.height);
+    this.fx.update(dt);
     this.updateCamera(dt, now, ballPos);
     this.updateAim(dt);
     this.updateGuide(dt, sNow);
     this.world.update(dt, now / 1000);
     if (this.renderEnabled) this.renderer.render(this.scene, this.rig.camera);
+    // (Straight after drawing, while the picture is still there to copy.)
+    if (this.snapAt && now >= this.snapAt && this.renderEnabled) { this.snapAt = 0; this.snap(); }
     this.updateLabels();
     this.updateTargets();
     this.sendState(now);
@@ -1132,7 +1222,10 @@ export class Game {
     this.seat = { off: new THREE.Vector3(off[0], off[1], off[2]), perf: this.lastCatchPerf };
     this.myAvatar?.catchImpact(vel, speed, off);
     const grade = catchGrade(res.dist, this.score.glove);
-    this.popLocal(q, speed, grade);
+    // (Your own catch is heard at once, before the server has graded it: its heat is predicted the same way.)
+    const heat = q === 'perfect' ? (this.score.heat ?? 0) + 1 : 0;
+    this.popLocal(q, speed, grade, heat);
+    if (this.myAvatar) this.smokeOff(this.myAvatar.gloveWorldPos, heat);
     // The knock of the ball through your view, and a ring off the pocket.
     this.rig.kick(clamp(speed / 22, 0.35, 1));
     this.guide.burst(g, grade);
