@@ -51,6 +51,7 @@ import {
   isGreatCatch,
   sanitizeName,
 } from '../shared/protocol.js';
+import { dailyFor, isDayKey } from '../shared/daily.js';
 import { type Vec3, dist, len, wrapAngle } from '../shared/vec.js';
 import { COACH_STYLE, MILESTONES, type Style, defaultStyle, sanitizeStyle } from '../shared/style.js';
 import { HOUSE_WINDUP, RELEASE_REACH, WINDUP_IDS, windupId } from '../shared/windups.js';
@@ -140,6 +141,10 @@ export class Room {
   speedFrom = 0;
   /** A change of rules from the host, waiting for the ball to be in someone's hand. */
   pendingRules: Traits | null = null;
+  /** Perfect catches in a row. */
+  heat = 0;
+  /** A daily room: the day it plays (its setup is the day's, and fixed). */
+  day: string | null = null;
   lastActive: number;
   /** A disconnect/leave happened during the current flight: a drop will not reset the streak. */
   private flightDisrupted = false;
@@ -173,6 +178,7 @@ export class Room {
       streak: this.streak, sessionBest: this.sessionBest, groupBest: this.records.get(key), groupKey: key,
       dist: ringSpread(Math.max(2, this.members.size), this.back()), misses: this.misses,
       traits: { ...this.traits }, glove: this.glove(), speed: this.speed(), host: this.hostId(),
+      heat: this.heat, day: this.day, dayBest: this.day ? this.records.get(this.dayRecord()) : 0,
     };
   }
 
@@ -207,13 +213,17 @@ export class Room {
     return (hs.find((m) => m.connected) ?? hs[0])?.id ?? null;
   }
 
+  /** Where today's best for this group is kept (a daily room). */
+  dayRecord(): string { return `day:${this.day}:${this.groupKey()}`; }
+
   /**
    * The host changes how the room plays. A trait turned on starts fresh (Step back from the
    * start, Big mitt at its biggest, Speed up from normal); one turned off stops; the streak
    * goes on. It waits for the ball to be in someone's hand, so no throw changes in the air.
    */
   private changeRules(m: Member, tr: number) {
-    if (m.id !== this.hostId()) return;
+    // (A daily room plays the day's setup: that is the point of it.)
+    if (m.id !== this.hostId() || this.day) return;
     const next = toTraits(tr, this.traits);
     if (TRAIT_KEYS.every((k) => next[k] === this.traits[k])) { this.pendingRules = null; return; }
     this.pendingRules = next;
@@ -258,6 +268,11 @@ export class Room {
     }
     // Whoever opens the room chooses how it plays.
     if (this.humans().length === 0 && msg.tr !== undefined) { this.traits = toTraits(msg.tr, this.traits); this.steps = this.traits.back ? this.steps : 0; }
+    // ...or opens it as the day's daily: then it plays the day's setup (and an ordinary room is ordinary again).
+    if (this.humans().length === 0) {
+      this.day = isDayKey(msg.day) ? msg.day : null;
+      if (this.day) { this.traits = dailyFor(this.day).traits; this.steps = 0; }
+    }
     if (this.humans().length >= MAX_PLAYERS) {
       conn.send({ t: 'full', room: this.code, max: MAX_PLAYERS });
       return null;
@@ -435,8 +450,9 @@ export class Room {
         this.changeRules(m, Number(msg.tr));
         return;
       case 'rec': {
-        const key = this.groupKey();
-        if (msg.key !== key) return;
+        // (A phone keeps the group's best, and today's best in a daily room, and re-seeds a restarted server.)
+        const key = msg.key === this.groupKey() ? msg.key : this.day && msg.key === this.dayRecord() ? msg.key : null;
+        if (!key) return;
         const before = this.records.get(key);
         const after = this.records.raise(key, finite(msg.best, 0, 1e6));
         if (after !== before) this.broadcastRoster();
@@ -525,7 +541,7 @@ export class Room {
       const v: Vec3 = [-vel[0] * s + side * Math.cos(m.pose.yaw), 2.6, -vel[2] * s - side * Math.sin(m.pose.yaw)];
       this.launch(m.id, pos, v, at, false);
       const disrupted = this.flightDisrupted;
-      if (!disrupted) { this.streak = 0; this.speedFrom = 0; m.drops++; this.missed(); }
+      if (!disrupted) { this.streak = 0; this.speedFrom = 0; this.heat = 0; m.drops++; this.missed(); }
       this.broadcastBall({ k: 'deflect', by: m.id, speed, at, pos }, true);
       return;
     }
@@ -539,6 +555,9 @@ export class Room {
       if (MILESTONES.includes(this.streak)) milestone = this.streak;
       this.sessionBest = Math.max(this.sessionBest, this.streak);
       this.records.raise(this.groupKey(), this.streak);
+      // Heat: perfect after perfect. Anything less starts it again (the streak goes on).
+      this.heat = q === 'perfect' ? this.heat + 1 : 0;
+      if (this.day) this.records.raise(this.dayRecord(), dailyFor(this.day).metric === 'heat' ? this.heat : this.streak);
       // Caught: everyone takes a step back (Step back), and the gloves get a size smaller (Big mitt).
       if (this.traits.back) this.steps = Math.min(maxSteps(this.members.size), this.steps + 1);
       if (this.traits.mitt) this.shrinks = Math.min(60, this.shrinks + 1);
@@ -622,6 +641,7 @@ export class Room {
     if (!isVoid) {
       this.streak = 0;
       this.speedFrom = 0;
+      this.heat = 0;
       if (blame) blame.drops++;
       this.missed();
     }

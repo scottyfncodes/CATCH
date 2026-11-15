@@ -17,7 +17,9 @@ import { Avatar, RECOVERY_TIME } from './scene/avatar';
 import { buildBall } from './scene/gear';
 import { CameraRig } from './scene/camera';
 import { buildWorld } from './scene/world';
-import { prefs, save } from './storage';
+import { prefs, recordFor, save } from './storage';
+import { type Daily, dailyFor, dayKey } from '../shared/daily';
+import { type Recap, drawRecap } from './recap';
 import { Tutorial } from './tutorial';
 
 const app = document.getElementById('app')!;
@@ -262,16 +264,18 @@ const backdrop = new Backdrop();
 function setUI(html: string) { ui.innerHTML = html; }
 
 function home(notice?: string) {
-  game?.destroy(); game = null; tutorial?.destroy(); tutorial = null;
+  game?.destroy(); game = null; tutorial?.destroy(); tutorial = null; clearTimeout(statusTimer);
   app.classList.remove('playing');
   if (location.pathname !== '/') history.pushState({}, '', '/');
   backdrop.start();
+  const today = dailyFor(dayKey());
   setUI(`
     <main class="home">
       <h1 class="wordmark">CATCH<i>.</i></h1>
       <p class="tagline">Two people. One ball.<br/>Keep it off the grass.</p>
       <div class="spacer"></div>
       <div class="stack">
+        ${dailyCard(today)}
         <button class="btn btn-primary" data-act="play">PLAY CATCH</button>
         <button class="btn btn-glass" data-act="join">JOIN FRIEND</button>
         <div class="pair three">
@@ -288,9 +292,36 @@ function home(notice?: string) {
     ensureProfile('Before you head out', () => traitSheet((traits) => enterRoom(randomRoomCode(), traits)));
   });
   ui.querySelector('[data-act=join]')!.addEventListener('click', () => { audio.unlock(); joinSheet(); });
+  ui.querySelector('[data-act=daily]')!.addEventListener('click', () => {
+    audio.unlock();
+    ensureProfile('Before you head out', () => enterRoom(randomRoomCode(), today.traits, today.day));
+  });
   ui.querySelector('[data-act=settings]')!.addEventListener('click', () => settingsSheet(() => home()));
   ui.querySelector('[data-act=windup]')!.addEventListener('click', () => { audio.unlock(); windupSheet(() => home()); });
   ui.querySelector('[data-act=look]')!.addEventListener('click', () => { audio.unlock(); lookSheet(() => home()); });
+}
+
+// ------------------------------------------------------------------ today's catch
+
+/** The day's goal in words: "20 in a row", "4 perfect pops in a row". */
+const goalWords = (d: Daily) => d.metric === 'heat' ? `${d.target} perfect pops in a row` : `${d.target} in a row`;
+/** Your best at a day's setup (with anyone), and whether that clears it. */
+function dayState(d: Daily) {
+  const best = recordFor(`me:day:${d.day}`);
+  return { best, done: best >= d.target };
+}
+
+/** On the home screen: today's setup (the same for everyone), its goal, and how you have done at it. */
+function dailyCard(d: Daily) {
+  const { best, done } = dayState(d);
+  const state = done ? '✓ Done' : best > 0 ? `Best ${best}` : 'Play';
+  return `
+    <button class="daily${done ? ' done' : ''}" data-act="daily" aria-label="Today’s catch: ${goalWords(d)}, ${traitWords(d.traits)}. ${done ? 'Done' : best > 0 ? `Your best today: ${best}` : 'Not played yet'}.">
+      <span class="d-eye">Today’s catch</span>
+      <b class="d-goal">${goalWords(d)}</b>
+      <span class="d-setup">${traitWords(d.traits)}</span>
+      <span class="d-state">${state}</span>
+    </button>`;
 }
 
 function sheet(html: string, onClose?: () => void): HTMLElement {
@@ -662,14 +693,14 @@ function traitSheet(then: (traits: Traits) => void) {
   });
 }
 
-function enterRoom(code: string, traits?: Traits) {
+function enterRoom(code: string, traits?: Traits, day?: string) {
   backdrop.stop();
   audio.unlock();
   audio.setVolume(prefs().volume);
   audio.startAmbience();
   if (location.pathname !== `/r/${code}`) history.pushState({}, '', `/r/${code}${location.search}`);
   app.classList.add('playing');
-  roster = []; me = null; lastStreak = 0; lastProgress = '';
+  roster = []; me = null; lastStreak = 0; lastProgress = ''; dailySeen = null;
   setUI(`
     <div class="hud">
       <div class="streak" aria-live="polite"><b id="streak">0</b><span id="streakLabel">in a row</span><em class="grade" id="grade"></em></div>
@@ -679,6 +710,7 @@ function enterRoom(code: string, traits?: Traits) {
       <button class="chip company tap" id="company" hidden>Coach is keeping you company · <u>Invite a friend</u></button>
       <button class="chip target left tap" id="tgtL" hidden></button>
       <button class="chip target right tap" id="tgtR" hidden></button>
+      <div class="chip daily-chip" id="daily" hidden></div>
     </div>`);
   hud = ui.querySelector('.hud');
   ui.querySelector('#inviteBtn')!.addEventListener('click', () => invite(code));
@@ -711,7 +743,7 @@ function enterRoom(code: string, traits?: Traits) {
         app.classList.remove('cut'); void app.offsetWidth; app.classList.add('cut');
       }
     },
-  }, traits);
+  }, traits, day);
   (window as unknown as { __catch: unknown }).__catch = { game, tutorial: () => tutorial };
   game.start();
   onStatus('connecting');
@@ -747,8 +779,10 @@ function onStatus(s: NetStatus) {
   }
   const show = () => {
     el.hidden = false;
+    if (!el.isConnected) return;
     txt.textContent = s === 'reconnecting' ? 'Reconnecting… your streak is safe' : 'Warming up the field…';
-    ui.querySelector<HTMLElement>('#company')!.hidden = true;
+    const co = ui.querySelector<HTMLElement>('#company');
+    if (co) co.hidden = true;
   };
   // Don't flash a status for quick connects.
   statusTimer = window.setTimeout(show, s === 'connecting' ? 900 : 300);
@@ -786,7 +820,7 @@ function onScore(s: ScoreState, ev?: BallEvent) {
       const host = roster.find((p) => p.id === s.host);
       const changed = lastProgress !== '' && lastProgress.split(':')[0] !== kind;
       if (changed) toast(`${host?.id === me ? 'You' : host?.name ?? 'The host'} changed the game: ${kind}`);
-      else if (!Tutorial.needed()) toast(`This room: ${kind}`);
+      else if (!Tutorial.needed()) toast(s.day ? `Today’s catch: ${goalWords(dailyFor(s.day))} · ${kind}` : `This room: ${kind}`);
     }
     lastProgress = progress;
   }
@@ -799,7 +833,7 @@ function onScore(s: ScoreState, ev?: BallEvent) {
     const said = `${lastStreak >= 5 ? `Dropped at ${lastStreak}. ` : ''}${what}`.trim();
     if (said) toast(said);
   }
-  if (ev?.k === 'catch') showGrade(ev.q, ev.st);
+  if (ev?.k === 'catch') showGrade(ev.q, ev.st, ev.self ? 0 : s.heat ?? 0);
   if (ev?.k === 'drop' && !ev.void) showGrade(ev.by && ev.by === game?.ball.thrower ? 'wild' : 'miss');
   if (ev?.k === 'deflect') showGrade('miss');
   if (ev?.k === 'catch' && ev.milestone) {
@@ -813,6 +847,34 @@ function onScore(s: ScoreState, ev?: BallEvent) {
   if (ev?.k === 'drop' && ev.void) toast('Connection hiccup — streak kept');
   lastStreak = s.streak;
   updateCompany();
+  updateDaily(s);
+}
+
+/** Whether today's goal was already reached when this room's game began (null: not a daily room yet). */
+let dailySeen: boolean | null = null;
+/** At the foot of the screen in a daily room: how far along today's goal you are, and the moment you reach it. */
+function updateDaily(s: ScoreState) {
+  const el = ui.querySelector<HTMLElement>('#daily');
+  if (!el) return;
+  el.hidden = !s.day;
+  if (!s.day) return;
+  const d = dailyFor(s.day);
+  const now = d.metric === 'heat' ? s.heat ?? 0 : s.streak;
+  const best = Math.max(s.dayBest ?? 0, now);
+  // (Reached already today, here or with anyone else: no second fanfare.)
+  if (dailySeen === null) dailySeen = dayState(d).done;
+  const done = best >= d.target;
+  const unit = d.metric === 'heat' ? 'perfect in a row' : 'in a row';
+  el.classList.toggle('done', done);
+  el.innerHTML = done
+    ? `<span class="d-eye">Today</span><span>✓ ${goalWords(d)}</span>${best > d.target ? `<span class="d-best">best ${best}</span>` : ''}`
+    : `<span class="d-eye">Today</span><span><b>${now}</b>/${d.target} ${unit}</span>${best > now ? `<span class="d-best">best ${best}</span>` : ''}`;
+  if (done && !dailySeen) {
+    dailySeen = true;
+    el.classList.remove('cleared'); void el.offsetWidth; el.classList.add('cleared');
+    toast(`Today’s catch: done. ${goalWords(d)}.`);
+    haptic('firm');
+  }
 }
 
 let lastProgress = '';
@@ -833,13 +895,15 @@ let gradeTimer = 0;
  * A quiet line under the streak: how the catch was made (when the throw asked
  * for something) and how clean it was. Everyone sees the same line.
  */
-function showGrade(q: string, st?: string | null) {
+function showGrade(q: string, st?: string | null, heat = 0) {
   const el = ui.querySelector<HTMLElement>('#grade');
   if (!el) return;
   const how = st ? STYLE_WORDS[st] : '';
   const great = isGreatCatch((st ?? null) as Parameters<typeof isGreatCatch>[0]);
-  el.textContent = how ? `${how} · ${GRADE_WORDS[q] ?? ''}` : GRADE_WORDS[q] ?? '';
-  el.className = `grade show ${q}${great ? ' great' : ''}`;
+  // Perfect after perfect: how many in a row.
+  const word = q === 'perfect' && heat >= 2 ? `${GRADE_WORDS[q]} ×${heat}` : GRADE_WORDS[q] ?? '';
+  el.textContent = how ? `${how} · ${word}` : word;
+  el.className = `grade show ${q}${great ? ' great' : ''}${q === 'perfect' && heat >= 3 ? ' hot' : ''}`;
   clearTimeout(gradeTimer);
   gradeTimer = window.setTimeout(() => { el.className = 'grade'; }, great ? 2400 : 1700);
 }
@@ -849,6 +913,18 @@ function showGrade(q: string, st?: string | null) {
  * here longest since) can change it; everyone else sees what it is and who can.
  */
 function rulesSection(s: ScoreState): string {
+  if (s.day) {
+    const d = dailyFor(s.day);
+    return `
+    <section class="rules">
+      <h3>Today’s catch</h3>
+      <div class="traits" role="group" aria-label="Today’s setup">
+        ${TRAIT_KEYS.map((k) => `<button type="button" class="trait" role="switch" aria-checked="${s.traits[k]}" disabled>
+          <span class="tick" aria-hidden="true"></span><b>${TRAIT_INFO[k].name}</b><span>${TRAIT_INFO[k].line}</span></button>`).join('')}
+      </div>
+      <p class="hint" id="rulesnote">Everyone plays the same setup today. Goal: ${goalWords(d)}. Best here today: ${s.dayBest ?? 0}.</p>
+    </section>`;
+  }
   const mine = s.host !== null && s.host === me;
   const host = roster.find((p) => p.id === s.host);
   return `
@@ -865,7 +941,7 @@ function rulesSection(s: ScoreState): string {
 }
 
 function bindRules(el: HTMLElement, s: ScoreState) {
-  if (s.host === null || s.host !== me) return;
+  if (s.host === null || s.host !== me || s.day) return;
   const t: Traits = { ...s.traits };
   el.querySelectorAll<HTMLButtonElement>('[data-rule]').forEach((b) => b.addEventListener('click', () => {
     const k = b.dataset.rule as Trait;
@@ -920,7 +996,49 @@ function pauseSheet(code: string) {
   el.querySelector('#wu')!.addEventListener('click', () => { el.remove(); windupSheet(); });
   el.querySelector('#lk')!.addEventListener('click', () => { el.remove(); lookSheet(); });
   el.querySelector('#resume')!.addEventListener('click', () => closeSheet(el));
-  el.querySelector('#leave')!.addEventListener('click', () => { el.remove(); home(); });
+  el.querySelector('#leave')!.addEventListener('click', () => {
+    const r = game?.recap();
+    el.remove();
+    home();
+    if (r && r.catches >= 3) recapSheet(r);
+  });
+}
+
+/**
+ * Leaving a room after a proper game: the session on one card (the best catch's
+ * photo, the numbers, who played), to keep or send.
+ */
+function recapSheet(r: Recap) {
+  if (r.day) { const d = dailyFor(r.day); r.dayGoal = goalWords(d); r.dayDone = dayState(d).done; }
+  const card = drawRecap(r);
+  let file: File | null = null;
+  const el = sheet(`
+    <h2>That’s the session</h2>
+    <p class="sub">${r.catches} ${r.catches === 1 ? 'catch' : 'catches'}${r.streak >= 2 ? `, ${r.streak} in a row at best` : ''}.</p>
+    <div class="recap"><img alt="Your session: best streak ${r.streak}, longest catch ${r.far} feet, ${r.perfects} perfect pops." /></div>
+    <div class="actions two"><button class="btn btn-quiet" id="done">Done</button><button class="btn btn-ink" id="share" disabled>${ICON.share}<span>Share</span></button></div>`, () => { if (url) URL.revokeObjectURL(url); });
+  let url = '';
+  const img = el.querySelector<HTMLImageElement>('.recap img')!;
+  const share = el.querySelector<HTMLButtonElement>('#share')!;
+  // Made ready before the tap: the share sheet has to open straight from the tap itself.
+  card.toBlob((b) => {
+    if (!b || !el.isConnected) return;
+    url = URL.createObjectURL(b);
+    img.src = url;
+    file = new File([b], `catch-${r.day ?? dayKey()}.jpg`, { type: 'image/jpeg' });
+    share.disabled = false;
+  }, 'image/jpeg', 0.9);
+  el.querySelector('#done')!.addEventListener('click', () => closeSheet(el));
+  share.addEventListener('click', () => {
+    if (!file) return;
+    haptic('light');
+    const data: ShareData = { files: [file], title: 'CATCH.' };
+    if (navigator.canShare?.(data)) { navigator.share(data).catch(() => {}); return; }
+    // No share sheet (a desktop browser): save the picture instead.
+    const a = Object.assign(document.createElement('a'), { href: url, download: file.name });
+    a.click();
+  });
+  (window as unknown as { __recap?: Recap }).__recap = r;
 }
 
 // ------------------------------------------------------------------ routing

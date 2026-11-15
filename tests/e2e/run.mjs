@@ -234,6 +234,7 @@ try {
   const pg = await waitFor(async () => { const s = await catcher.state(); return s.ball.holder === catcherId ? s : null; }, 6000);
   const perfectPop = pg && [...pg.audio].reverse().find((x) => x.k === 'pop');
   check('ring on a glove held still → caught dead centre: a perfect POP', perfectPop?.q === 'perfect', `q=${perfectPop?.q} g=${perfectPop?.g}`);
+  check('…which builds heat (perfect catches in a row), and the pop carries it', pg?.score.heat >= 1 && perfectPop?.heat === pg.score.heat, `heat=${pg?.score.heat} pop heat=${perfectPop?.heat}`);
   // Same thing, but the throw is ~14 cm off the glove: still caught, not perfect.
   await aimAt(catcher, throwerId);
   await waitCanThrow(catcher);
@@ -242,6 +243,7 @@ try {
   const og = await waitFor(async () => { const s = await thrower.state(); return s.ball.holder === throwerId ? s : null; }, 6000);
   const offPop = og && [...og.audio].reverse().find((x) => x.k === 'pop');
   check('a throw a hand-width off the glove still finds it, but not perfectly', !!offPop && offPop.q !== 'perfect' && offPop.g < 0.8, `q=${offPop?.q} g=${offPop?.g}`);
+  check('…which cools the heat, but keeps the streak', og?.score.heat === 0 && og.score.streak >= 1, `heat=${og?.score.heat} streak=${og?.score.streak}`);
 
   console.log('\nRECONNECTION');
   const before = await A.state();
@@ -793,6 +795,54 @@ try {
     check('no traits: a regular glove at a fixed 46 feet, normal speed, nothing else on the scoreboard', fs?.score.glove === 1 && fs.score.dist === 14 && fs.score.speed === 1 && flab.trim() === 'in a row', `"${flab}" ${JSON.stringify(fSeen)}`);
     errsExtra.push(...G.errors, ...F.errors);
     await F.ctx.close();
+  }
+
+  console.log("\nTODAY'S CATCH AND THE SESSION CARD");
+  {
+    const T = await ctxHome();
+    const card = await T.page.locator('[data-act=daily]').innerText();
+    check('the home screen has today’s catch: a goal and a setup', /Today’s catch/i.test(card) && /in a row/.test(card) && /Play/.test(card), card.replace(/\s+/g, ' '));
+    await T.page.locator('[data-act=daily]').dispatchEvent('click');
+    await waitFor(() => T.page.evaluate(() => window.__catch?.game?.debugState().status === 'open'), 30000, 50);
+    await T.page.evaluate(() => { const g = window.__catch.game; g.renderEnabled = false; g.steadyAim = true; g.autoMove = true; });
+    const tcdp = await T.ctx.newCDPSession(T.page);
+    T.touch = (type, pts) => tcdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((q) => ({ x: q[0], y: q[1], id: q[2] ?? 0 })) });
+    T.state = () => T.page.evaluate(() => window.__catch.game.debugState());
+    const today = await T.page.evaluate(() => { const d = new Date(), p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; });
+    const t0 = await waitFor(async () => { const s = await T.state(); return s.score.day && s.players.length === 2 ? s : null; }, 8000);
+    const setup = card.split('\n').map((x) => x.trim()).filter(Boolean)[2];
+    const words = { back: 'Step back', speed: 'Speed up', wild: 'Wild throws', mitt: 'Big mitt' };
+    const playing = Object.entries(t0?.score.traits ?? {}).filter(([, on]) => on).map(([k]) => words[k]).join(' · ') || 'Plain catch';
+    check('…which opens a room playing today’s setup, with Coach', t0?.score.day === today && playing === setup, `day=${t0?.score.day} (${today}) plays "${playing}", card says "${setup}"`);
+    const chip = await T.page.locator('#daily').innerText();
+    check('…and shows how far along the goal you are', /Today/i.test(chip) && /\/\d+/.test(chip), chip.replace(/\s+/g, ' '));
+    await T.page.locator('#pauseBtn').dispatchEvent('click');
+    const locked = await T.page.locator('.sheet .rules .trait').evaluateAll((els) => els.every((e) => e.disabled));
+    const note = await T.page.locator('#rulesnote').textContent();
+    check('…where the setup can’t be changed, even by whoever opened it', locked && /same setup today/.test(note), `"${note}"`);
+    await T.page.locator('#resume').dispatchEvent('click');
+    // A few catches with Coach, then leave: the session card.
+    for (let i = 0; i < 12 && (await T.page.evaluate(() => window.__catch.game.recap()?.catches ?? 0)) < 3; i++) {
+      const s = await T.state();
+      if (s.ball.phase === 'held' && s.ball.holder === s.me && (await T.page.evaluate(() => window.__catch.game.canThrow()))) {
+        const a = await T.page.evaluate(() => window.__catch.game.pullFor('coach'));
+        if (a) await throwGesture(T, { pull: a.pull, side: a.side, x: 195 - a.side / 2, y: 330 });
+      }
+      await sleep(1500);
+    }
+    const rc = await T.page.evaluate(() => window.__catch.game.recap());
+    await T.page.locator('#pauseBtn').dispatchEvent('click');
+    await T.page.locator('#leave').dispatchEvent('click');
+    const shown = await waitFor(() => T.page.evaluate(() => { const i = document.querySelector('.recap img'); return i?.complete && i.naturalWidth ? [i.naturalWidth, i.naturalHeight] : null; }), 8000);
+    const rec = await T.page.evaluate(() => window.__recap);
+    check('leaving after a game: a card of the session, ready to share', !!shown && shown[0] === 1080 && shown[1] === 1350 && rec?.catches >= 3 && rec.day === today && (await T.page.locator('#share').isEnabled()),
+      `${shown?.join('×')} · ${rec?.catches} catches, best streak ${rec?.streak}, longest ${rec?.far} ft, ${rec?.perfects} perfect · before leaving: ${rc?.catches}`);
+    check('…its best catch is a person’s, not Coach’s', !rec?.best || rec.best.mine, JSON.stringify(rec?.best));
+    await T.page.locator('#done').dispatchEvent('click');
+    const after = await T.page.locator('[data-act=daily] .d-state').innerText();
+    check('…and back home, today’s card shows how you did', rec?.dayBest >= 1 ? new RegExp(`Best ${rec.dayBest}|Done`).test(after) : /Play/.test(after), `"${after}" (best today ${rec?.dayBest})`);
+    errsExtra.push(...T.errors);
+    await T.ctx.close();
   }
 
   console.log('\nPERFORMANCE / STABILITY');
